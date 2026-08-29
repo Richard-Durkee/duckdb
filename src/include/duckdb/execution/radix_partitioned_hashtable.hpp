@@ -13,6 +13,8 @@
 #include "duckdb/execution/operator/aggregate/grouped_aggregate_data.hpp"
 #include "duckdb/execution/progress_data.hpp"
 #include "duckdb/parser/group_by_node.hpp"
+#include "duckdb/common/enums/order_type.hpp"
+#include "duckdb/planner/filter/dynamic_filter.hpp"
 
 namespace duckdb {
 class GlobalSinkState;
@@ -22,6 +24,16 @@ class GroupedAggregateHashTable;
 struct AggregatePartition;
 
 class RadixPartitionedHashTable {
+public:
+	struct TopKConfig {
+		idx_t limit = 0;
+		idx_t group_col_index = 0;
+		OrderType order_type = OrderType::DESCENDING;
+		OrderByNullType null_order = OrderByNullType::NULLS_LAST;
+		shared_ptr<DynamicFilterData> filter_data;
+		bool IsEnabled() const { return limit > 0 && filter_data; }
+	};
+
 public:
 	RadixPartitionedHashTable(GroupingSet &grouping_set, const GroupedAggregateData &op,
 	                          TupleDataValidityType group_validity);
@@ -38,6 +50,8 @@ public:
 	vector<Value> grouping_values;
 	//! Whether there are no NULLs in the groups
 	const TupleDataValidityType group_validity;
+	//! Top-K filter configuration (set by optimizer if TopN orders by a grouping key)
+	TopKConfig topk_config;
 
 public:
 	//! Sink Interface
@@ -73,6 +87,7 @@ private:
 	void PopulateGroupChunk(DataChunk &group_chunk, DataChunk &input_chunk) const;
 
 	shared_ptr<TupleDataLayout> layout_ptr;
+
 };
 
 } // namespace duckdb

@@ -549,6 +549,12 @@ RadixHTLocalSinkState::RadixHTLocalSinkState(ClientContext &, const RadixPartiti
     : adapted(false), registered(false), local_sink_capacity(DConstants::INVALID_INDEX) {
 	// If there are no groups we create a fake group so everything has the same group
 	group_chunk.InitializeEmpty(radix_ht.group_types);
+	// Initialize top-K filter if configured by optimizer
+	if (radix_ht.topk_config.IsEnabled()) {
+		topk_filter = TopKAggregateFilter(radix_ht.topk_config.limit, radix_ht.topk_config.group_col_index,
+		                                  radix_ht.topk_config.order_type, radix_ht.topk_config.null_order,
+		                                  radix_ht.topk_config.filter_data);
+	}
 	if (radix_ht.grouping_set.empty()) {
 		group_chunk.data[0].Reference(Value::TINYINT(42), count_t(STANDARD_VECTOR_SIZE));
 	}
