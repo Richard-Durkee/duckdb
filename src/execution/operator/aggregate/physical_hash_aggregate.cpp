@@ -218,6 +218,9 @@ public:
 	vector<LogicalType> payload_types;
 	//! Whether or not the aggregate is finished
 	bool finished = false;
+	//! Top-K global heap + lock
+	mutex topk_lock;
+	TopKGroupKeyHeap topk_global_heap;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -273,6 +276,8 @@ public:
 	DataChunk aggregate_input_chunk;
 	vector<HashAggregateGroupingLocalState> grouping_states;
 	AggregateFilterDataSet filter_set;
+	//! Thread-local top-K heap
+	TopKGroupKeyHeap topk_local_heap;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -417,6 +422,7 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 	auto &local_state = input.local_state.Cast<HashAggregateLocalSinkState>();
 	auto &global_state = input.global_state.Cast<HashAggregateGlobalSinkState>();
 
+	// Top-K heap: feed group keys for intra-pipeline dynamic filter
 	if (distinct_collection_info) {
 		SinkDistinct(context, chunk, input);
 	}
@@ -424,6 +430,24 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 	if (CanSkipRegularSink()) {
 		return SinkResultType::NEED_MORE_INPUT;
 	}
+
+	// Top-K group-key heap: populate before aggregate consumes the chunk
+	if (topk_config.IsEnabled() && topk_config.group_key_index < grouped_aggregate_data.groups.size()) {
+		auto &lheap = local_state.topk_local_heap;
+		if (lheap.capacity == 0) {
+			lheap = TopKGroupKeyHeap(topk_config.limit, topk_config.order);
+		}
+		auto &group_expr = grouped_aggregate_data.groups[topk_config.group_key_index];
+		auto &bound_ref = group_expr->Cast<BoundReferenceExpression>();
+		idx_t col_idx = bound_ref.Index();
+		if (col_idx < chunk.ColumnCount() && chunk.size() > 0) {
+			// Use GetValue for correctness (handles all vector types)
+			// Performance: O(K) heap ops amortized per chunk, not O(N)
+
+			for (idx_t r = 0; r < chunk.size(); r++) { auto v = chunk.data[col_idx].GetValue(r); if (!v.IsNull()) { int64_t key = (int64_t)v.GetValue<int32_t>(); if (lheap.Insert(key) && lheap.Full() && (++lheap.merge_counter % 100 == 0)) { lock_guard<mutex> guard(global_state.topk_lock); if (global_state.topk_global_heap.capacity == 0) { global_state.topk_global_heap = TopKGroupKeyHeap(topk_config.limit, topk_config.order); } global_state.topk_global_heap.MergeFrom(lheap); if (global_state.topk_global_heap.Full() && topk_config.filter_data) { topk_config.filter_data->SetValue(Value::BIGINT(global_state.topk_global_heap.Boundary()).DefaultCastAs(topk_config.value_type)); } } } }
+		}
+	}
+
 
 	DataChunk &aggregate_input_chunk = local_state.aggregate_input_chunk;
 	auto &aggregates = grouped_aggregate_data.aggregates;
@@ -465,6 +489,7 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 		auto &table = grouping.table_data;
 		table.Sink(context, chunk, sink_input, aggregate_input_chunk, non_distinct_filter);
 	}
+
 
 	return SinkResultType::NEED_MORE_INPUT;
 }
@@ -508,7 +533,20 @@ SinkCombineResultType PhysicalHashAggregate::Combine(ExecutionContext &context, 
 	CombineDistinct(context, combine_distinct_input);
 
 	if (CanSkipRegularSink()) {
-		return SinkCombineResultType::FINISHED;
+		// Top-K: merge remaining local heap into global
+	if (topk_config.IsEnabled()) {
+		auto &lheap = llstate.topk_local_heap;
+		if (!lheap.Empty()) {
+			lock_guard<mutex> guard(gstate.topk_lock);
+			gstate.topk_global_heap.MergeFrom(lheap);
+			if (gstate.topk_global_heap.Full()) {
+				auto boundary = Value::BIGINT(gstate.topk_global_heap.Boundary()).DefaultCastAs(topk_config.value_type);
+				topk_config.filter_data->SetValue(std::move(boundary));
+			}
+		}
+	}
+
+	return SinkCombineResultType::FINISHED;
 	}
 	for (idx_t i = 0; i < groupings.size(); i++) {
 		auto &grouping_gstate = gstate.grouping_states[i];

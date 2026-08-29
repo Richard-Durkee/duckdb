@@ -1,0 +1,48 @@
+# name: test/sql/topn/topn_aggregate_filter.test
+# description: Test top-K group key heap propagation through aggregate
+# group: [topn]
+
+statement ok
+CREATE TABLE t_topk AS SELECT range % 1000000 AS g, range AS x FROM range(10000000);
+
+# Basic: ORDER BY group key DESC LIMIT should produce correct results
+query II
+SELECT g, sum(x) FROM t_topk GROUP BY g ORDER BY g DESC LIMIT 5;
+----
+999999	5499990
+999998	5499980
+999997	5499970
+999996	5499960
+999995	5499950
+
+# ASC variant
+query II
+SELECT g, sum(x) FROM t_topk GROUP BY g ORDER BY g ASC LIMIT 5;
+----
+0	4500000
+1	4500010
+2	4500020
+3	4500030
+4	4500040
+
+# With offset
+query II
+SELECT g, sum(x) FROM t_topk GROUP BY g ORDER BY g DESC LIMIT 3 OFFSET 2;
+----
+999997	5499970
+999996	5499960
+999995	5499950
+
+# Multiple aggregates
+query III
+SELECT g, sum(x), max(x) FROM t_topk GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+999999	5499990	9999999
+999998	5499980	9999998
+999997	5499970	9999997
+
+# Verify EXPLAIN shows dynamic filter on scan
+query I
+EXPLAIN SELECT g, sum(x) FROM t_topk GROUP BY g ORDER BY g DESC LIMIT 5;
+----
+(showing plan with Dynamic Filter)

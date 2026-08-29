@@ -14,11 +14,75 @@
 #include "duckdb/execution/radix_partitioned_hashtable.hpp"
 #include "duckdb/parser/group_by_node.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/planner/filter/table_filter_functions.hpp"
 
 namespace duckdb {
 
 class ClientContext;
 class BufferManager;
+
+struct DynamicFilterData;
+
+//! Bounded int64 heap for tracking top-K group keys during accumulation.
+struct TopKGroupKeyHeap {
+public:
+	TopKGroupKeyHeap() : capacity(0), order(OrderType::DESCENDING), merge_counter(0) {}
+	TopKGroupKeyHeap(idx_t cap, OrderType ord) : capacity(cap), order(ord), merge_counter(0) {
+		heap.reserve(cap + 1);
+	}
+
+	idx_t capacity;
+	OrderType order;
+	vector<int64_t> heap;
+	idx_t merge_counter;
+
+	bool Empty() const { return heap.empty(); }
+	bool Full() const { return heap.size() >= capacity; }
+
+	bool Insert(int64_t key) {
+		if (!Full()) {
+			heap.push_back(key);
+			std::push_heap(heap.begin(), heap.end(), Cmp{order});
+			return Full();
+		}
+		if (IsBetter(key, heap.front())) {
+			std::pop_heap(heap.begin(), heap.end(), Cmp{order});
+			heap.back() = key;
+			std::push_heap(heap.begin(), heap.end(), Cmp{order});
+			return true;
+		}
+		return false;
+	}
+
+	int64_t Boundary() const { D_ASSERT(Full()); return heap.front(); }
+
+	void MergeFrom(TopKGroupKeyHeap &other) {
+		for (auto v : other.heap) { Insert(v); }
+		other.heap.clear();
+	}
+
+private:
+	bool IsBetter(int64_t a, int64_t b) const {
+		return (order == OrderType::DESCENDING) ? (a > b) : (a < b);
+	}
+	struct Cmp {
+		OrderType order;
+		bool operator()(int64_t a, int64_t b) const {
+			return (order == OrderType::DESCENDING) ? (a < b) : (a > b);
+		}
+	};
+};
+
+struct TopKFilterConfig {
+	idx_t group_key_index = DConstants::INVALID_INDEX;
+	idx_t limit = 0;
+	OrderType order = OrderType::DESCENDING;
+	shared_ptr<DynamicFilterData> filter_data;
+	LogicalType value_type;  //! The type the DynamicFilterData constant expects
+	bool IsEnabled() const { return group_key_index != DConstants::INVALID_INDEX && filter_data; }
+};
+
 class PhysicalHashAggregate;
 
 struct HashAggregateGroupingData {
@@ -139,6 +203,9 @@ public:
 	}
 
 public:
+	//! Top-K filter config (set by optimizer when TopN orders by a grouping key)
+	TopKFilterConfig topk_config;
+
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
 	//! Toggle multi-scan capability on a hash table, which prevents the scan of the aggregate from being destructive
 	//! If this is not toggled the GetData method will destroy the hash table as it is scanning it
