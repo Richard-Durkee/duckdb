@@ -306,6 +306,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 	auto &group_by = Make<PhysicalHashAggregate>(context, op.types, std::move(op.expressions), std::move(op.groups),
 	                                             std::move(op.grouping_sets), std::move(op.grouping_functions),
 	                                             op.estimated_cardinality, group_validity, op.distinct_validity);
+	if (op.topk_filter_info) {
+		group_by.Cast<PhysicalHashAggregate>().topk_filter_info = std::move(op.topk_filter_info);
+	}
 	group_by.children.push_back(plan);
 	return group_by;
 }

@@ -1,0 +1,104 @@
+# name: test/sql/topn/topn_aggregate_dynamic_filter.test
+# description: Top-N dynamic filter driven through a HashAggregate by the grouping key
+# group: [topn]
+
+statement ok
+CREATE TABLE small AS SELECT range % 100000 AS g, range AS x FROM range(1000000);
+
+# ORDER BY grouping key DESC: the aggregate drives the boundary; boundary group must keep all its rows
+query III
+SELECT g, sum(x), count(*) FROM small GROUP BY g ORDER BY g DESC LIMIT 5;
+----
+99999	5499990	10
+99998	5499980	10
+99997	5499970	10
+99996	5499960	10
+99995	5499950	10
+
+# the optimization must not change the answer - same query with the Top-N optimizer disabled
+statement ok
+PRAGMA disabled_optimizers='top_n';
+
+query III
+SELECT g, sum(x), count(*) FROM small GROUP BY g ORDER BY g DESC LIMIT 5;
+----
+99999	5499990	10
+99998	5499980	10
+99997	5499970	10
+99996	5499960	10
+99995	5499950	10
+
+statement ok
+PRAGMA disabled_optimizers='';
+
+# ASC variant
+query III
+SELECT g, sum(x), count(*) FROM small GROUP BY g ORDER BY g ASC LIMIT 5;
+----
+0	4500000	10
+1	4500010	10
+2	4500020	10
+3	4500030	10
+4	4500040	10
+
+# with OFFSET (boundary must cover limit + offset groups)
+query II
+SELECT g, count(*) FROM small GROUP BY g ORDER BY g DESC LIMIT 3 OFFSET 7;
+----
+99992	10
+99991	10
+99990	10
+
+# BIGINT keys well above INT32_MAX (the original prototype hardcoded int32 and broke here)
+statement ok
+CREATE TABLE big AS SELECT (range % 500) + 5000000000 AS g, range AS x FROM range(200000);
+
+query II
+SELECT g, count(*) FROM big GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+5000000499	400
+5000000498	400
+5000000497	400
+
+# VARCHAR keys
+statement ok
+CREATE TABLE strs AS SELECT 'k' || printf('%05d', range % 1000) AS g, range AS x FROM range(200000);
+
+query II
+SELECT g, count(*) FROM strs GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+k00999	200
+k00998	200
+k00997	200
+
+# Skew: group 0 holds 1/3 of all rows, scattered across the whole scan, and is the ASC boundary group.
+# If the inclusive boundary were wrong, its late-arriving rows would be dropped and the count truncated.
+statement ok
+CREATE TABLE skew AS SELECT (CASE WHEN range % 3 = 0 THEN 0 ELSE range END) AS g, range AS x FROM range(300000);
+
+query II
+SELECT g, count(*) FROM skew GROUP BY g ORDER BY g ASC LIMIT 3;
+----
+0	100000
+1	1
+2	1
+
+# NULL keys with NULLS LAST (inherits the optimizer's existing IS NULL OR ... handling)
+statement ok
+CREATE TABLE nulls AS SELECT (CASE WHEN range % 7 = 0 THEN NULL ELSE range % 1000 END) AS g, range AS x FROM range(200000);
+
+query II
+SELECT g, count(*) FROM nulls GROUP BY g ORDER BY g DESC NULLS LAST LIMIT 4;
+----
+999	172
+998	172
+997	171
+996	171
+
+# ORDER BY an aggregate result (not a grouping key) must NOT be affected - correctness anchor
+query II
+SELECT g, sum(x) AS s FROM small GROUP BY g ORDER BY s DESC LIMIT 3;
+----
+99999	5499990
+99998	5499980
+99997	5499970
