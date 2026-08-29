@@ -106,6 +106,11 @@ public:
 	//! computed but instead just assigned.
 	idx_t AddChunk(DataChunk &groups, DataChunk &payload, const unsafe_vector<idx_t> &filter);
 	idx_t AddChunk(DataChunk &groups, Vector &group_hashes, DataChunk &payload, const unsafe_vector<idx_t> &filter);
+	using new_groups_callback_t =
+	    std::function<void(DataChunk &groups, const SelectionVector &new_groups, idx_t new_group_count)>;
+	//! Adds a chunk, invokes on_new_groups for newly created groups, then updates aggregates.
+	idx_t AddChunk(DataChunk &groups, DataChunk &payload, const unsafe_vector<idx_t> &filter,
+	               const new_groups_callback_t &on_new_groups);
 	idx_t AddChunk(DataChunk &groups, DataChunk &payload, AggregateType filter);
 	using before_update_callback_t =
 	    std::function<void(const Vector &group_addresses, const SelectionVector &new_groups, idx_t new_group_count)>;

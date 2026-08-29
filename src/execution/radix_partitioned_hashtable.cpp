@@ -12,6 +12,7 @@
 #include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/filter/dynamic_filter.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
 namespace duckdb {
@@ -77,6 +78,106 @@ unique_ptr<GroupedAggregateHashTable> RadixPartitionedHashTable::CreateHT(Client
 }
 
 //===--------------------------------------------------------------------===//
+// Top-K Aggregate Filter: maintains a bounded heap of group key Values
+// to tighten a DynamicFilterData boundary during the Sink phase.
+struct TopKAggregateFilter {
+	idx_t limit = 0;
+	idx_t group_col_index = 0;
+	OrderType order_type = OrderType::DESCENDING;
+	OrderByNullType null_order = OrderByNullType::NULLS_LAST;
+	vector<Value> heap;
+	idx_t updates_since_setvalue = 0;
+	shared_ptr<DynamicFilterData> filter_data;
+
+	TopKAggregateFilter() = default;
+	TopKAggregateFilter(idx_t limit_p, idx_t group_col_idx, OrderType order_p,
+	                    OrderByNullType null_order_p, shared_ptr<DynamicFilterData> filter_data_p)
+	    : limit(limit_p), group_col_index(group_col_idx), order_type(order_p),
+	      null_order(null_order_p), filter_data(std::move(filter_data_p)) {
+		heap.reserve(limit + 1);
+	}
+
+	bool IsEnabled() const {
+		return limit > 0 && filter_data;
+	}
+
+	//! Returns true if key is "better" than other according to ORDER direction
+	bool IsBetter(const Value &key, const Value &other) const {
+		if (key.IsNull() || other.IsNull()) {
+			return false; // NULLs never displace non-NULLs in the heap
+		}
+		if (order_type == OrderType::DESCENDING) {
+			return key > other;
+		}
+		return key < other;
+	}
+
+	//! Insert a group key value. Returns true if the heap boundary changed.
+	void Insert(const Value &key) {
+		if (key.IsNull()) {
+			return; // Skip NULLs for now (conservative)
+		}
+		if (heap.size() < limit) {
+			heap.push_back(key);
+			// Maintain min-heap property (worst element at front)
+			for (idx_t i = heap.size() - 1; i > 0; i--) {
+				if (IsBetter(heap[i], heap[0])) {
+					// heap[0] is the worst -- if new is better than worst, swap might be needed
+					// Actually for a bounded heap: keep worst at [0]
+				}
+			}
+			// Simple: find the worst and put it at position 0
+			if (heap.size() == limit) {
+				Reheap();
+			}
+			return;
+		}
+		// Heap is full -- only insert if better than the worst (heap[0])
+		if (!IsBetter(key, heap[0])) {
+			return;
+		}
+		// Replace worst with new key and re-heapify
+		heap[0] = key;
+		Reheap();
+	}
+
+	void Reheap() {
+		// Put the "worst" element at position 0 (for a max-heap of top-K,
+		// the worst is the smallest in DESC order)
+		for (idx_t i = 1; i < heap.size(); i++) {
+			if (IsBetter(heap[0], heap[i])) {
+				std::swap(heap[0], heap[i]);
+			}
+		}
+	}
+
+	//! Get the current boundary value (the worst in the top-K set)
+	Value GetBoundary() const {
+		if (heap.size() < limit) {
+			return Value();
+		}
+		return heap[0];
+	}
+
+	//! Merge another filter's heap into this one
+	void MergeFrom(TopKAggregateFilter &other) {
+		for (auto &val : other.heap) {
+			Insert(val);
+		}
+	}
+
+	//! Push the current boundary to the DynamicFilterData
+	void UpdateFilterData() {
+		if (!filter_data || heap.size() < limit) {
+			return;
+		}
+		auto boundary = GetBoundary();
+		if (!boundary.IsNull()) {
+			filter_data->SetValue(std::move(boundary));
+		}
+	}
+};
+
 // Sink
 //===--------------------------------------------------------------------===//
 enum class AggregatePartitionState : uint8_t {
@@ -181,6 +282,10 @@ public:
 class RadixHTGlobalSinkState : public GlobalSinkState {
 public:
 	RadixHTGlobalSinkState(ClientContext &context, const RadixPartitionedHashTable &radix_ht);
+
+	//! Global top-K filter (merged from thread-local filters during Combine)
+	TopKAggregateFilter topk_filter;
+	mutable annotated_mutex topk_lock;
 
 	//! Destroys aggregate states (if multi-scan)
 	~RadixHTGlobalSinkState() override;
@@ -430,6 +535,9 @@ public:
 	bool registered;
 	//! Sink capacity for this thread
 	idx_t local_sink_capacity;
+
+	//! Thread-local top-K filter for intra-pipeline dynamic filter propagation
+	TopKAggregateFilter topk_filter;
 
 	//! Data that is abandoned ends up here (only if we're doing external aggregation)
 	unique_ptr<PartitionedTupleData> abandoned_data;
@@ -812,7 +920,25 @@ void RadixPartitionedHashTable::Sink(ExecutionContext &context, DataChunk &chunk
 	PopulateGroupChunk(group_chunk, chunk);
 
 	auto &ht = *lstate.ht;
-	ht.AddChunk(group_chunk, payload_input, filter);
+	if (lstate.topk_filter.IsEnabled()) {
+		ht.AddChunk(group_chunk, payload_input, filter,
+		    [&lstate](DataChunk &groups, const SelectionVector &new_groups, idx_t new_group_count) {
+			    auto &tkf = lstate.topk_filter;
+			    auto &vec = groups.data[tkf.group_col_index];
+			    for (idx_t i = 0; i < new_group_count; i++) {
+				    auto idx = new_groups.get_index_unsafe(i);
+				    tkf.Insert(vec.GetValue(idx));
+			    }
+			    // Periodically push boundary to scan
+			    tkf.updates_since_setvalue += new_group_count;
+			    if (tkf.updates_since_setvalue >= tkf.limit * 10) {
+				    tkf.UpdateFilterData();
+				    tkf.updates_since_setvalue = 0;
+			    }
+		    });
+	} else {
+		ht.AddChunk(group_chunk, payload_input, filter);
+	}
 
 	// Decide whether we should adapt our strategy to the data
 	if (!lstate.adapted && lstate.ht->GetSinkCount() >= RadixHTLocalSinkState::ADAPTIVITY_THRESHOLD) {
@@ -888,6 +1014,17 @@ void RadixPartitionedHashTable::Combine(ExecutionContext &context, GlobalSinkSta
 	// Set any_combined, then check one last time whether we need to repartition
 	gstate.any_combined = true;
 	MaybeRepartition(context.client, gstate, lstate, true);
+
+	// Merge thread-local top-K filter into global
+	if (lstate.topk_filter.IsEnabled()) {
+		const annotated_lock_guard<annotated_mutex> topk_guard {gstate.topk_lock};
+		if (!gstate.topk_filter.IsEnabled()) {
+			gstate.topk_filter = std::move(lstate.topk_filter);
+		} else {
+			gstate.topk_filter.MergeFrom(lstate.topk_filter);
+		}
+		gstate.topk_filter.UpdateFilterData();
+	}
 
 	auto &ht = *lstate.ht;
 	auto lstate_data = ht.AcquirePartitionedData();
