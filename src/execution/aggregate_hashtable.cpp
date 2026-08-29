@@ -671,6 +671,31 @@ idx_t GroupedAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload,
 	return AddChunk(groups, state.hashes, payload, filter);
 }
 
+idx_t GroupedAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload, const unsafe_vector<idx_t> &filter,
+                                          const new_groups_callback_t &on_new_groups) {
+	adaptivity.AddInput(groups.size());
+
+	// the compressed fast paths do not surface individual new groups; skipping them only leaves the
+	// caller's boundary looser (never over-tight), so it stays correct - just less aggressive pruning
+	auto result = TryAddCompressedGroups(groups, payload, filter);
+	if (result.IsValid()) {
+		return result.GetIndex();
+	}
+	if (groups.size() == 0) {
+		return 0;
+	}
+	groups.Hash(state.hashes);
+
+	const auto new_group_count = FindOrCreateGroups(groups, state.hashes, state.addresses, state.new_groups);
+	if (new_group_count > 0 && on_new_groups) {
+		on_new_groups(groups, state.new_groups, new_group_count);
+	}
+	VectorOperations::AddInPlace(state.addresses, NumericCast<int64_t>(layout_ptr->GetAggrOffset()));
+	UpdateAggregates(payload, filter, groups.size());
+
+	return new_group_count;
+}
+
 bool GroupedAggregateHashTable::UpdateAggregatesClustered(DataChunk &payload, const unsafe_vector<idx_t> &filter,
                                                           idx_t count, bool ht_offsets_valid) {
 	if (adaptivity.LookupsSkipped()) {

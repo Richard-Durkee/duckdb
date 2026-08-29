@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
+#include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/physical_operator_states.hpp"
 #include "duckdb/execution/operator/aggregate/grouped_aggregate_data.hpp"
 #include "duckdb/execution/progress_data.hpp"
@@ -49,7 +50,8 @@ public:
 	void ResetLocalSinkState(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate) const;
 
 	void Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input, DataChunk &aggregate_input_chunk,
-	          const unsafe_vector<idx_t> &filter) const;
+	          const unsafe_vector<idx_t> &filter,
+	          const GroupedAggregateHashTable::new_groups_callback_t &on_new_groups = {}) const;
 	void Combine(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate) const;
 	void Finalize(ClientContext &context, GlobalSinkState &gstate) const;
 

@@ -659,7 +659,8 @@ void MaybeRepartition(ClientContext &context, RadixHTGlobalSinkState &gstate, Ra
 }
 
 void RadixPartitionedHashTable::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input,
-                                     DataChunk &payload_input, const unsafe_vector<idx_t> &filter) const {
+                                     DataChunk &payload_input, const unsafe_vector<idx_t> &filter,
+                                     const GroupedAggregateHashTable::new_groups_callback_t &on_new_groups) const {
 	auto &gstate = input.global_state.Cast<RadixHTGlobalSinkState>();
 	auto &lstate = input.local_state.Cast<RadixHTLocalSinkState>();
 	if (!lstate.ht) {
@@ -681,7 +682,11 @@ void RadixPartitionedHashTable::Sink(ExecutionContext &context, DataChunk &chunk
 	if (gstate.external && !lstate.spilling) {
 		lstate.PrepareForSpill(gstate);
 	}
-	ht.AddChunk(group_chunk, payload_input, filter);
+	if (on_new_groups) {
+		ht.AddChunk(group_chunk, payload_input, filter, on_new_groups);
+	} else {
+		ht.AddChunk(group_chunk, payload_input, filter);
+	}
 
 	// Row width and aggregate state size can increase without filling the pointer table.
 	const auto total_size = ht.GetSizeInBytes();

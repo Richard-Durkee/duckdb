@@ -476,18 +476,21 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 	auto &local_state = input.local_state.Cast<HashAggregateLocalSinkState>();
 	auto &global_state = input.global_state.Cast<HashAggregateGlobalSinkState>();
 
+	// Build a callback that feeds only the DISTINCT, newly-created group keys into the local Top-K boundary.
+	// The hash table already deduplicates keys per thread, so this touches each key at most once (instead of
+	// once per row) and avoids boxing every input value into a Value on the hot path.
+	GroupedAggregateHashTable::new_groups_callback_t topk_callback = nullptr;
 	if (topk_filter_info && local_state.topk_local) {
 		auto &info = *topk_filter_info;
 		auto group_col = grouped_aggregate_data.groups[info.group_index]->Cast<BoundReferenceExpression>().Index();
 		if (group_col < chunk.ColumnCount()) {
 			auto &keys = chunk.data[group_col];
 			auto &local = *local_state.topk_local;
-			for (idx_t r = 0; r < chunk.size(); r++) {
-				local.Insert(keys.GetValue(r));
-			}
-			if (local.Full() && (++local_state.topk_chunk_counter % TOPK_PUBLISH_INTERVAL) == 0) {
-				PublishTopKBoundary(global_state, local, info);
-			}
+			topk_callback = [&local, &keys](DataChunk &, const SelectionVector &new_groups, idx_t new_group_count) {
+				for (idx_t i = 0; i < new_group_count; i++) {
+					local.Insert(keys.GetValue(new_groups.get_index(i)));
+				}
+			};
 		}
 	}
 
@@ -537,7 +540,13 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 
 		auto &grouping = groupings[i];
 		auto &table = grouping.table_data;
-		table.Sink(context, chunk, sink_input, aggregate_input_chunk, non_distinct_filter);
+		table.Sink(context, chunk, sink_input, aggregate_input_chunk, non_distinct_filter, topk_callback);
+	}
+
+	// Throttle: only merge into the global boundary and publish to the scan every TOPK_PUBLISH_INTERVAL chunks.
+	if (topk_callback && local_state.topk_local->Full() &&
+	    (++local_state.topk_chunk_counter % TOPK_PUBLISH_INTERVAL) == 0) {
+		PublishTopKBoundary(global_state, *local_state.topk_local, *topk_filter_info);
 	}
 
 	return SinkResultType::NEED_MORE_INPUT;
