@@ -12,10 +12,54 @@
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 
 namespace duckdb {
+
+//! Walk down from a Top-N through projections/order-by to a HashAggregate whose grouping key the sort
+//! column resolves to, tracking the ColumnBinding through each level (robust to reindexing projections).
+//! Returns the aggregate and the group position the sort key maps to, or nullptr if the pattern doesn't hold.
+static optional_ptr<LogicalAggregate> FindTopKAggregate(LogicalOperator &child, ColumnBinding binding,
+                                                        idx_t &group_index) {
+	reference<LogicalOperator> current = child;
+	ColumnBinding current_binding = binding;
+	while (true) {
+		auto &op = current.get();
+		switch (op.type) {
+		case LogicalOperatorType::LOGICAL_ORDER_BY:
+			current = *op.children[0];
+			break;
+		case LogicalOperatorType::LOGICAL_PROJECTION: {
+			auto &proj = op.Cast<LogicalProjection>();
+			if (current_binding.table_index != proj.table_index) {
+				return nullptr;
+			}
+			JoinFilterPushdownColumn col;
+			col.probe_column_index = current_binding;
+			if (!JoinFilterPushdownUtil::PushdownJoinFilterExpression(proj.GetExpression(current_binding), col)) {
+				return nullptr;
+			}
+			current_binding = col.probe_column_index;
+			current = *op.children[0];
+			break;
+		}
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+			auto &aggr = op.Cast<LogicalAggregate>();
+			if (current_binding.table_index != aggr.group_index || current_binding.column_index >= aggr.groups.size()) {
+				return nullptr;
+			}
+			group_index = current_binding.column_index;
+			return aggr;
+		}
+		default:
+			return nullptr;
+		}
+	}
+}
 
 TopN::TopN(ClientContext &context_p) : context(context_p) {
 }
@@ -91,24 +135,62 @@ void TopN::PushdownDynamicFilters(LogicalTopN &op) {
 		// no pushdown targets
 		return;
 	}
+
+	// Check whether the pushdown path goes through a HashAggregate on the ordered grouping key. If so, the
+	// aggregate can drive the boundary during its own build phase (same pipeline as the scan), instead of the
+	// downstream Top-N (which runs too late to prune the scan). See AggregateTopKFilterInfo.
+	idx_t topk_group_index = DConstants::INVALID_INDEX;
+	auto topk_aggregate = FindTopKAggregate(*op.children[0], colref.Binding(), topk_group_index);
+	const idx_t topk_k = op.limit + op.offset;
+	if (topk_aggregate) {
+		bool supported = topk_k > 0 && topk_k <= 1024 && topk_aggregate->grouping_sets.size() <= 1;
+		for (auto &expr : topk_aggregate->expressions) {
+			if (!supported) {
+				break;
+			}
+			if (expr->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE &&
+			    expr->Cast<BoundAggregateExpression>().IsDistinct()) {
+				// distinct aggregates take a different sink path - not supported
+				supported = false;
+			}
+		}
+		if (!supported) {
+			topk_aggregate = nullptr;
+		}
+	}
+
 	// found pushdown targets! generate dynamic filters
+	// When the aggregate drives the boundary, the filter must be INCLUSIVE: the aggregate needs every row of
+	// the boundary group, so we cannot use the strict comparison the plain Top-N pushdown uses.
+	const bool inclusive = static_cast<bool>(topk_aggregate);
 	ExpressionType comparison_type;
 	if (op.orders[0].type == OrderType::ASCENDING) {
 		// for ascending order, we want the lowest N elements, so we filter on C <= [boundary]
 		// if we only have a single order clause, we can filter on C < boundary
-		comparison_type =
-		    op.orders.size() == 1 ? ExpressionType::COMPARE_LESSTHAN : ExpressionType::COMPARE_LESSTHANOREQUALTO;
+		comparison_type = (op.orders.size() == 1 && !inclusive) ? ExpressionType::COMPARE_LESSTHAN
+		                                                        : ExpressionType::COMPARE_LESSTHANOREQUALTO;
 	} else {
 		// for descending order, we want the highest N elements, so we filter on C >= [boundary]
 		// if we only have a single order clause, we can filter on C > boundary
-		comparison_type =
-		    op.orders.size() == 1 ? ExpressionType::COMPARE_GREATERTHAN : ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+		comparison_type = (op.orders.size() == 1 && !inclusive) ? ExpressionType::COMPARE_GREATERTHAN
+		                                                        : ExpressionType::COMPARE_GREATERTHANOREQUALTO;
 	}
 	Value minimum_value = type.InternalType() == PhysicalType::VARCHAR ? Value("") : Value::MinimumValue(type);
 	auto filter_data = make_shared_ptr<DynamicFilterData>(comparison_type, std::move(minimum_value));
 
 	// put the filter into the Top-N clause
 	op.dynamic_filter = filter_data;
+
+	if (topk_aggregate) {
+		// let the aggregate drive this same filter from its distinct group keys during Sink
+		auto info = make_shared_ptr<AggregateTopKFilterInfo>();
+		info->filter_data = filter_data;
+		info->group_index = topk_group_index;
+		info->order = op.orders[0].type;
+		info->k = topk_k;
+		info->boundary_type = type;
+		topk_aggregate->topk_filter_info = std::move(info);
+	}
 
 	for (auto &target : pushdown_targets) {
 		auto &get = target.get;

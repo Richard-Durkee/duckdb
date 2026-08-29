@@ -16,8 +16,13 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/filter/table_filter_functions.hpp"
+#include "duckdb/common/value_operations/value_operations.hpp"
 
 namespace duckdb {
+
+//! How often (in chunks) a thread publishes its local Top-K boundary to the shared dynamic filter.
+static constexpr idx_t TOPK_PUBLISH_INTERVAL = 100;
 
 HashAggregateGroupingData::HashAggregateGroupingData(GroupingSet &grouping_set_p,
                                                      const GroupedAggregateData &grouped_aggregate_data,
@@ -211,6 +216,10 @@ public:
 		}
 		payload_types.reserve(payload_types.size() + filter_types.size());
 		payload_types.insert(payload_types.end(), filter_types.begin(), filter_types.end());
+
+		if (op.topk_filter_info) {
+			topk_global = make_uniq<AggregateTopKBoundary>(op.topk_filter_info->order, op.topk_filter_info->k);
+		}
 	}
 
 	const PhysicalHashAggregate &op;
@@ -218,6 +227,10 @@ public:
 	vector<LogicalType> payload_types;
 	//! Whether or not the aggregate is finished
 	bool finished = false;
+	//! Global Top-K boundary of distinct group keys + its lock, and the last value published to the filter
+	mutex topk_lock;
+	unique_ptr<AggregateTopKBoundary> topk_global;
+	Value topk_last_published;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -267,12 +280,19 @@ public:
 		}
 
 		filter_set.Initialize(context.client, aggregate_objects, payload_types);
+
+		if (op.topk_filter_info) {
+			topk_local = make_uniq<AggregateTopKBoundary>(op.topk_filter_info->order, op.topk_filter_info->k);
+		}
 	}
 
 	const PhysicalHashAggregate &op;
 	DataChunk aggregate_input_chunk;
 	vector<HashAggregateGroupingLocalState> grouping_states;
 	AggregateFilterDataSet filter_set;
+	//! Thread-local Top-K boundary of distinct group keys, and a chunk counter for throttled publishing
+	unique_ptr<AggregateTopKBoundary> topk_local;
+	idx_t topk_chunk_counter = 0;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -412,10 +432,45 @@ void PhysicalHashAggregate::SinkDistinct(ExecutionContext &context, DataChunk &c
 	}
 }
 
+//! Merge a thread-local Top-K boundary into the global one and, if the global K-th key changed,
+//! publish it to the shared dynamic filter so the scan below the aggregate can prune. A thread's
+//! local boundary is always <= the global boundary (it has seen a subset of keys), so publishing
+//! early from a single thread can only loosen the filter, never over-prune.
+static void PublishTopKBoundary(HashAggregateGlobalSinkState &gstate, AggregateTopKBoundary &local,
+                                const AggregateTopKFilterInfo &info) {
+	lock_guard<mutex> guard(gstate.topk_lock);
+	gstate.topk_global->Merge(local);
+	if (!gstate.topk_global->Full()) {
+		return;
+	}
+	Value boundary = gstate.topk_global->Boundary().DefaultCastAs(info.boundary_type);
+	if (!gstate.topk_last_published.IsNull() &&
+	    ValueOperations::NotDistinctFrom(boundary, gstate.topk_last_published)) {
+		return;
+	}
+	gstate.topk_last_published = boundary;
+	info.filter_data->SetValue(std::move(boundary));
+}
+
 SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk &chunk,
                                            OperatorSinkInput &input) const {
 	auto &local_state = input.local_state.Cast<HashAggregateLocalSinkState>();
 	auto &global_state = input.global_state.Cast<HashAggregateGlobalSinkState>();
+
+	if (topk_filter_info && local_state.topk_local) {
+		auto &info = *topk_filter_info;
+		auto group_col = grouped_aggregate_data.groups[info.group_index]->Cast<BoundReferenceExpression>().Index();
+		if (group_col < chunk.ColumnCount()) {
+			auto &keys = chunk.data[group_col];
+			auto &local = *local_state.topk_local;
+			for (idx_t r = 0; r < chunk.size(); r++) {
+				local.Insert(keys.GetValue(r));
+			}
+			if (local.Full() && (++local_state.topk_chunk_counter % TOPK_PUBLISH_INTERVAL) == 0) {
+				PublishTopKBoundary(global_state, local, info);
+			}
+		}
+	}
 
 	if (distinct_collection_info) {
 		SinkDistinct(context, chunk, input);
@@ -506,6 +561,10 @@ SinkCombineResultType PhysicalHashAggregate::Combine(ExecutionContext &context, 
 
 	OperatorSinkCombineInput combine_distinct_input {gstate, llstate, input.interrupt_state};
 	CombineDistinct(context, combine_distinct_input);
+
+	if (topk_filter_info && llstate.topk_local && !llstate.topk_local->Empty()) {
+		PublishTopKBoundary(gstate, *llstate.topk_local, *topk_filter_info);
+	}
 
 	if (CanSkipRegularSink()) {
 		return SinkCombineResultType::FINISHED;

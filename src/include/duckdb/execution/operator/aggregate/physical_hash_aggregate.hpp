@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/execution/operator/aggregate/aggregate_topk_filter.hpp"
 #include "duckdb/execution/operator/aggregate/distinct_aggregate_data.hpp"
 #include "duckdb/execution/operator/aggregate/grouped_aggregate_data.hpp"
 #include "duckdb/execution/physical_operator.hpp"
@@ -83,6 +84,10 @@ public:
 	unique_ptr<DistinctAggregateCollectionInfo> distinct_collection_info;
 	//! A recreation of the input chunk, with nulls for everything that isnt a group
 	vector<LogicalType> input_group_types;
+	//! Optional Top-N-through-aggregate dynamic filter config (set by the Top-N optimizer).
+	//! When set, Sink maintains a running Top-K of distinct group keys and updates the shared
+	//! dynamic filter on the scan below this aggregate, pruning the scan during the build phase.
+	shared_ptr<AggregateTopKFilterInfo> topk_filter_info;
 
 	//! Filters given to Sink and friends
 	unsafe_vector<idx_t> non_distinct_filter;
