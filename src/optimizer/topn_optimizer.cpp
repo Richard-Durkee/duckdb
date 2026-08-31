@@ -23,6 +23,13 @@ namespace duckdb {
 //! Walk down from a Top-N through projections/order-by to a HashAggregate whose grouping key the sort
 //! column resolves to, tracking the ColumnBinding through each level (robust to reindexing projections).
 //! Returns the aggregate and the group position the sort key maps to, or nullptr if the pattern doesn't hold.
+//!
+//! Scope: this handles ORDER BY on a *grouping key*, where the boundary is a raw scanned column and can
+//! drive a dynamic filter on the scan. ORDER BY on an *aggregate result* (e.g. ORDER BY count(*) DESC) is
+//! intentionally out of scope - the sort key does not exist in the scan, so scan pruning is not applicable
+//! (see the plain Top-N path, which still applies to the final result). Only a single ORDER BY column that
+//! is a bound column reference is matched (inherited from the caller's guards); the projection walk stops at
+//! any non-column-reference expression.
 static optional_ptr<LogicalAggregate> FindTopKAggregate(LogicalOperator &child, ColumnBinding binding,
                                                         idx_t &group_index) {
 	reference<LogicalOperator> current = child;
@@ -155,7 +162,14 @@ void TopN::PushdownDynamicFilters(LogicalTopN &op) {
 	auto topk_aggregate = FindTopKAggregate(*op.children[0], colref.Binding(), topk_group_index);
 	const idx_t topk_k = op.limit + op.offset;
 	if (topk_aggregate) {
-		bool supported = topk_k > 0 && topk_k <= 1024 && topk_aggregate->grouping_sets.size() <= 1;
+		// Only engage for a bounded K. The aggregate keeps a running set of the K best distinct group keys
+		// (AggregateTopKBoundary); its per-insert cost and memory grow with K, while the pruning benefit
+		// shrinks as K approaches the number of distinct groups (a boundary near the extreme prunes little).
+		// The filter is a pure optimization - a loose boundary is always correct - so disengaging above the
+		// threshold is safe. STANDARD_VECTOR_SIZE is the natural bound: it matches the vectorized batch size
+		// and keeps the boundary within a single chunk's worth of keys.
+		bool supported =
+		    topk_k > 0 && topk_k <= STANDARD_VECTOR_SIZE && topk_aggregate->grouping_sets.size() <= 1;
 		for (auto &expr : topk_aggregate->expressions) {
 			if (!supported) {
 				break;
