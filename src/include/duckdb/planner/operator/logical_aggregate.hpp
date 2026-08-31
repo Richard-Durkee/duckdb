@@ -45,7 +45,11 @@ public:
 	vector<unique_ptr<BaseStatistics>> group_stats;
 	//! Whether the inputs to all expression are non-NULL
 	TupleDataValidityType distinct_validity;
-	//! Optional Top-N-through-aggregate dynamic filter config (set by the Top-N optimizer)
+	//! Optional Top-N-through-aggregate dynamic filter config (set by the Top-N optimizer).
+	//! Runtime-only optimization hint, like group_stats: deliberately not serialized (absent from
+	//! logical_operator.json) and therefore dropped by LogicalOperator::Copy (a Serialize round-trip).
+	//! This is correctness-safe - a missing filter only disables pruning - and relies on the optimizer
+	//! setting it immediately before physical planning, with no intervening Copy.
 	shared_ptr<AggregateTopKFilterInfo> topk_filter_info;
 
 public:

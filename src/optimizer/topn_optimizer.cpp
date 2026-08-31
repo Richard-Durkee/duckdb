@@ -170,6 +170,14 @@ void TopN::PushdownDynamicFilters(LogicalTopN &op) {
 		// and keeps the boundary within a single chunk's worth of keys.
 		bool supported =
 		    topk_k > 0 && topk_k <= STANDARD_VECTOR_SIZE && topk_aggregate->grouping_sets.size() <= 1;
+		// The boundary is stored as a group-key Value and cast to the ORDER BY type at publish time. Only
+		// engage when that cast is identity (same physical type): the projection walk in FindTopKAggregate
+		// permits integral casts between the group key and the sort key, and a narrowing cast could round the
+		// boundary toward the tighter side and over-prune. A mismatch just falls back to the plain Top-N path.
+		if (supported &&
+		    topk_aggregate->groups[topk_group_index]->GetReturnType().InternalType() != type.InternalType()) {
+			supported = false;
+		}
 		for (auto &expr : topk_aggregate->expressions) {
 			if (!supported) {
 				break;

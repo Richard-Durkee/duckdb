@@ -7,6 +7,9 @@ namespace duckdb {
 
 void CompressedMaterialization::CompressAggregate(unique_ptr<LogicalOperator> &op) {
 	auto &aggregate = op->Cast<LogicalAggregate>();
+	if (aggregate.topk_filter_info) {
+		return; // The Top-N boundary is published in the type of the uncompressed grouping key
+	}
 	auto &groups = aggregate.groups;
 	column_binding_set_t group_binding_set;
 	for (const auto &group : groups) {

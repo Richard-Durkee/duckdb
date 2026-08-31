@@ -102,3 +102,81 @@ SELECT g, sum(x) AS s FROM small GROUP BY g ORDER BY s DESC LIMIT 3;
 99999	5499990
 99998	5499980
 99997	5499970
+
+# ORDER BY a NARROWING type cast of the grouping key (BIGINT group key -> INTEGER sort key, values fit):
+# boundary type differs from the group key type, so the aggregate-driven path must disengage (falls back
+# to plain Top-N) and still be correct.
+statement ok
+CREATE TABLE castt AS SELECT (range % 200)::BIGINT AS g FROM range(100000);
+
+query II
+SELECT g, count(*) FROM castt GROUP BY g ORDER BY g::INTEGER DESC LIMIT 3;
+----
+199	500
+198	500
+197	500
+
+# ORDER BY a WIDENING cast (BIGINT -> HUGEINT): same fallback, still correct.
+query II
+SELECT g, count(*) FROM castt GROUP BY g ORDER BY g::HUGEINT ASC LIMIT 3;
+----
+0	500
+1	500
+2	500
+
+# the aggregate drives the filter for an ORDER BY grouping key
+query II
+EXPLAIN SELECT g, sum(x) FROM small GROUP BY g ORDER BY g DESC LIMIT 5;
+----
+physical_plan	<REGEX>:.*Top-N Filter.*
+
+# compressed materialization leaves the grouping keys of an aggregate driving the boundary uncompressed,
+# so keys it would store as an offset (g - min) or as integers (short strings) still prune correctly
+statement ok
+CREATE TABLE offset_keys AS SELECT 1000000 + (range % 200) AS g, range AS x FROM range(100000);
+
+query II
+SELECT g, count(*) FROM offset_keys GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+1000199	500
+1000198	500
+1000197	500
+
+query II
+SELECT g, count(*) FROM offset_keys GROUP BY g ORDER BY g ASC LIMIT 3;
+----
+1000000	500
+1000001	500
+1000002	500
+
+query II
+EXPLAIN SELECT g, count(*) FROM offset_keys GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+physical_plan	<!REGEX>:.*__internal_compress.*
+
+statement ok
+CREATE TABLE string_keys AS SELECT 'k' || (range % 300)::VARCHAR AS g FROM range(100000);
+
+query II
+SELECT g, count(*) FROM string_keys GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+k99	334
+k98	334
+k97	334
+
+query II
+SELECT g, count(*) FROM string_keys GROUP BY g ORDER BY g ASC LIMIT 3;
+----
+k0	334
+k1	334
+k10	334
+
+query II
+EXPLAIN SELECT g, count(*) FROM string_keys GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+physical_plan	<REGEX>:.*Top-N Filter.*
+
+query II
+EXPLAIN SELECT g, count(*) FROM string_keys GROUP BY g ORDER BY g DESC LIMIT 3;
+----
+physical_plan	<!REGEX>:.*__internal_compress.*

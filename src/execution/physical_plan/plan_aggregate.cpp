@@ -307,7 +307,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 	                                             std::move(op.grouping_sets), std::move(op.grouping_functions),
 	                                             op.estimated_cardinality, group_validity, op.distinct_validity);
 	if (op.topk_filter_info) {
-		group_by.Cast<PhysicalHashAggregate>().topk_filter_info = std::move(op.topk_filter_info);
+		auto &hash_aggregate = group_by.Cast<PhysicalHashAggregate>();
+		auto &group = *hash_aggregate.grouped_aggregate_data.groups[op.topk_filter_info->group_index];
+		// compressed materialization may have replaced the key with a narrower encoding the boundary cannot use
+		if (group.GetReturnType() == op.topk_filter_info->boundary_type) {
+			hash_aggregate.topk_filter_info = std::move(op.topk_filter_info);
+		}
 	}
 	group_by.children.push_back(plan);
 	return group_by;
