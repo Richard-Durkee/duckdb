@@ -109,6 +109,11 @@ public:
 	using new_groups_callback_t =
 	    std::function<void(DataChunk &groups, const SelectionVector &new_groups, idx_t new_group_count)>;
 	//! Adds a chunk, invokes on_new_groups with the newly created groups, then updates the aggregate states.
+	//! Distinct from the before_update_callback_t overload below: this one keeps the unsafe_vector filter and
+	//! the TryAdd{Compressed,Dictionary,Constant}Groups fast paths of the main sink (so it is safe to use on
+	//! the hot path), and it hands the caller the group DataChunk (the keys) rather than raw row addresses.
+	//! Keys arriving via a compressed fast path are not reported - that only leaves a caller's derived state
+	//! looser, never wrong (see the callers in the Top-N-through-aggregate dynamic filter).
 	idx_t AddChunk(DataChunk &groups, DataChunk &payload, const unsafe_vector<idx_t> &filter,
 	               const new_groups_callback_t &on_new_groups);
 	idx_t AddChunk(DataChunk &groups, DataChunk &payload, AggregateType filter);

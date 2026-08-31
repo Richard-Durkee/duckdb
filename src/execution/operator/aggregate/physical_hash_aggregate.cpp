@@ -21,8 +21,6 @@
 
 namespace duckdb {
 
-//! How often (in chunks) a thread publishes its local Top-K boundary to the shared dynamic filter.
-static constexpr idx_t TOPK_PUBLISH_INTERVAL = 100;
 
 HashAggregateGroupingData::HashAggregateGroupingData(GroupingSet &grouping_set_p,
                                                      const GroupedAggregateData &grouped_aggregate_data,
@@ -309,9 +307,10 @@ public:
 	DataChunk aggregate_input_chunk;
 	vector<HashAggregateGroupingLocalState> grouping_states;
 	AggregateFilterDataSet filter_set;
-	//! Thread-local Top-K boundary of distinct group keys, and a chunk counter for throttled publishing
+	//! Thread-local Top-K boundary of distinct group keys, plus the last boundary this thread published,
+	//! so it only re-acquires the global lock when its local boundary actually moved.
 	unique_ptr<AggregateTopKBoundary> topk_local;
-	idx_t topk_chunk_counter = 0;
+	Value topk_last_local_boundary;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -543,10 +542,17 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 		table.Sink(context, chunk, sink_input, aggregate_input_chunk, non_distinct_filter, topk_callback);
 	}
 
-	// Throttle: only merge into the global boundary and publish to the scan every TOPK_PUBLISH_INTERVAL chunks.
-	if (topk_callback && local_state.topk_local->Full() &&
-	    (++local_state.topk_chunk_counter % TOPK_PUBLISH_INTERVAL) == 0) {
-		PublishTopKBoundary(global_state, *local_state.topk_local, *topk_filter_info);
+	// Publish only when this thread's local boundary actually moved since it last published (mirrors
+	// PhysicalTopN, which pushes the shared filter only when its boundary tightens). This avoids taking the
+	// global lock on every chunk while staying responsive: the boundary tightens frequently early on (when
+	// pruning matters most) and goes quiet once it stabilizes.
+	if (topk_callback && local_state.topk_local->Full()) {
+		auto &local_boundary = local_state.topk_local->Boundary();
+		if (local_state.topk_last_local_boundary.IsNull() ||
+		    !ValueOperations::NotDistinctFrom(local_boundary, local_state.topk_last_local_boundary)) {
+			local_state.topk_last_local_boundary = local_boundary;
+			PublishTopKBoundary(global_state, *local_state.topk_local, *topk_filter_info);
+		}
 	}
 
 	return SinkResultType::NEED_MORE_INPUT;
@@ -1120,6 +1126,12 @@ InsertionOrderPreservingMap<string> PhysicalHashAggregate::ParamsToString() cons
 		}
 	}
 	result["Aggregates"] = aggregate_info;
+	if (topk_filter_info) {
+		// Surface that this aggregate drives a Top-N dynamic filter on the scan below it during its build.
+		result["Top-N Filter"] =
+		    StringUtil::Format("group[%llu] %s, k=%llu", topk_filter_info->group_index,
+		                       topk_filter_info->order == OrderType::DESCENDING ? "DESC" : "ASC", topk_filter_info->k);
+	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }
