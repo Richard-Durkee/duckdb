@@ -1,0 +1,15 @@
+# name: benchmark/micro/optimizer/topn_aggregate_dynamic_filter.benchmark
+# description: Top-N over GROUP BY on the grouping key - aggregate drives a dynamic filter that prunes the scan during its build
+# group: [optimizer]
+
+name TopN Aggregate Dynamic Filter
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE t AS SELECT (range % 2000000) AS g, range AS x FROM range(20000000);
+
+run
+SELECT g, count(*) FROM t GROUP BY g ORDER BY g DESC LIMIT 5;
+SELECT g, count(*) FROM t GROUP BY g ORDER BY g ASC LIMIT 5;
+SELECT g, sum(x) FROM t GROUP BY g ORDER BY g DESC LIMIT 100;
