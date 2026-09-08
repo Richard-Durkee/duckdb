@@ -275,6 +275,10 @@ void QueryProfiler::TrackBytesWritten(const idx_t amount) {
 	query_metrics.UpdateBytesWritten(amount);
 }
 
+void QueryProfiler::TrackBytesSpilled(const idx_t amount) {
+	query_metrics.UpdateBytesSpilled(amount);
+}
+
 void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 	query_metrics.UpdateTotalMemoryAllocated(amount);
 }
@@ -943,6 +947,7 @@ unique_ptr<QueryProfileResult> QueryProfiler::ToLegacyResultTree() const {
 	emit("total_bytes_read", "io.total_bytes_read");
 	emit("total_read_operations", "io.total_read_operations");
 	emit("system_peak_temp_dir_size", "system.peak_temp_dir_size");
+	emit("total_bytes_spilled", "system.total_bytes_spilled");
 	emit("system_peak_buffer_memory", "system.peak_buffer_memory");
 	emit("system_peak_streaming_buffer_size", "system.peak_streaming_buffer_size");
 
