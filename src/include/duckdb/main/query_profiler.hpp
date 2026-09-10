@@ -132,6 +132,10 @@ public:
 
 	//! Adds the timings gathered by an OperatorProfiler to this query profiler
 	DUCKDB_API void Flush(OperatorProfiler &profiler);
+	//! Record an operator's peak temporary-memory reservation (called once at sink finalize).
+	DUCKDB_API void SetOperatorPeakMemoryReservation(const PhysicalOperator &op, idx_t peak_reservation);
+	//! Report an operator's current memory footprint; the profiler keeps the running peak.
+	DUCKDB_API void UpdateOperatorMemory(const PhysicalOperator &op, idx_t current_memory);
 	//! Adds the top level query information to the global profiler.
 	DUCKDB_API void SetBlockedTime(const double &blocked_thread_time);
 	//! Record the peak bytes a streaming result buffered. Called just before the query ends

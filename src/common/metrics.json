@@ -151,6 +151,16 @@
 			"description": "Intermediate size in bytes produced by the operator",
 			"unit": "bytes"
 		},
+		"peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak memory held by the operator, as reported by the operator itself",
+			"unit": "bytes"
+		},
+		"peak_memory_reservation": {
+			"metric_type": "uint64",
+			"description": "Peak temporary-memory reservation held by the operator (spillable operators only)",
+			"unit": "bytes"
+		},
 		"row_groups_scanned": {
 			"metric_type": "uint64",
 			"description": "Number of row groups scanned by the operator",

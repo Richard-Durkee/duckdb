@@ -13,7 +13,7 @@ namespace duckdb {
 TemporaryMemoryState::TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager_p,
                                            idx_t minimum_reservation_p)
     : temporary_memory_manager(temporary_memory_manager_p), remaining_size(0),
-      minimum_reservation(minimum_reservation_p), reservation(0), materialization_penalty(1) {
+      minimum_reservation(minimum_reservation_p), reservation(0), peak_reservation(0), materialization_penalty(1) {
 }
 
 TemporaryMemoryState::~TemporaryMemoryState() {
@@ -57,6 +57,10 @@ void TemporaryMemoryState::UpdateReservation(ClientContext &context) {
 
 idx_t TemporaryMemoryState::GetReservation() const {
 	return reservation;
+}
+
+idx_t TemporaryMemoryState::GetPeakReservation() const {
+	return peak_reservation;
 }
 
 void TemporaryMemoryState::SetMaterializationPenalty(idx_t new_materialization_penalty) {
@@ -178,6 +182,11 @@ void TemporaryMemoryManager::SetReservation(TemporaryMemoryState &temporary_memo
 	D_ASSERT(this->reservation >= temporary_memory_state.GetReservation());
 	this->reservation -= temporary_memory_state.GetReservation();
 	temporary_memory_state.reservation = new_reservation;
+	// Track the peak reservation over the state's lifetime. Updated here (the single
+	// reservation write, under the manager lock) so it survives the intermediate
+	// SetZero() calls operators make and cannot be missed by finalize-time sampling.
+	temporary_memory_state.peak_reservation =
+	    MaxValue<idx_t>(temporary_memory_state.peak_reservation.load(), new_reservation);
 	this->reservation += temporary_memory_state.GetReservation();
 }
 
