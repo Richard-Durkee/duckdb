@@ -468,6 +468,11 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 	if (other.system_peak_temp_directory_size > system_peak_temp_directory_size) {
 		system_peak_temp_directory_size = other.system_peak_temp_directory_size;
 	}
+	// Peak reservation is a max, not a sum: it is written once into the tree node at sink
+	// finalize, so merging with the (zero) per-thread copies must not clobber it.
+	if (other.peak_memory_reservation > peak_memory_reservation) {
+		peak_memory_reservation = other.peak_memory_reservation;
+	}
 }
 
 void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
@@ -571,6 +576,19 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 		}
 		node.second.ResetMetrics();
 	}
+}
+
+void QueryProfiler::SetOperatorPeakMemoryReservation(const PhysicalOperator &op, idx_t peak_reservation) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = tree_map.find(op);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	auto &info = entry->second.get().GetOperatorMetrics();
+	info.peak_memory_reservation = MaxValue<idx_t>(info.peak_memory_reservation, peak_reservation);
 }
 
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
@@ -755,6 +773,11 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorTotalRowGroupsToScan>() &&
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
+	}
+	// Only emitted for operators that actually held a temporary-memory reservation
+	// (spillable operators); 0 for everything else, so skip those to avoid noise.
+	if (info.MetricIsTracked<MetricOperatorPeakMemoryReservation>() && peak_memory_reservation > 0) {
+		result["peak_memory_reservation"] = Value::UBIGINT(peak_memory_reservation);
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));

@@ -1831,6 +1831,9 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	auto &ht = *sink.hash_table;
 
 	sink.temporary_memory_state->UpdateReservation(context);
+	// Record the operator's peak temporary-memory reservation for profiling (no-op when profiling is off).
+	QueryProfiler::Get(context).SetOperatorPeakMemoryReservation(*this,
+	                                                             sink.temporary_memory_state->GetPeakReservation());
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
