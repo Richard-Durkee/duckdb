@@ -26,6 +26,7 @@ struct OperatorMetrics {
 	idx_t intermediate_size_bytes;
 	idx_t system_peak_buffer_manager_memory;
 	idx_t system_peak_temp_directory_size;
+	idx_t peak_memory_reservation;
 	idx_t rows_scanned;
 	idx_t row_groups_scanned;
 	idx_t total_row_groups_to_scan;
@@ -37,6 +38,7 @@ struct OperatorMetrics {
 		intermediate_size_bytes = 0;
 		system_peak_buffer_manager_memory = 0;
 		system_peak_temp_directory_size = 0;
+		peak_memory_reservation = 0;
 		rows_scanned = 0;
 		row_groups_scanned = 0;
 		total_row_groups_to_scan = 0;

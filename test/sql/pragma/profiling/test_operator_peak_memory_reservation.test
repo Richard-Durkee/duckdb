@@ -1,0 +1,37 @@
+# name: test/sql/pragma/profiling/test_operator_peak_memory_reservation.test
+# description: Test the operator.peak_memory_reservation profiling metric
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_peak_memory.json';
+
+statement ok
+SET tracked_metrics = ['operator.peak_memory_reservation', 'operator.type'];
+
+# A hash join builds a hash table, which negotiates a temporary-memory reservation
+# through the TemporaryMemoryManager, so its peak_memory_reservation is > 0.
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(100000) t(i)) a
+JOIN (SELECT i FROM range(100000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# The hash join reported a non-zero peak temporary-memory reservation. Plan shape for
+# COUNT(*) over a join: RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN.
+query I
+SELECT op2.peak_memory_reservation > 0
+FROM '{TEST_DIR}/operator_peak_memory.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(op2)
+WHERE op2.type = 'HASH_JOIN';
+----
+true

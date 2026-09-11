@@ -47,6 +47,8 @@ public:
 	void UpdateReservation(ClientContext &context);
 	//! Get the reservation of this state
 	idx_t GetReservation() const;
+	//! Get the peak reservation this state has held over its lifetime
+	idx_t GetPeakReservation() const;
 	//! Set the materialization penalty for this state
 	void SetMaterializationPenalty(idx_t new_materialization_penalty);
 	//! Get the materialization penalty for this state
@@ -62,6 +64,8 @@ private:
 	atomic<idx_t> minimum_reservation;
 	//! How much memory this operator has reserved
 	atomic<idx_t> reservation;
+	//! The peak reservation this operator has held over its lifetime
+	atomic<idx_t> peak_reservation;
 	//! The weight used for determining the reservation for this state
 	atomic<idx_t> materialization_penalty;
 };
