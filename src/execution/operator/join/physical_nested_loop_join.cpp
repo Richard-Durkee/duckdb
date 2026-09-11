@@ -3,6 +3,7 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/nested_loop_join.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/execution/operator/join/outer_join_marker.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 
@@ -304,6 +305,17 @@ SinkFinalizeType PhysicalNestedLoopJoin::Finalize(Pipeline &pipeline, Event &eve
 	}
 
 	gsink.right_outer.Initialize(gsink.right_payload_data.Count());
+	// Report the fully-materialized RHS footprint; this operator buffers it in memory. We estimate from
+	// row count and fixed type widths (buffer-manager-backed collections can't expose AllocationSize safely).
+	auto estimate_bytes = [](const ColumnDataCollection &collection) {
+		idx_t row_width = 0;
+		for (auto &type : collection.Types()) {
+			row_width += GetTypeIdSize(type.InternalType());
+		}
+		return collection.Count() * row_width;
+	};
+	QueryProfiler::Get(context).UpdateOperatorMemory(
+	    *this, estimate_bytes(gsink.right_payload_data) + estimate_bytes(gsink.right_condition_data));
 	if (gsink.right_payload_data.Count() == 0 && EmptyResultIfRHSIsEmpty()) {
 		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
 	}

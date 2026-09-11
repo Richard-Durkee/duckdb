@@ -1,0 +1,37 @@
+# name: test/sql/pragma/profiling/test_operator_peak_memory.test
+# description: Test the operator.peak_memory profiling metric (per-operator memory reported by the operator)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_peak_memory_actual.json';
+
+statement ok
+SET tracked_metrics = ['operator.peak_memory', 'operator.type'];
+
+# A not-equal join is executed as a NESTED_LOOP_JOIN, which buffers the entire RHS in memory
+# and reports that footprint, so its peak_memory is > 0.
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(2000) t(i)) a
+JOIN (SELECT i FROM range(2000) t(i)) b ON a.i <> b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# The nested loop join reported a non-zero peak memory. Plan shape for COUNT(*) over a join:
+# RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> NESTED_LOOP_JOIN.
+query I
+SELECT op2.peak_memory > 0
+FROM '{TEST_DIR}/operator_peak_memory_actual.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(op2)
+WHERE op2.type = 'NESTED_LOOP_JOIN';
+----
+true
