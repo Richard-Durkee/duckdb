@@ -41,6 +41,8 @@ public:
 	atomic<idx_t> read_operations;
 	atomic<idx_t> bytes_written;
 	atomic<idx_t> write_operations;
+	// Cumulative bytes written to the temporary (spill) directory
+	atomic<idx_t> bytes_spilled;
 	// Thread-safe memory allocation counter (updated from allocator callbacks on any thread)
 	atomic<idx_t> total_memory_allocated;
 
@@ -61,6 +63,10 @@ public:
 	void UpdateBytesWritten(idx_t n) {
 		bytes_written += n;
 		write_operations++;
+	}
+
+	void UpdateBytesSpilled(idx_t n) {
+		bytes_spilled += n;
 	}
 
 	void UpdateTotalMemoryAllocated(idx_t n) {
@@ -99,6 +105,10 @@ public:
 		return write_operations.load();
 	}
 
+	idx_t GetBytesSpilled() const {
+		return bytes_spilled.load();
+	}
+
 	idx_t GetTotalMemoryAllocated() const {
 		return total_memory_allocated.load();
 	}
@@ -119,6 +129,7 @@ public:
 		read_operations = 0;
 		bytes_written = 0;
 		write_operations = 0;
+		bytes_spilled = 0;
 		total_memory_allocated = 0;
 
 		query_sql = "";
@@ -142,6 +153,7 @@ public:
 		read_operations += other.read_operations.load();
 		bytes_written += other.bytes_written.load();
 		write_operations += other.write_operations.load();
+		bytes_spilled += other.bytes_spilled.load();
 		total_memory_allocated += other.total_memory_allocated.load();
 	}
 
