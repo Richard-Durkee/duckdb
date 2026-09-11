@@ -1,0 +1,37 @@
+# name: test/sql/pragma/profiling/test_operator_thread_skew.test
+# description: Test operator.max_thread_time and operator.thread_count (per-operator parallel work distribution)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_thread_skew.json';
+
+statement ok
+SET tracked_metrics = ['operator.max_thread_time', 'operator.thread_count', 'operator.timing', 'operator.type'];
+
+# A hash join over a million rows executes on one or more threads. The profiler retains the busiest
+# thread's time and the contributing thread count so parallel skew is visible per operator.
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(1000000) t(i)) a
+JOIN (SELECT i FROM range(1000000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# At least one thread contributed, and the busiest single thread's time cannot exceed the summed
+# operator time. Plan shape for COUNT(*) over a join: RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN.
+query I
+SELECT op2.thread_count >= 1 AND op2.max_thread_time <= op2.timing
+FROM '{TEST_DIR}/operator_thread_skew.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(op2)
+WHERE op2.type = 'HASH_JOIN';
+----
+true

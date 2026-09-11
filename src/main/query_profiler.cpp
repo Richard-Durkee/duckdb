@@ -478,6 +478,12 @@ void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
 void OperatorMetrics::Merge(const OperatorMetrics &other) {
 	MergeInternal(other);
 	total_row_groups_to_scan = MaxValue<idx_t>(total_row_groups_to_scan, other.total_row_groups_to_scan);
+	// Each Merge folds in one thread's contribution to this operator: retain the busiest thread's time and
+	// the number of contributing threads so parallel skew is visible instead of being summed away.
+	if (other.time > 0) {
+		max_thread_time = MaxValue<double>(max_thread_time, other.time);
+		thread_count++;
+	}
 }
 
 void OperatorProfiler::EndOperator(optional_ptr<DataChunk> chunk) {
@@ -755,6 +761,13 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorTotalRowGroupsToScan>() &&
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
+	}
+	// Parallel work distribution: only meaningful once at least one thread reported time.
+	if (info.MetricIsTracked<MetricOperatorMaxThreadTime>() && thread_count > 0) {
+		result["max_thread_time"] = Value::DOUBLE(max_thread_time);
+	}
+	if (info.MetricIsTracked<MetricOperatorThreadCount>() && thread_count > 0) {
+		result["thread_count"] = Value::UBIGINT(thread_count);
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
