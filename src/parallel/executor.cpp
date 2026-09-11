@@ -500,6 +500,15 @@ PendingExecutionResult Executor::ExecuteTask(bool dry_run) {
 	D_ASSERT(!task);
 
 	lock_guard<mutex> elock(executor_lock);
+	// Record per-pipeline task counts (parallelism) before the pipelines are cleared.
+	if (profiler) {
+		for (auto &pipeline : pipelines) {
+			auto sink = pipeline->GetSink();
+			if (sink) {
+				profiler->SetPipelineTaskCount(*sink, pipeline->GetExecutedTasks());
+			}
+		}
+	}
 	pipelines.clear();
 	NextExecutor();
 	if (HasError()) { // LCOV_EXCL_START

@@ -1,0 +1,37 @@
+# name: test/sql/pragma/profiling/test_pipeline_task_count.test
+# description: Test operator.pipeline_task_count (per-pipeline parallelism, keyed by the pipeline sink)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/pipeline_task_count.json';
+
+statement ok
+SET tracked_metrics = ['operator.pipeline_task_count', 'operator.type'];
+
+# The hash join is the sink of its build pipeline, which runs on one or more tasks. The number of
+# tasks that executed that pipeline is recorded on the sink operator.
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(1000000) t(i)) a
+JOIN (SELECT i FROM range(1000000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# The hash join's build pipeline ran on at least one task. Plan shape for COUNT(*) over a join:
+# RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN.
+query I
+SELECT op2.pipeline_task_count >= 1
+FROM '{TEST_DIR}/pipeline_task_count.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(op2)
+WHERE op2.type = 'HASH_JOIN';
+----
+true

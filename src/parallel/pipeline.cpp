@@ -68,6 +68,7 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 
 	event->FinishTask();
 	pipeline_executor.reset();
+	pipeline.IncrementExecutedTasks();
 	return TaskExecutionResult::TASK_FINISHED;
 }
 

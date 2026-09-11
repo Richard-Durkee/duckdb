@@ -226,6 +226,13 @@ struct MetricOperatorIntermediateSizeBytes {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricOperatorPipelineTaskCount {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.pipeline_task_count";
+	static constexpr const char *Description = "Number of tasks that executed the pipeline this operator is the sink of (per-pipeline parallelism)";
+	static constexpr const char *Unit = "tasks";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricOperatorRowGroupsScanned {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.row_groups_scanned";

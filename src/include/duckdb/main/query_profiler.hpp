@@ -132,6 +132,8 @@ public:
 
 	//! Adds the timings gathered by an OperatorProfiler to this query profiler
 	DUCKDB_API void Flush(OperatorProfiler &profiler);
+	//! Record the number of tasks that executed a pipeline, keyed by the pipeline's sink operator.
+	DUCKDB_API void SetPipelineTaskCount(const PhysicalOperator &sink, idx_t task_count);
 	//! Adds the top level query information to the global profiler.
 	DUCKDB_API void SetBlockedTime(const double &blocked_thread_time);
 	//! Record the peak bytes a streaming result buffered. Called just before the query ends

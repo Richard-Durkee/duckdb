@@ -468,6 +468,10 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 	if (other.system_peak_temp_directory_size > system_peak_temp_directory_size) {
 		system_peak_temp_directory_size = other.system_peak_temp_directory_size;
 	}
+	// Set once into the tree node after execution; max-merge so the zero per-thread copies do not clobber it.
+	if (other.pipeline_task_count > pipeline_task_count) {
+		pipeline_task_count = other.pipeline_task_count;
+	}
 }
 
 void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
@@ -571,6 +575,19 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 		}
 		node.second.ResetMetrics();
 	}
+}
+
+void QueryProfiler::SetPipelineTaskCount(const PhysicalOperator &sink, idx_t task_count) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = tree_map.find(sink);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	auto &info = entry->second.get().GetOperatorMetrics();
+	info.pipeline_task_count = MaxValue<idx_t>(info.pipeline_task_count, task_count);
 }
 
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
@@ -755,6 +772,10 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorTotalRowGroupsToScan>() &&
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
+	}
+	// Only emitted for operators that are a pipeline sink; 0 for everything else, so skip to avoid noise.
+	if (info.MetricIsTracked<MetricOperatorPipelineTaskCount>() && pipeline_task_count > 0) {
+		result["pipeline_task_count"] = Value::UBIGINT(pipeline_task_count);
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));

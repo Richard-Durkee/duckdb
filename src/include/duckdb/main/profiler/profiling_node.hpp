@@ -29,6 +29,7 @@ struct OperatorMetrics {
 	idx_t rows_scanned;
 	idx_t row_groups_scanned;
 	idx_t total_row_groups_to_scan;
+	idx_t pipeline_task_count;
 
 	profiler_metrics_t GetMetrics(const GatheredMetrics &info) const;
 	void ResetMetrics() {
@@ -40,6 +41,7 @@ struct OperatorMetrics {
 		rows_scanned = 0;
 		row_groups_scanned = 0;
 		total_row_groups_to_scan = 0;
+		pipeline_task_count = 0;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
 	}

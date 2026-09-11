@@ -196,6 +196,15 @@ public:
 	//! Updates the batch index of a pipeline (and returns the new minimum batch index)
 	idx_t UpdateBatchIndex(idx_t old_index, idx_t new_index);
 
+	//! Records that a task finished executing this pipeline (per-pipeline parallelism profiling)
+	void IncrementExecutedTasks() {
+		executed_tasks++;
+	}
+	//! Returns the number of tasks that executed this pipeline
+	idx_t GetExecutedTasks() const {
+		return executed_tasks;
+	}
+
 private:
 	//! Whether or not the pipeline has been readied
 	bool ready;
@@ -207,6 +216,8 @@ private:
 	vector<reference<PhysicalOperator>> operators;
 	//! The sink (i.e. destination) for data; this is e.g. a hash table to-be-built
 	optional_ptr<PhysicalOperator> sink;
+	//! Number of tasks that executed this pipeline (per-pipeline parallelism profiling)
+	atomic<idx_t> executed_tasks {0};
 
 	//! The global source state
 	shared_ptr<GlobalSourceState> source_state DUCKDB_GUARDED_BY(source_state_lock);

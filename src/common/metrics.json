@@ -151,6 +151,11 @@
 			"description": "Intermediate size in bytes produced by the operator",
 			"unit": "bytes"
 		},
+		"pipeline_task_count": {
+			"metric_type": "uint64",
+			"description": "Number of tasks that executed the pipeline this operator is the sink of (per-pipeline parallelism)",
+			"unit": "tasks"
+		},
 		"row_groups_scanned": {
 			"metric_type": "uint64",
 			"description": "Number of row groups scanned by the operator",
