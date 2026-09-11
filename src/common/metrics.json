@@ -166,6 +166,11 @@
 			"description": "Intermediate size in bytes produced by the operator",
 			"unit": "bytes"
 		},
+		"max_thread_time": {
+			"metric_type": "double",
+			"description": "Time spent in the operator by its busiest single thread (compare against timing to detect parallel skew)",
+			"unit": "seconds"
+		},
 		"row_groups_scanned": {
 			"metric_type": "uint64",
 			"description": "Number of row groups scanned by the operator",
@@ -175,6 +180,11 @@
 			"metric_type": "uint64",
 			"description": "Number of rows scanned by the operator",
 			"unit": "rows"
+		},
+		"thread_count": {
+			"metric_type": "uint64",
+			"description": "Number of threads that executed the operator",
+			"unit": "threads"
 		},
 		"timing": {
 			"metric_type": "double",

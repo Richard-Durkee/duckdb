@@ -247,6 +247,13 @@ struct MetricOperatorIntermediateSizeBytes {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricOperatorMaxThreadTime {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "operator.max_thread_time";
+	static constexpr const char *Description = "Time spent in the operator by its busiest single thread (compare against timing to detect parallel skew)";
+	static constexpr const char *Unit = "seconds";
+	static constexpr const char *TypeStr = "double";
+};
 struct MetricOperatorRowGroupsScanned {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.row_groups_scanned";
@@ -259,6 +266,13 @@ struct MetricOperatorRowsScanned {
 	static constexpr const char *Name = "operator.rows_scanned";
 	static constexpr const char *Description = "Number of rows scanned by the operator";
 	static constexpr const char *Unit = "rows";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorThreadCount {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.thread_count";
+	static constexpr const char *Description = "Number of threads that executed the operator";
+	static constexpr const char *Unit = "threads";
 	static constexpr const char *TypeStr = "uint64";
 };
 struct MetricOperatorTiming {
