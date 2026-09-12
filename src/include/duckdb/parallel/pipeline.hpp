@@ -63,6 +63,13 @@ public:
 
 public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override;
+
+private:
+	TaskExecutionResult ExecuteTaskInternal(TaskExecutionMode mode);
+	//! Absolute microseconds at which the previous slice returned, and whether it returned BLOCKED.
+	//! Used to attribute async-wait (BLOCKED) gaps to the pipeline.
+	uint64_t last_exit_us = 0;
+	bool was_blocked = false;
 };
 
 class PipelineBuildState {
@@ -210,6 +217,12 @@ public:
 	double GetMaxTaskTimeSeconds() const;
 	//! Summed execution time across all task slices, in seconds.
 	double GetTotalTaskTimeSeconds() const;
+	//! Add an async-wait gap (task was BLOCKED, e.g. remote I/O) to this pipeline, in microseconds.
+	void RecordBlockedTime(uint64_t blocked_us) {
+		blocked_task_time_us += blocked_us;
+	}
+	//! Total time tasks of this pipeline spent blocked on async waits, in seconds.
+	double GetBlockedTimeSeconds() const;
 
 private:
 	//! Whether or not the pipeline has been readied
@@ -230,6 +243,7 @@ private:
 	atomic<uint64_t> last_task_end_us {0};
 	atomic<uint64_t> total_task_time_us {0};
 	atomic<uint64_t> max_task_time_us {0};
+	atomic<uint64_t> blocked_task_time_us {0};
 
 	//! The global source state
 	shared_ptr<GlobalSourceState> source_state DUCKDB_GUARDED_BY(source_state_lock);

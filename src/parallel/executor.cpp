@@ -514,6 +514,7 @@ PendingExecutionResult Executor::ExecuteTask(bool dry_run) {
 			info.wall_time = pipeline->GetWallTimeSeconds();
 			info.max_task_time = pipeline->GetMaxTaskTimeSeconds();
 			info.total_task_time = pipeline->GetTotalTaskTimeSeconds();
+			info.blocked_time = pipeline->GetBlockedTimeSeconds();
 			pipeline_infos.push_back(std::move(info));
 		}
 		profiler->SetPipelineMetrics(std::move(pipeline_infos));

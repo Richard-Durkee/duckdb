@@ -1,0 +1,30 @@
+# name: test/sql/pragma/profiling/test_pipeline_blocked_time.test
+# description: Test per-pipeline blocked_time (async-wait time, e.g. remote I/O) in the pipelines section
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/pipeline_blocked.json';
+
+# Local execution does not block on async I/O, so blocked_time is 0 here; the metric is populated and
+# non-negative. (Non-zero blocked_time appears for pipelines scanning remote/async sources.)
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(1000000) t(i)) a
+JOIN (SELECT i FROM range(1000000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# Every pipeline reports a non-negative blocked_time that cannot exceed its wall time.
+query I
+SELECT bool_and(p.blocked_time >= 0 AND p.blocked_time <= p.wall_time + 0.001)
+FROM '{TEST_DIR}/pipeline_blocked.json' prof,
+     LATERAL unnest(prof.pipelines) t(p);
+----
+true

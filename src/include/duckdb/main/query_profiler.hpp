@@ -87,6 +87,8 @@ struct PipelineProfilingInfo {
 	double max_task_time;
 	//! Summed execution time across all task slices (seconds)
 	double total_task_time;
+	//! Time tasks of this pipeline spent blocked on async waits, e.g. remote I/O (seconds)
+	double blocked_time;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.

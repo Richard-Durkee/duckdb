@@ -57,6 +57,21 @@ PipelineTask::PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
 }
 
 TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
+	// If the previous slice returned BLOCKED, the gap until now was spent waiting on an async source
+	// (e.g. remote I/O). Attribute that wait to the pipeline.
+	if (was_blocked) {
+		auto now_us = SteadyMicros();
+		pipeline.RecordBlockedTime(now_us > last_exit_us ? now_us - last_exit_us : 0);
+		was_blocked = false;
+	}
+	auto result = ExecuteTaskInternal(mode);
+	last_exit_us = SteadyMicros();
+	// Only a BLOCKED return is a real async wait; NOT_FINISHED is a cooperative yield, not a stall.
+	was_blocked = result == TaskExecutionResult::TASK_BLOCKED;
+	return result;
+}
+
+TaskExecutionResult PipelineTask::ExecuteTaskInternal(TaskExecutionMode mode) {
 	PipelineSliceTimer timer(pipeline);
 	if (!pipeline_executor) {
 		pipeline_executor = make_uniq<PipelineExecutor>(pipeline.GetClientContext(), pipeline, reserved_batch_index);
@@ -139,6 +154,10 @@ double Pipeline::GetMaxTaskTimeSeconds() const {
 
 double Pipeline::GetTotalTaskTimeSeconds() const {
 	return double(total_task_time_us.load()) / 1000000.0;
+}
+
+double Pipeline::GetBlockedTimeSeconds() const {
+	return double(blocked_task_time_us.load()) / 1000000.0;
 }
 
 bool Pipeline::GetProgress(ProgressData &progress) {

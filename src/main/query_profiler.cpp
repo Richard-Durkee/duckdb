@@ -1011,6 +1011,7 @@ unique_ptr<QueryProfileResult> QueryProfiler::ToResultTree() const {
 			node.AddValue("wall_time", Value::DOUBLE(pipeline.wall_time));
 			node.AddValue("max_task_time", Value::DOUBLE(pipeline.max_task_time));
 			node.AddValue("total_task_time", Value::DOUBLE(pipeline.total_task_time));
+			node.AddValue("blocked_time", Value::DOUBLE(pipeline.blocked_time));
 		}
 	}
 	return result;
