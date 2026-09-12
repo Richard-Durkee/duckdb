@@ -21,11 +21,31 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
+#include <chrono>
+
 namespace duckdb {
 
 static shared_ptr<GlobalSourceState> ToSharedSourceState(unique_ptr<GlobalSourceState> state) {
 	return shared_ptr<GlobalSourceState>(std::move(state));
 }
+
+static uint64_t SteadyMicros() {
+	return uint64_t(
+	    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+	        .count());
+}
+
+//! Times a single PipelineTask::ExecuteTask slice and folds it into the pipeline on any return path.
+struct PipelineSliceTimer {
+	explicit PipelineSliceTimer(Pipeline &pipeline_p) : pipeline(pipeline_p), start_us(SteadyMicros()) {
+	}
+	~PipelineSliceTimer() {
+		pipeline.RecordTaskSlice(start_us, SteadyMicros(), finished);
+	}
+	Pipeline &pipeline;
+	uint64_t start_us;
+	bool finished = false;
+};
 
 PipelineTask::PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
     : ExecutorTask(pipeline_p.executor, std::move(event_p)), pipeline(pipeline_p) {
@@ -37,6 +57,7 @@ PipelineTask::PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
 }
 
 TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
+	PipelineSliceTimer timer(pipeline);
 	if (!pipeline_executor) {
 		pipeline_executor = make_uniq<PipelineExecutor>(pipeline.GetClientContext(), pipeline, reserved_batch_index);
 	}
@@ -68,6 +89,7 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 
 	event->FinishTask();
 	pipeline_executor.reset();
+	timer.finished = true;
 	return TaskExecutionResult::TASK_FINISHED;
 }
 
@@ -77,6 +99,46 @@ Pipeline::Pipeline(Executor &executor_p)
 
 ClientContext &Pipeline::GetClientContext() {
 	return executor.context;
+}
+
+static void AtomicMaxU64(atomic<uint64_t> &target, uint64_t value) {
+	auto cur = target.load();
+	while (value > cur && !target.compare_exchange_weak(cur, value)) {
+	}
+}
+
+static void AtomicMinU64(atomic<uint64_t> &target, uint64_t value) {
+	auto cur = target.load();
+	while (value < cur && !target.compare_exchange_weak(cur, value)) {
+	}
+}
+
+void Pipeline::RecordTaskSlice(uint64_t start_us, uint64_t end_us, bool finished) {
+	auto busy = end_us >= start_us ? end_us - start_us : 0;
+	total_task_time_us += busy;
+	AtomicMaxU64(max_task_time_us, busy);
+	AtomicMinU64(first_task_start_us, start_us);
+	AtomicMaxU64(last_task_end_us, end_us);
+	if (finished) {
+		executed_tasks++;
+	}
+}
+
+double Pipeline::GetWallTimeSeconds() const {
+	if (executed_tasks == 0) {
+		return 0;
+	}
+	auto start = first_task_start_us.load();
+	auto end = last_task_end_us.load();
+	return end > start ? double(end - start) / 1000000.0 : 0;
+}
+
+double Pipeline::GetMaxTaskTimeSeconds() const {
+	return double(max_task_time_us.load()) / 1000000.0;
+}
+
+double Pipeline::GetTotalTaskTimeSeconds() const {
+	return double(total_task_time_us.load()) / 1000000.0;
 }
 
 bool Pipeline::GetProgress(ProgressData &progress) {

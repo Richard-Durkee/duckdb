@@ -132,6 +132,7 @@ void QueryProfiler::Reset() {
 	running = false;
 	query_metrics.Reset();
 	result_tree.reset();
+	pipeline_metrics.clear();
 	metrics_finalized = false;
 }
 
@@ -573,6 +574,14 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 	}
 }
 
+void QueryProfiler::SetPipelineMetrics(vector<PipelineProfilingInfo> metrics) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	pipeline_metrics = std::move(metrics);
+}
+
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
 	lock_guard<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -992,6 +1001,17 @@ unique_ptr<QueryProfileResult> QueryProfiler::ToResultTree() const {
 		auto &op_list = result->AddList("operator");
 		auto &op_node = op_list.AppendObject();
 		OperatorToResultTree(*metrics, *root, op_node);
+	}
+	if (!pipeline_metrics.empty()) {
+		auto &pipeline_list = result->AddList("pipelines");
+		for (auto &pipeline : pipeline_metrics) {
+			auto &node = pipeline_list.AppendObject();
+			node.AddValue("sink", Value(pipeline.sink_type));
+			node.AddValue("task_count", Value::UBIGINT(pipeline.task_count));
+			node.AddValue("wall_time", Value::DOUBLE(pipeline.wall_time));
+			node.AddValue("max_task_time", Value::DOUBLE(pipeline.max_task_time));
+			node.AddValue("total_task_time", Value::DOUBLE(pipeline.total_task_time));
+		}
 	}
 	return result;
 }

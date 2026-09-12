@@ -1,5 +1,7 @@
 #include "duckdb/execution/executor.hpp"
 
+#include "duckdb/common/enum_util.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/time_point.hpp"
 #include "duckdb/execution/execution_context.hpp"
@@ -500,6 +502,22 @@ PendingExecutionResult Executor::ExecuteTask(bool dry_run) {
 	D_ASSERT(!task);
 
 	lock_guard<mutex> elock(executor_lock);
+	// Gather per-pipeline execution metrics before the pipelines are cleared.
+	if (profiler) {
+		vector<PipelineProfilingInfo> pipeline_infos;
+		pipeline_infos.reserve(pipelines.size());
+		for (auto &pipeline : pipelines) {
+			auto sink = pipeline->GetSink();
+			PipelineProfilingInfo info;
+			info.sink_type = sink ? EnumUtil::ToString(sink->type) : "SINKLESS";
+			info.task_count = pipeline->GetExecutedTasks();
+			info.wall_time = pipeline->GetWallTimeSeconds();
+			info.max_task_time = pipeline->GetMaxTaskTimeSeconds();
+			info.total_task_time = pipeline->GetTotalTaskTimeSeconds();
+			pipeline_infos.push_back(std::move(info));
+		}
+		profiler->SetPipelineMetrics(std::move(pipeline_infos));
+	}
 	pipelines.clear();
 	NextExecutor();
 	if (HasError()) { // LCOV_EXCL_START

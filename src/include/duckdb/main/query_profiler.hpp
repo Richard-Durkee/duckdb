@@ -74,6 +74,21 @@ struct QueryProfileResult {
 	}
 };
 
+//! Per-pipeline execution profiling, keyed by the pipeline's sink operator. Surfaced as a top-level
+//! `pipelines` section so parallel-execution behavior is visible alongside the operator tree.
+struct PipelineProfilingInfo {
+	//! Operator type of the pipeline's sink (identifies the pipeline)
+	string sink_type;
+	//! Number of tasks that ran the pipeline to completion
+	idx_t task_count;
+	//! Wall-clock span of the pipeline (seconds)
+	double wall_time;
+	//! Busiest single task's execution time (seconds); compare with total_task_time for skew
+	double max_task_time;
+	//! Summed execution time across all task slices (seconds)
+	double total_task_time;
+};
+
 //! QueryProfiler collects the profiling metrics of a query.
 class QueryProfiler {
 public:
@@ -132,6 +147,8 @@ public:
 
 	//! Adds the timings gathered by an OperatorProfiler to this query profiler
 	DUCKDB_API void Flush(OperatorProfiler &profiler);
+	//! Record per-pipeline execution metrics (called once at query completion).
+	DUCKDB_API void SetPipelineMetrics(vector<PipelineProfilingInfo> metrics);
 	//! Adds the top level query information to the global profiler.
 	DUCKDB_API void SetBlockedTime(const double &blocked_thread_time);
 	//! Record the peak bytes a streaming result buffered. Called just before the query ends
@@ -201,6 +218,9 @@ private:
 	QueryMetrics query_metrics;
 
 	unique_ptr<QueryProfileResult> result_tree;
+
+	//! Per-pipeline execution metrics gathered at query completion
+	vector<PipelineProfilingInfo> pipeline_metrics;
 
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;

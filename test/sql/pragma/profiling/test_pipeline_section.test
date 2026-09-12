@@ -1,0 +1,31 @@
+# name: test/sql/pragma/profiling/test_pipeline_section.test
+# description: Test the per-pipeline profiling section (task_count, wall_time, max/total task time)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/pipeline_section.json';
+
+# A join runs several pipelines (build side, probe side, finalize). Each records how many tasks ran it
+# and its timing, surfaced in a top-level `pipelines` section of the profiler output.
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(1000000) t(i)) a
+JOIN (SELECT i FROM range(1000000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# The pipelines section is present; for every pipeline the busiest task cannot exceed the summed task
+# time, and at least one pipeline recorded real execution time.
+query I
+SELECT bool_and(p.max_task_time <= p.total_task_time) AND max(p.total_task_time) > 0
+FROM '{TEST_DIR}/pipeline_section.json' prof,
+     LATERAL unnest(prof.pipelines) t(p);
+----
+true

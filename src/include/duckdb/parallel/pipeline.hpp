@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/set.hpp"
 #include "duckdb/execution/physical_operator.hpp"
@@ -196,6 +197,20 @@ public:
 	//! Updates the batch index of a pipeline (and returns the new minimum batch index)
 	idx_t UpdateBatchIndex(idx_t old_index, idx_t new_index);
 
+	//! Record one task-execution slice of this pipeline (per-pipeline parallelism/timing profiling).
+	//! start_us/end_us are absolute microseconds; finished marks the slice that completed the task.
+	void RecordTaskSlice(uint64_t start_us, uint64_t end_us, bool finished);
+	//! Number of tasks that ran this pipeline to completion.
+	idx_t GetExecutedTasks() const {
+		return executed_tasks;
+	}
+	//! Wall-clock span of the pipeline (last task end - first task start), in seconds.
+	double GetWallTimeSeconds() const;
+	//! Busiest single task's execution time, in seconds.
+	double GetMaxTaskTimeSeconds() const;
+	//! Summed execution time across all task slices, in seconds.
+	double GetTotalTaskTimeSeconds() const;
+
 private:
 	//! Whether or not the pipeline has been readied
 	bool ready;
@@ -207,6 +222,14 @@ private:
 	vector<reference<PhysicalOperator>> operators;
 	//! The sink (i.e. destination) for data; this is e.g. a hash table to-be-built
 	optional_ptr<PhysicalOperator> sink;
+
+	//! Per-pipeline profiling counters (parallelism + timing). Absolute-microsecond wall bounds and
+	//! summed/max task busy time, all updated concurrently by executing tasks.
+	atomic<idx_t> executed_tasks {0};
+	atomic<uint64_t> first_task_start_us {NumericLimits<uint64_t>::Maximum()};
+	atomic<uint64_t> last_task_end_us {0};
+	atomic<uint64_t> total_task_time_us {0};
+	atomic<uint64_t> max_task_time_us {0};
 
 	//! The global source state
 	shared_ptr<GlobalSourceState> source_state DUCKDB_GUARDED_BY(source_state_lock);
