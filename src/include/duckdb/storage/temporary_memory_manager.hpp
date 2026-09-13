@@ -19,13 +19,26 @@ namespace duckdb {
 class ClientContext;
 class TemporaryMemoryManager;
 
+//! How a state's memory relates to the manager's arbitration.
+enum class MemoryReservationMode : uint8_t {
+	//! Existing behavior: the manager may grant a reservation smaller than the requested remaining size;
+	//! the operator spills the remainder to the temporary directory.
+	SPILLABLE,
+	//! The operator holds this memory and cannot spill it (e.g. an in-memory materialization). The manager
+	//! always grants the full requested size and counts it against the pool, so spillable states are granted
+	//! less accordingly. (v2 enforcement, not implemented here: a FIXED request that cannot be admitted would
+	//! fail fast with a per-operator OOM instead of a global one.)
+	FIXED,
+};
+
 //! State of the temporary memory to be managed concurrently with other states
 //! As long as this is within scope, it is active
 class TemporaryMemoryState {
 	friend class TemporaryMemoryManager;
 
 private:
-	TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager, idx_t minimum_reservation);
+	TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager, idx_t minimum_reservation,
+	                     MemoryReservationMode mode);
 
 public:
 	~TemporaryMemoryState();
@@ -51,6 +64,14 @@ public:
 	void SetMaterializationPenalty(idx_t new_materialization_penalty);
 	//! Get the materialization penalty for this state
 	idx_t GetMaterializationPenalty() const;
+	//! Whether this state is spillable or fixed (in-memory-only)
+	MemoryReservationMode GetMode() const {
+		return mode;
+	}
+	//! Peak reservation this state has held over its lifetime; used for per-operator memory profiling
+	idx_t GetPeakUsage() const {
+		return peak_reservation;
+	}
 
 private:
 	//! The TemporaryMemoryManager that owns this state
@@ -64,6 +85,10 @@ private:
 	atomic<idx_t> reservation;
 	//! The weight used for determining the reservation for this state
 	atomic<idx_t> materialization_penalty;
+	//! Whether the state is spillable or holds fixed in-memory memory
+	MemoryReservationMode mode;
+	//! Peak of reservation over this state's lifetime (per-operator memory observability)
+	atomic<idx_t> peak_reservation;
 };
 
 //! TemporaryMemoryManager is a one-of class owned by the buffer pool that tries to dynamically assign memory
@@ -96,8 +121,9 @@ private:
 public:
 	//! Get the TemporaryMemoryManager
 	static TemporaryMemoryManager &Get(ClientContext &context);
-	//! Register a TemporaryMemoryState
-	unique_ptr<TemporaryMemoryState> Register(ClientContext &context);
+	//! Register a TemporaryMemoryState. FIXED states hold in-memory-only memory that is tracked but never spilled.
+	unique_ptr<TemporaryMemoryState> Register(ClientContext &context,
+	                                          MemoryReservationMode mode = MemoryReservationMode::SPILLABLE);
 
 private:
 	//! Get the default minimum reservation

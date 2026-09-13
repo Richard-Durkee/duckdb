@@ -468,6 +468,10 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 	if (other.system_peak_temp_directory_size > system_peak_temp_directory_size) {
 		system_peak_temp_directory_size = other.system_peak_temp_directory_size;
 	}
+	// Peak memory is a max: set once into the tree node, so it must survive merges with zero per-thread copies.
+	if (other.peak_memory > peak_memory) {
+		peak_memory = other.peak_memory;
+	}
 }
 
 void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
@@ -571,6 +575,19 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 		}
 		node.second.ResetMetrics();
 	}
+}
+
+void QueryProfiler::UpdateOperatorMemory(const PhysicalOperator &op, idx_t current_memory) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = tree_map.find(op);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	auto &info = entry->second.get().GetOperatorMetrics();
+	info.peak_memory = MaxValue<idx_t>(info.peak_memory, current_memory);
 }
 
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
@@ -755,6 +772,10 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorTotalRowGroupsToScan>() &&
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
+	}
+	// Only emitted for operators tracked by the memory manager; 0 for others, so skip to avoid noise.
+	if (info.MetricIsTracked<MetricOperatorPeakMemory>() && peak_memory > 0) {
+		result["peak_memory"] = Value::UBIGINT(peak_memory);
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));

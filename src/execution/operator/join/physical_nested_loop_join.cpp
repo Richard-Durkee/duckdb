@@ -3,8 +3,10 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/nested_loop_join.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/execution/operator/join/outer_join_marker.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 
 namespace duckdb {
 
@@ -159,6 +161,9 @@ public:
 	    : op(op), right_payload_data(context, op.children[1].get().GetTypes()),
 	      right_condition_data(context, op.GetJoinTypes()), has_null(false),
 	      right_outer(PropagatesBuildSide(op.join_type)) {
+		// The RHS is materialized fully in memory and never spills, so it registers as a FIXED state:
+		// its footprint is tracked by the manager (and counted against spillable operators) but never offloaded.
+		memory_state = TemporaryMemoryManager::Get(context).Register(context, MemoryReservationMode::FIXED);
 		ResetState(context);
 	}
 
@@ -168,6 +173,8 @@ public:
 	ColumnDataCollection right_payload_data;
 	//! Materialized join condition of the RHS
 	ColumnDataCollection right_condition_data;
+	//! Tracks the in-memory RHS footprint with the (generalized) memory manager
+	unique_ptr<TemporaryMemoryState> memory_state;
 	//! Whether or not the RHS of the nested loop join has NULL values
 	atomic<bool> has_null;
 	//! A bool indicating for each tuple in the RHS if they found a match (only used in FULL OUTER JOIN)
@@ -304,6 +311,20 @@ SinkFinalizeType PhysicalNestedLoopJoin::Finalize(Pipeline &pipeline, Event &eve
 	}
 
 	gsink.right_outer.Initialize(gsink.right_payload_data.Count());
+	// Report the fully-materialized RHS footprint to the (generalized) memory manager as FIXED, in-memory
+	// usage, and surface its peak per operator. Estimated from row count and fixed type widths.
+	auto estimate_bytes = [](const ColumnDataCollection &collection) {
+		idx_t row_width = 0;
+		for (auto &type : collection.Types()) {
+			row_width += GetTypeIdSize(type.InternalType());
+		}
+		return collection.Count() * row_width;
+	};
+	auto rhs_bytes = estimate_bytes(gsink.right_payload_data) + estimate_bytes(gsink.right_condition_data);
+	if (rhs_bytes > 0) {
+		gsink.memory_state->SetRemainingSizeAndUpdateReservation(context, rhs_bytes);
+		QueryProfiler::Get(context).UpdateOperatorMemory(*this, gsink.memory_state->GetPeakUsage());
+	}
 	if (gsink.right_payload_data.Count() == 0 && EmptyResultIfRHSIsEmpty()) {
 		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
 	}

@@ -11,9 +11,10 @@
 namespace duckdb {
 
 TemporaryMemoryState::TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager_p,
-                                           idx_t minimum_reservation_p)
+                                           idx_t minimum_reservation_p, MemoryReservationMode mode_p)
     : temporary_memory_manager(temporary_memory_manager_p), remaining_size(0),
-      minimum_reservation(minimum_reservation_p), reservation(0), materialization_penalty(1) {
+      minimum_reservation(minimum_reservation_p), reservation(0), materialization_penalty(1), mode(mode_p),
+      peak_reservation(0) {
 }
 
 TemporaryMemoryState::~TemporaryMemoryState() {
@@ -110,11 +111,12 @@ TemporaryMemoryManager &TemporaryMemoryManager::Get(ClientContext &context) {
 	return BufferManager::GetBufferManager(context).GetTemporaryMemoryManager();
 }
 
-unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context) {
+unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context, MemoryReservationMode mode) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
 	UpdateConfiguration(context);
 
-	auto result = unique_ptr<TemporaryMemoryState>(new TemporaryMemoryState(*this, DefaultMinimumReservation()));
+	auto result =
+	    unique_ptr<TemporaryMemoryState>(new TemporaryMemoryState(*this, DefaultMinimumReservation(), mode));
 	SetRemainingSize(*result, MinimumReservation(*result));
 	SetReservation(*result, MinimumReservation(*result));
 	active_states.insert(*result);
@@ -133,6 +135,10 @@ void TemporaryMemoryManager::UpdateState(ClientContext &context, TemporaryMemory
 	if (temporary_memory_state.GetRemainingSize() == 0) {
 		// Sometimes set to 0 to denote end of state (before actually deleting the state)
 		SetReservation(temporary_memory_state, 0);
+	} else if (temporary_memory_state.GetMode() == MemoryReservationMode::FIXED) {
+		// A FIXED state holds in-memory-only memory and cannot spill: grant the full requested size. Because
+		// this is counted in the manager's total reservation, spillable states are arbitrated down accordingly.
+		SetReservation(temporary_memory_state, temporary_memory_state.GetRemainingSize());
 	} else if (Settings::Get<DebugForceExternalSetting>(context)) {
 		// We're forcing external processing. Give it the minimum
 		SetReservation(temporary_memory_state, lower_bound);
@@ -179,6 +185,9 @@ void TemporaryMemoryManager::SetReservation(TemporaryMemoryState &temporary_memo
 	this->reservation -= temporary_memory_state.GetReservation();
 	temporary_memory_state.reservation = new_reservation;
 	this->reservation += temporary_memory_state.GetReservation();
+	// Track the per-state peak for per-operator memory profiling.
+	temporary_memory_state.peak_reservation =
+	    MaxValue<idx_t>(temporary_memory_state.peak_reservation.load(), new_reservation);
 }
 
 idx_t TemporaryMemoryManager::ComputeInitialReservation(const TemporaryMemoryState &temporary_memory_state) const {
