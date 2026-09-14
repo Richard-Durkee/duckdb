@@ -134,6 +134,13 @@ public:
 
 	//! Adds the timings gathered by an OperatorProfiler to this query profiler
 	DUCKDB_API void Flush(OperatorProfiler &profiler);
+	//! Set an "operator.*" metric on the profiled operator `op` (profiling-only; no-op when profiling is disabled or
+	//! the metric is not tracked). Intended for values computed once per operator, e.g. in Finalize.
+	DUCKDB_API void SetOperatorMetric(const PhysicalOperator &op, const string &key, Value new_value);
+	template <class METRIC>
+	void SetOperatorMetric(const PhysicalOperator &op, Value new_value) {
+		SetOperatorMetric(op, METRIC::Name, std::move(new_value));
+	}
 	//! Adds the top level query information to the global profiler.
 	DUCKDB_API void SetBlockedTime(const double &blocked_thread_time);
 	//! Record the peak bytes a streaming result buffered. Called just before the query ends

@@ -1,0 +1,58 @@
+# name: test/sql/pragma/profiling/test_operator_typed_metrics.test
+# description: Operator metrics set with SetOperatorMetric (hash join build stats) are emitted and gated by tracked_metrics
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_typed_metrics.json';
+
+statement ok
+SET tracked_metrics = ['operator.hash_build_count', 'operator.hash_build_size_bytes', 'operator.hash_partition_count', 'operator.type'];
+
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(500000) t(i)) a
+JOIN (SELECT i FROM range(500000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+# plan shape: RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN
+# build stats appear as first-class operator metrics, gated by tracked_metrics
+query I
+SELECT op2.hash_build_count = 500000 AND op2.hash_partition_count > 0 AND op2.hash_build_size_bytes > 0
+FROM '{TEST_DIR}/operator_typed_metrics.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(op2)
+WHERE op2.type = 'HASH_JOIN';
+----
+true
+
+# metrics that are not tracked are not emitted
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_typed_metrics_untracked.json';
+
+statement ok
+SET tracked_metrics = ['operator.type'];
+
+statement ok
+SELECT count(*) FROM (SELECT i FROM range(500000) t(i)) a
+JOIN (SELECT i FROM range(500000) t(i)) b ON a.i = b.i;
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT contains(json::VARCHAR, 'HASH_JOIN'), contains(json::VARCHAR, 'hash_build')
+FROM read_json_objects('{TEST_DIR}/operator_typed_metrics_untracked.json');
+----
+true	false

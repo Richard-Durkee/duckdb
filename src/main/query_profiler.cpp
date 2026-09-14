@@ -577,6 +577,19 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 	}
 }
 
+void QueryProfiler::SetOperatorMetric(const PhysicalOperator &op, const string &key, Value new_value) {
+	D_ASSERT(StringUtil::StartsWith(key, "operator."));
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running || !metrics || !metrics->MetricIsTracked(key)) {
+		return;
+	}
+	auto entry = tree_map.find(op);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	entry->second.get().GetOperatorMetrics().SetExtraMetric(key, std::move(new_value));
+}
+
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
 	lock_guard<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -762,6 +775,10 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
+	}
+	// emitted without the "operator." prefix, like the fixed operator metrics above
+	for (const auto &entry : extra_metrics) {
+		result[entry.first.substr(string("operator.").size())] = entry.second;
 	}
 	return result;
 }

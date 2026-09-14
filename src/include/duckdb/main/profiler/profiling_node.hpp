@@ -42,6 +42,14 @@ struct OperatorMetrics {
 		total_row_groups_to_scan = 0;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
+		extra_metrics.clear();
+	}
+	//! Set by QueryProfiler::SetOperatorMetric on the profiled tree only, so not merged across threads
+	void SetExtraMetric(const string &metric_name, Value value) {
+		extra_metrics[metric_name] = std::move(value);
+	}
+	const profiler_metrics_t &GetExtraMetrics() const {
+		return extra_metrics;
 	}
 	void AddExtraInfo(string key, string value) {
 		extra_info.insert(make_pair(std::move(key), std::move(value)));
@@ -58,6 +66,7 @@ struct OperatorMetrics {
 
 private:
 	InsertionOrderPreservingMap<string> extra_info;
+	profiler_metrics_t extra_metrics;
 	void MergeInternal(const OperatorMetrics &other);
 };
 
