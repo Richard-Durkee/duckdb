@@ -7,6 +7,7 @@
 #include "duckdb/common/set.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/in_memory_block_manager.hpp"
 #include "duckdb/storage/temporary_file_manager.hpp"
@@ -378,6 +379,10 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 		if (!buf.IsValid()) {
 			reservation.Resize(0);
 			return buf; // Buffer was destroyed (e.g., due to DestroyBufferUpon::Eviction)
+		}
+		// The block was not resident and had to be loaded from disk/temp: a buffer-cache miss.
+		if (context.GetClientContext()) {
+			QueryProfiler::Get(*context.GetClientContext()).TrackBufferCacheMiss();
 		}
 		auto &memory_charge = block_memory.GetMemoryCharge(lock);
 		memory_charge = std::move(reservation);
