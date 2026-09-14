@@ -43,6 +43,9 @@ public:
 	atomic<idx_t> write_operations;
 	// Thread-safe memory allocation counter (updated from allocator callbacks on any thread)
 	atomic<idx_t> total_memory_allocated;
+	// Buffer-pool eviction counters (updated from any thread as blocks are evicted under memory pressure)
+	atomic<idx_t> bytes_evicted;
+	atomic<idx_t> eviction_count;
 
 public:
 	void UpdateMetric(const string &key, idx_t addition) {
@@ -65,6 +68,11 @@ public:
 
 	void UpdateTotalMemoryAllocated(idx_t n) {
 		total_memory_allocated += n;
+	}
+
+	void UpdateBytesEvicted(idx_t n) {
+		bytes_evicted += n;
+		eviction_count++;
 	}
 
 	double GetStringMetricInSeconds(const string &key) const {
@@ -103,6 +111,14 @@ public:
 		return total_memory_allocated.load();
 	}
 
+	idx_t GetBytesEvicted() const {
+		return bytes_evicted.load();
+	}
+
+	idx_t GetEvictionCount() const {
+		return eviction_count.load();
+	}
+
 	const unordered_map<string, idx_t> &GetMetricTimings() const {
 		return string_timings;
 	}
@@ -120,6 +136,8 @@ public:
 		bytes_written = 0;
 		write_operations = 0;
 		total_memory_allocated = 0;
+		bytes_evicted = 0;
+		eviction_count = 0;
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -143,6 +161,8 @@ public:
 		bytes_written += other.bytes_written.load();
 		write_operations += other.write_operations.load();
 		total_memory_allocated += other.total_memory_allocated.load();
+		bytes_evicted += other.bytes_evicted.load();
+		eviction_count += other.eviction_count.load();
 	}
 
 private:

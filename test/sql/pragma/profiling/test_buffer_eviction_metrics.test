@@ -1,0 +1,36 @@
+# name: test/sql/pragma/profiling/test_buffer_eviction_metrics.test
+# description: Test system.bytes_evicted and system.eviction_count (buffer-pool memory pressure)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET memory_limit = '100MB';
+
+statement ok
+SET threads = 2;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/buffer_eviction.json';
+
+# A sort whose working set far exceeds the 100MB limit forces the buffer pool to evict blocks; the
+# evicted bytes/count are recorded per query even though they exceed both peak memory and temp-dir size.
+statement ok
+SELECT count(*) FROM (
+  SELECT i, i::VARCHAR || 'padding-to-inflate-the-sort-payload' AS s
+  FROM range(4000000) t(i) ORDER BY s
+) x;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT prof.system.bytes_evicted > 0 AND prof.system.eviction_count > 0
+FROM '{TEST_DIR}/buffer_eviction.json' prof;
+----
+true

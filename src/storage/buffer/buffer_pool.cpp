@@ -1,6 +1,7 @@
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/common/thread.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/main/settings.hpp"
@@ -391,6 +392,13 @@ BufferPool::EvictionResult BufferPool::EvictBlocks(QueryContext context, MemoryT
 	return EvictObjectCacheEntries(tag, extra_memory, memory_limit);
 }
 
+//! Attribute an eviction (block dropped from memory under pressure) to the query that triggered it.
+static void TrackEviction(const QueryContext &context, idx_t evicted_size) {
+	if (context.GetClientContext()) {
+		QueryProfiler::Get(*context.GetClientContext()).TrackBytesEvicted(evicted_size);
+	}
+}
+
 BufferPool::EvictionResult BufferPool::EvictBlocksInternal(QueryContext context, EvictionQueue &queue, MemoryTag tag,
                                                            idx_t extra_memory, idx_t memory_limit,
                                                            unique_ptr<FileBuffer> *buffer) {
@@ -408,13 +416,17 @@ BufferPool::EvictionResult BufferPool::EvictBlocksInternal(QueryContext context,
 		// hooray, we can unload the block
 		if (buffer && handle->GetBuffer(lock)->AllocSize() == extra_memory) {
 			// we can re-use the memory directly
+			auto evicted_size = handle->GetMemoryUsage();
 			*buffer = handle->UnloadAndTakeBlock(lock, context);
+			TrackEviction(context, evicted_size);
 			found = true;
 			return false;
 		}
 
 		// release the memory and mark the block as unloaded
+		auto evicted_size = handle->GetMemoryUsage();
 		handle->Unload(lock, context);
+		TrackEviction(context, evicted_size);
 
 		if (memory_usage.GetUsedMemory(MemoryUsageCaches::NO_FLUSH) <= memory_limit) {
 			found = true;

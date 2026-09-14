@@ -46,6 +46,16 @@
 			"description": "Time spent waiting for a thread to become available",
 			"unit": "seconds"
 		},
+		"bytes_evicted": {
+			"metric_type": "uint64",
+			"description": "Total bytes evicted from the buffer pool during the query (memory pressure)",
+			"unit": "bytes"
+		},
+		"eviction_count": {
+			"metric_type": "uint64",
+			"description": "Number of blocks evicted from the buffer pool during the query (memory pressure)",
+			"unit": "blocks"
+		},
 		"peak_buffer_memory": {
 			"metric_type": "uint64",
 			"description": "Peak memory usage of the buffer manager",

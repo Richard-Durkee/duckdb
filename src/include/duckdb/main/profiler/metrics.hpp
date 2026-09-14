@@ -80,6 +80,20 @@ struct MetricSystemBlockedThreadTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricSystemBytesEvicted {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "system.bytes_evicted";
+	static constexpr const char *Description = "Total bytes evicted from the buffer pool during the query (memory pressure)";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricSystemEvictionCount {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "system.eviction_count";
+	static constexpr const char *Description = "Number of blocks evicted from the buffer pool during the query (memory pressure)";
+	static constexpr const char *Unit = "blocks";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricSystemPeakBufferMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "system.peak_buffer_memory";

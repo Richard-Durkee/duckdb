@@ -109,6 +109,8 @@ public:
 	DUCKDB_API void TrackBytesWritten(idx_t amount);
 	//! Track memory allocated (thread-safe; always tracked).
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
+	//! Track a buffer-pool block eviction (thread-safe; always tracked).
+	DUCKDB_API void TrackBytesEvicted(idx_t amount);
 	//! Add to a metric counter (profiling-only).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
 	//! Add parser time measured before the per-statement profiler was started.
