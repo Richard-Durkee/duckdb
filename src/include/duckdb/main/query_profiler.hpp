@@ -111,6 +111,8 @@ public:
 	DUCKDB_API void TrackBytesSpilled(idx_t amount);
 	//! Track memory allocated (thread-safe; always tracked).
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
+	//! Track a buffer-cache miss: a pinned block reloaded from disk/temp (thread-safe; always tracked).
+	DUCKDB_API void TrackBufferCacheMiss();
 	//! Add to a metric counter (profiling-only).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
 	//! Add parser time measured before the per-statement profiler was started.

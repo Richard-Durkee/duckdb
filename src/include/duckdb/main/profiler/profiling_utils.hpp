@@ -47,6 +47,8 @@ public:
 	atomic<idx_t> bytes_spilled;
 	// Thread-safe memory allocation counter (updated from allocator callbacks on any thread)
 	atomic<idx_t> total_memory_allocated;
+	// Blocks that had to be reloaded from disk/temp on pin (buffer-cache misses; updated from any thread)
+	atomic<idx_t> buffer_cache_miss;
 
 public:
 	void UpdateMetric(const string &key, idx_t addition) {
@@ -75,6 +77,10 @@ public:
 
 	void UpdateTotalMemoryAllocated(idx_t n) {
 		total_memory_allocated += n;
+	}
+
+	void UpdateBufferCacheMiss() {
+		buffer_cache_miss++;
 	}
 
 	double GetStringMetricInSeconds(const string &key) const {
@@ -125,6 +131,10 @@ public:
 		return total_memory_allocated.load();
 	}
 
+	idx_t GetBufferCacheMiss() const {
+		return buffer_cache_miss.load();
+	}
+
 	const unordered_map<string, idx_t> &GetMetricTimings() const {
 		return string_timings;
 	}
@@ -145,6 +155,7 @@ public:
 		write_time_us = 0;
 		bytes_spilled = 0;
 		total_memory_allocated = 0;
+		buffer_cache_miss = 0;
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -171,6 +182,7 @@ public:
 		write_time_us += other.write_time_us.load();
 		bytes_spilled += other.bytes_spilled.load();
 		total_memory_allocated += other.total_memory_allocated.load();
+		buffer_cache_miss += other.buffer_cache_miss.load();
 	}
 
 private:

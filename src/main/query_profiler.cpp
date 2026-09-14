@@ -283,6 +283,10 @@ void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 	query_metrics.UpdateTotalMemoryAllocated(amount);
 }
 
+void QueryProfiler::TrackBufferCacheMiss() {
+	query_metrics.UpdateBufferCacheMiss();
+}
+
 void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
 	if (IsEnabled()) {
 		query_metrics.UpdateMetricCounter(key, amount);

@@ -23,11 +23,12 @@ void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
 	info.SetMetric<MetricSystemPeakTempDirSize>(system_peak_temp_dir_size);
 	info.SetMetric<MetricSystemTotalBytesSpilled>(GetBytesSpilled());
 	info.SetMetric<MetricSystemTotalMemoryAllocated>(GetTotalMemoryAllocated());
+	info.SetMetric<MetricSystemBufferCacheMiss>(GetBufferCacheMiss());
 }
 
 QueryMetrics::QueryMetrics()
     : bytes_read(0), read_operations(0), read_time_us(0), bytes_written(0), write_operations(0), write_time_us(0),
-      bytes_spilled(0), total_memory_allocated(0) {
+      bytes_spilled(0), total_memory_allocated(0), buffer_cache_miss(0) {
 	Reset();
 }
 
