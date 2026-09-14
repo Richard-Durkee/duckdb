@@ -42,6 +42,16 @@ struct OperatorMetrics {
 		total_row_groups_to_scan = 0;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
+		extra_metrics.clear();
+	}
+	//! Generic per-operator metrics an operator reports at runtime (e.g. from Finalize), keyed by the full
+	//! metric name (e.g. "operator.hash_build_count"). Stored the same way query-level metrics are (a
+	//! name->Value map) so any declared operator metric can be reported without a dedicated struct field.
+	void SetExtraMetric(const string &metric_name, Value value) {
+		extra_metrics[metric_name] = std::move(value);
+	}
+	const profiler_metrics_t &GetExtraMetrics() const {
+		return extra_metrics;
 	}
 	void AddExtraInfo(string key, string value) {
 		extra_info.insert(make_pair(std::move(key), std::move(value)));
@@ -58,6 +68,7 @@ struct OperatorMetrics {
 
 private:
 	InsertionOrderPreservingMap<string> extra_info;
+	profiler_metrics_t extra_metrics;
 	void MergeInternal(const OperatorMetrics &other);
 };
 

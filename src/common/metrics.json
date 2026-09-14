@@ -141,6 +141,21 @@
 			"metric_type": "map",
 			"description": "Unique operator metrics"
 		},
+		"hash_build_count": {
+			"metric_type": "uint64",
+			"description": "Rows on the build side of a hash join",
+			"unit": "rows"
+		},
+		"hash_build_size_bytes": {
+			"metric_type": "uint64",
+			"description": "In-memory size of the hash join build side",
+			"unit": "bytes"
+		},
+		"hash_partition_count": {
+			"metric_type": "uint64",
+			"description": "Number of radix partitions used by a hash join",
+			"unit": "partitions"
+		},
 		"intermediate_rows": {
 			"metric_type": "uint64",
 			"description": "Number of intermediate rows produced by the operator",

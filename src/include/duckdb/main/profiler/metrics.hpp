@@ -212,6 +212,27 @@ struct MetricOperatorExtraInfo {
 	static constexpr const char *Unit = "";
 	static constexpr const char *TypeStr = "map";
 };
+struct MetricOperatorHashBuildCount {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.hash_build_count";
+	static constexpr const char *Description = "Rows on the build side of a hash join";
+	static constexpr const char *Unit = "rows";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorHashBuildSizeBytes {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.hash_build_size_bytes";
+	static constexpr const char *Description = "In-memory size of the hash join build side";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorHashPartitionCount {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.hash_partition_count";
+	static constexpr const char *Description = "Number of radix partitions used by a hash join";
+	static constexpr const char *Unit = "partitions";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricOperatorIntermediateRows {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.intermediate_rows";

@@ -18,6 +18,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/profiler/metrics.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/parallel/base_pipeline_event.hpp"
@@ -1829,6 +1830,17 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
                                             OperatorSinkFinalizeInput &input) const {
 	auto &sink = input.global_state.Cast<HashJoinGlobalSinkState>();
 	auto &ht = *sink.hash_table;
+
+	// Report operator-internal build-side stats via the generic typed operator-metric channel. Build data is
+	// still in the per-thread local hash tables here (not yet combined), so sum those for the row count.
+	idx_t build_count = ht.GetSinkCollection().Count();
+	for (auto &local_ht : sink.local_hash_tables) {
+		build_count += local_ht.get().GetSinkCollection().Count();
+	}
+	auto &profiler = QueryProfiler::Get(context);
+	profiler.SetOperatorMetric<MetricOperatorHashBuildCount>(*this, Value::UBIGINT(build_count));
+	profiler.SetOperatorMetric<MetricOperatorHashBuildSizeBytes>(*this, Value::UBIGINT(sink.total_size));
+	profiler.SetOperatorMetric<MetricOperatorHashPartitionCount>(*this, Value::UBIGINT(idx_t(1) << ht.GetRadixBits()));
 
 	sink.temporary_memory_state->UpdateReservation(context);
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;

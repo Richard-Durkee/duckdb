@@ -468,6 +468,10 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 	if (other.system_peak_temp_directory_size > system_peak_temp_directory_size) {
 		system_peak_temp_directory_size = other.system_peak_temp_directory_size;
 	}
+	// Generic operator metrics are set once into the tree node; keep any the merged-in copy carries.
+	for (const auto &entry : other.extra_metrics) {
+		extra_metrics[entry.first] = entry.second;
+	}
 }
 
 void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
@@ -571,6 +575,18 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 		}
 		node.second.ResetMetrics();
 	}
+}
+
+void QueryProfiler::SetOperatorMetricInternal(const PhysicalOperator &op, const string &metric_name, Value value) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = tree_map.find(op);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	entry->second.get().GetOperatorMetrics().SetExtraMetric(metric_name, std::move(value));
 }
 
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
@@ -758,6 +774,13 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
+	}
+	// Generic operator metrics reported at runtime, keyed by full metric name and gated by tracked_metrics,
+	// emitted under the short key (e.g. "operator.hash_build_count" -> "hash_build_count").
+	for (const auto &entry : extra_metrics) {
+		if (info.MetricIsTracked(entry.first)) {
+			result[entry.first.substr(entry.first.rfind('.') + 1)] = entry.second;
+		}
 	}
 	return result;
 }
