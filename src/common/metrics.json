@@ -46,6 +46,11 @@
 			"description": "Time spent waiting for a thread to become available",
 			"unit": "seconds"
 		},
+		"buffer_cache_miss": {
+			"metric_type": "uint64",
+			"description": "Number of pinned blocks that were not resident and had to be loaded from disk/temp (buffer-cache misses)",
+			"unit": "blocks"
+		},
 		"peak_buffer_memory": {
 			"metric_type": "uint64",
 			"description": "Peak memory usage of the buffer manager",

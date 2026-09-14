@@ -1,0 +1,36 @@
+# name: test/sql/pragma/profiling/test_buffer_cache_miss_metric.test
+# description: Test system.buffer_cache_miss (blocks reloaded from disk/temp on pin)
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET memory_limit = '120MB';
+
+statement ok
+SET threads = 2;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/buffer_cache_miss.json';
+
+# A sort whose working set exceeds the memory limit spills and then re-pins evicted blocks, which must
+# be reloaded from temp — buffer-cache misses.
+statement ok
+SELECT count(*) FROM (
+  SELECT i, i::VARCHAR || 'padding-to-inflate-the-sort-payload' AS s
+  FROM range(6000000) t(i) ORDER BY s
+) x;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT prof.system.buffer_cache_miss > 0
+FROM '{TEST_DIR}/buffer_cache_miss.json' prof;
+----
+true

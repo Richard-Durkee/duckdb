@@ -80,6 +80,13 @@ struct MetricSystemBlockedThreadTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricSystemBufferCacheMiss {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "system.buffer_cache_miss";
+	static constexpr const char *Description = "Number of pinned blocks that were not resident and had to be loaded from disk/temp (buffer-cache misses)";
+	static constexpr const char *Unit = "blocks";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricSystemPeakBufferMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "system.peak_buffer_memory";
