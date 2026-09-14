@@ -1830,6 +1830,17 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	auto &sink = input.global_state.Cast<HashJoinGlobalSinkState>();
 	auto &ht = *sink.hash_table;
 
+	// Report operator-internal build-side stats through the generic per-operator runtime-metric channel.
+	// The build data is still in the per-thread local hash tables here (not yet combined), so sum those.
+	idx_t build_count = ht.GetSinkCollection().Count();
+	for (auto &local_ht : sink.local_hash_tables) {
+		build_count += local_ht.get().GetSinkCollection().Count();
+	}
+	auto &profiler = QueryProfiler::Get(context);
+	profiler.AddOperatorMetric(*this, "hash_build_count", to_string(build_count));
+	profiler.AddOperatorMetric(*this, "hash_build_size_bytes", to_string(sink.total_size));
+	profiler.AddOperatorMetric(*this, "hash_partition_count", to_string(idx_t(1) << ht.GetRadixBits()));
+
 	sink.temporary_memory_state->UpdateReservation(context);
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
 	if (sink.external) {

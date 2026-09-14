@@ -573,6 +573,18 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 	}
 }
 
+void QueryProfiler::AddOperatorMetric(const PhysicalOperator &op, const string &key, const string &value) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = tree_map.find(op);
+	if (entry == tree_map.end()) {
+		return;
+	}
+	entry->second.get().GetOperatorMetrics().AddRuntimeInfo(key, value);
+}
+
 void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
 	lock_guard<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -757,7 +769,12 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
 	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
-		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
+		// Combine plan-time extra_info with any runtime metrics the operator reported via AddOperatorMetric.
+		auto combined = extra_info;
+		for (const auto &entry : runtime_info) {
+			combined.insert(entry.first, entry.second);
+		}
+		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(combined));
 	}
 	return result;
 }

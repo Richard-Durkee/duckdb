@@ -42,6 +42,7 @@ struct OperatorMetrics {
 		total_row_groups_to_scan = 0;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
+		runtime_info.clear();
 	}
 	void AddExtraInfo(string key, string value) {
 		extra_info.insert(make_pair(std::move(key), std::move(value)));
@@ -52,12 +53,22 @@ struct OperatorMetrics {
 	const InsertionOrderPreservingMap<string> &GetExtraInfo() const {
 		return extra_info;
 	}
+	//! Runtime per-operator metrics an operator reports during execution (e.g. from Finalize), keyed by
+	//! name. Kept separate from extra_info so the per-thread flush (which replaces extra_info) cannot clobber
+	//! it. This is the generic channel for operator-internal metrics — no dedicated field/setter per metric.
+	void AddRuntimeInfo(string key, string value) {
+		runtime_info.insert(make_pair(std::move(key), std::move(value)));
+	}
+	const InsertionOrderPreservingMap<string> &GetRuntimeInfo() const {
+		return runtime_info;
+	}
 	void GatherMetrics(ClientContext &context, double elapsed_time, optional_ptr<DataChunk> chunk);
 	void Merge(const OperatorMetrics &other);
 	void Accumulate(const OperatorMetrics &other);
 
 private:
 	InsertionOrderPreservingMap<string> extra_info;
+	InsertionOrderPreservingMap<string> runtime_info;
 	void MergeInternal(const OperatorMetrics &other);
 };
 

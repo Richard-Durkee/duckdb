@@ -132,6 +132,9 @@ public:
 
 	//! Adds the timings gathered by an OperatorProfiler to this query profiler
 	DUCKDB_API void Flush(OperatorProfiler &profiler);
+	//! Generic channel for operators to report an internal runtime metric keyed to themselves (e.g. from
+	//! Finalize, where sink state is available). Surfaced in the operator's extra_info in the profile output.
+	DUCKDB_API void AddOperatorMetric(const PhysicalOperator &op, const string &key, const string &value);
 	//! Adds the top level query information to the global profiler.
 	DUCKDB_API void SetBlockedTime(const double &blocked_thread_time);
 	//! Record the peak bytes a streaming result buffered. Called just before the query ends
