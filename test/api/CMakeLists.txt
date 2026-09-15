@@ -48,6 +48,7 @@ set(TEST_API_OBJECTS
     test_query_node_copy.cpp
     test_grammar_extension.cpp
     test_progress_bar.cpp
+    test_live_query_metrics.cpp
     test_uuid.cpp
     test_insertion_order_preserving_map.cpp
     test_bignum.cpp

@@ -25,6 +25,7 @@
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/main/live_query_metrics.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
 #include "duckdb/main/profiler/profiling_utils.hpp"
 
@@ -102,6 +103,8 @@ public:
 	DUCKDB_API void EndQuery();
 	//! Finalize query metrics for output; safe to call multiple times.
 	DUCKDB_API void FinalizeMetrics();
+	//! Snapshot the always-tracked query-level counters. Safe to call mid-query and when profiling is disabled.
+	DUCKDB_API LiveQueryMetrics SampleLiveQueryMetrics();
 
 	//! Track bytes read (always tracked, even when profiling disabled).
 	DUCKDB_API void TrackBytesRead(idx_t amount);
