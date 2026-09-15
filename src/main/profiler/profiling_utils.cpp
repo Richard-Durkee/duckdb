@@ -11,18 +11,26 @@ void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
 	for (const auto &[key, count] : string_counters) {
 		info.SetMetric(key, count);
 	}
-	info.SetMetric<MetricIOTotalBytesRead>(GetBytesRead());
-	info.SetMetric<MetricIOTotalReadOperations>(GetReadOperations());
-	info.SetMetric<MetricIOTotalReadTime>(GetReadTime());
-	info.SetMetric<MetricIOTotalBytesWritten>(GetBytesWritten());
-	info.SetMetric<MetricIOTotalWriteOperations>(GetWriteOperations());
-	info.SetMetric<MetricIOTotalWriteTime>(GetWriteTime());
+	for (auto &entry : GetLiveMetrics()) {
+		info.SetMetric(entry.first, std::move(entry.second));
+	}
 	info.SetMetric<MetricSystemBlockedThreadTime>(blocked_thread_time);
 	info.SetMetric<MetricSystemPeakBufferMemory>(system_peak_buffer_memory);
 	info.SetMetric<MetricSystemPeakStreamingBufferSize>(system_peak_streaming_buffer_size);
 	info.SetMetric<MetricSystemPeakTempDirSize>(system_peak_temp_dir_size);
-	info.SetMetric<MetricSystemTotalBytesSpilled>(GetBytesSpilled());
-	info.SetMetric<MetricSystemTotalMemoryAllocated>(GetTotalMemoryAllocated());
+}
+
+profiler_metrics_t QueryMetrics::GetLiveMetrics() const {
+	profiler_metrics_t result;
+	result[MetricIOTotalBytesRead::Name] = Value::UBIGINT(GetBytesRead());
+	result[MetricIOTotalReadOperations::Name] = Value::UBIGINT(GetReadOperations());
+	result[MetricIOTotalReadTime::Name] = Value::DOUBLE(GetReadTime());
+	result[MetricIOTotalBytesWritten::Name] = Value::UBIGINT(GetBytesWritten());
+	result[MetricIOTotalWriteOperations::Name] = Value::UBIGINT(GetWriteOperations());
+	result[MetricIOTotalWriteTime::Name] = Value::DOUBLE(GetWriteTime());
+	result[MetricSystemTotalBytesSpilled::Name] = Value::UBIGINT(GetBytesSpilled());
+	result[MetricSystemTotalMemoryAllocated::Name] = Value::UBIGINT(GetTotalMemoryAllocated());
+	return result;
 }
 
 QueryMetrics::QueryMetrics()

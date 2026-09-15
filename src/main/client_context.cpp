@@ -596,6 +596,10 @@ QueryProgress ClientContext::GetQueryProgress() {
 	return query_progress;
 }
 
+profiler_metrics_t ClientContext::GetLiveQueryMetrics() {
+	return QueryProfiler::Get(*this).GetLiveMetrics();
+}
+
 void BindPreparedStatementParameters(ClientContext &context, PreparedStatementData &statement,
                                      const PendingQueryParameters &parameters) {
 	identifier_map_t<BoundParameterData> owned_values;
