@@ -267,6 +267,16 @@ void QueryProfiler::FinalizeMetrics() {
 	FinalizeMetricsInternal();
 }
 
+LiveQueryMetrics QueryProfiler::SampleLiveQueryMetrics() {
+	LiveQueryMetrics result;
+	result.bytes_read = query_metrics.GetBytesRead();
+	result.read_operations = query_metrics.GetReadOperations();
+	result.bytes_written = query_metrics.GetBytesWritten();
+	result.write_operations = query_metrics.GetWriteOperations();
+	result.total_memory_allocated = query_metrics.GetTotalMemoryAllocated();
+	return result;
+}
+
 void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
 	query_metrics.UpdateBytesRead(amount, elapsed_us);
 }
