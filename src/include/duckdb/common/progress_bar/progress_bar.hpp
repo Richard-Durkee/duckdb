@@ -28,6 +28,8 @@ public:
 	double GetPercentage();
 	uint64_t GetRowsProcessed();
 	uint64_t GetTotalRowsToProcess();
+	uint64_t GetBytesRead();
+	void SetBytesRead(uint64_t bytes);
 	QueryProgress &operator=(const QueryProgress &other);
 	QueryProgress(const QueryProgress &other);
 
@@ -35,6 +37,8 @@ private:
 	atomic<double> percentage;
 	atomic<uint64_t> rows_processed;
 	atomic<uint64_t> total_rows_to_process;
+	//! Bytes read from storage so far, sampled from the always-tracked query counter
+	atomic<uint64_t> bytes_read;
 };
 
 class ProgressBar {

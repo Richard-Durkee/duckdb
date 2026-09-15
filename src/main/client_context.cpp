@@ -593,6 +593,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 }
 
 QueryProgress ClientContext::GetQueryProgress() {
+	query_progress.SetBytesRead(QueryProfiler::Get(*this).GetBytesRead());
 	return query_progress;
 }
 

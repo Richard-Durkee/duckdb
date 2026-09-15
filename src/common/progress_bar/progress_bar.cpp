@@ -8,12 +8,14 @@ void QueryProgress::Initialize() {
 	percentage = -1;
 	rows_processed = 0;
 	total_rows_to_process = 0;
+	bytes_read = 0;
 }
 
 void QueryProgress::Restart() {
 	percentage = 0;
 	rows_processed = 0;
 	total_rows_to_process = 0;
+	bytes_read = 0;
 }
 
 double QueryProgress::GetPercentage() {
@@ -25,6 +27,12 @@ uint64_t QueryProgress::GetRowsProcessed() {
 uint64_t QueryProgress::GetTotalRowsToProcess() {
 	return total_rows_to_process;
 }
+uint64_t QueryProgress::GetBytesRead() {
+	return bytes_read;
+}
+void QueryProgress::SetBytesRead(uint64_t bytes) {
+	bytes_read = bytes;
+}
 
 QueryProgress::QueryProgress() {
 	Initialize();
@@ -35,6 +43,7 @@ QueryProgress &QueryProgress::operator=(const QueryProgress &other) {
 		percentage = other.percentage.load();
 		rows_processed = other.rows_processed.load();
 		total_rows_to_process = other.total_rows_to_process.load();
+		bytes_read = other.bytes_read.load();
 	}
 	return *this;
 }
@@ -43,6 +52,7 @@ QueryProgress::QueryProgress(const QueryProgress &other) {
 	percentage = other.percentage.load();
 	rows_processed = other.rows_processed.load();
 	total_rows_to_process = other.total_rows_to_process.load();
+	bytes_read = other.bytes_read.load();
 }
 
 void ProgressBar::SystemOverrideCheck(ClientConfig &config) {

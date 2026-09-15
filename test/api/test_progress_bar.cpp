@@ -4,6 +4,7 @@
 #include "duckdb/common/progress_bar/display/terminal_progress_bar_display.hpp"
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "test_helpers.hpp"
 
 #include <duckdb/execution/executor.hpp>
@@ -310,5 +311,33 @@ TEST_CASE("Test Progress Bar CSV", "[progress-bar][.]") {
 	test_progress.Start();
 	REQUIRE_NO_FAIL(con.Query("COPY test FROM 'data/csv/test/test.csv'"));
 	test_progress.End();
+}
+
+TEST_CASE("Test query progress reports bytes read", "[progress-bar]") {
+	auto path = TestCreatePath("query_progress_bytes.db");
+	DeleteDatabase(path);
+
+	// persist a table to disk, then drop the database so the buffer cache is cold
+	{
+		DuckDB db(path);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range AS i FROM range(1000000)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+
+	// reopen: scanning the table now reads blocks from storage
+	{
+		DuckDB db(path);
+		Connection con(db);
+		auto result = con.Query("SELECT sum(i) FROM t");
+		REQUIRE_NO_FAIL(*result);
+
+		auto progress = con.context->GetQueryProgress();
+		REQUIRE(progress.GetBytesRead() > 0);
+		// the field is sampled from the same query counter the profiler exposes
+		REQUIRE(progress.GetBytesRead() == QueryProfiler::Get(*con.context).GetBytesRead());
+	}
+
+	DeleteDatabase(path);
 }
 #endif
