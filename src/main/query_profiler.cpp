@@ -267,6 +267,10 @@ void QueryProfiler::FinalizeMetrics() {
 	FinalizeMetricsInternal();
 }
 
+profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
+	return query_metrics.GetLiveMetrics();
+}
+
 void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
 	query_metrics.UpdateBytesRead(amount, elapsed_us);
 }
