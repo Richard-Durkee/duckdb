@@ -158,6 +158,9 @@ protected:
 	void AddToEvictionQueue(shared_ptr<BlockHandle> &handle) final;
 
 	const char *InMemoryWarning();
+	//! Builds a human-readable memory breakdown for out-of-memory errors: per-memory-tag usage plus the
+	//! per-operator reservations tracked by the TemporaryMemoryManager. Best-effort: never throws.
+	string MemoryBreakdownForError();
 
 	static data_ptr_t BufferAllocatorAllocate(PrivateAllocatorData *private_data, idx_t size);
 	static void BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size);

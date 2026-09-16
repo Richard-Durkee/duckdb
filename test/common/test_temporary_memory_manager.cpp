@@ -24,7 +24,7 @@ TEST_CASE("TemporaryMemoryManager handles many active states", "[storage][tempor
 	duckdb::vector<duckdb::unique_ptr<TemporaryMemoryState>> states;
 	states.reserve(state_count);
 	for (idx_t i = 0; i < state_count; i++) {
-		auto state = manager.Register(context);
+		auto state = manager.Register(context, "TEST");
 		state->SetMinimumReservation(initial_reservation);
 		state->SetRemainingSize(remaining_size);
 		states.push_back(std::move(state));
