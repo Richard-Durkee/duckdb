@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/enums/memory_tag.hpp"
+#include "duckdb/common/string.hpp"
 
 namespace duckdb {
 
@@ -21,6 +22,9 @@ struct BufferPoolReservation {
 	MemoryTag tag;
 	idx_t size {0};
 	BufferPool &pool;
+	//! PROTOTYPE: operator label captured at construction from BufferPool::CurrentOperator(). Carried through
+	//! moves so free (Resize(0)) decrements the same owner that alloc incremented.
+	string owner;
 
 	BufferPoolReservation(MemoryTag tag, BufferPool &pool);
 	BufferPoolReservation(const BufferPoolReservation &) = delete;

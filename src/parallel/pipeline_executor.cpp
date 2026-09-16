@@ -5,6 +5,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/main/settings.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 #include <chrono>
@@ -12,6 +13,17 @@
 #endif
 
 namespace duckdb {
+
+// PROTOTYPE: pushes the sink operator's name onto the buffer pool's thread-local "current operator" for the
+// duration of a sink call, so buffer reservations made while sinking attribute their real bytes to this operator.
+struct OperatorMemoryScope {
+	explicit OperatorMemoryScope(const PhysicalOperator &op) {
+		BufferPool::PushCurrentOperator(op.GetName());
+	}
+	~OperatorMemoryScope() {
+		BufferPool::PopCurrentOperator();
+	}
+};
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 bool PipelineExecutor::TryDebugBlock(int &debug_counter, const InterruptState &interrupt_state_p) {
@@ -697,7 +709,11 @@ PipelineExecuteResult PipelineExecutor::PushFinalize() {
 		return PipelineExecuteResult::INTERRUPTED;
 	}
 #endif
-	auto result = pipeline.sink->Combine(context, combine_input);
+	SinkCombineResultType result;
+	{
+		OperatorMemoryScope mem_scope(*pipeline.sink); // PROTOTYPE: attribute reservations to the sink operator
+		result = pipeline.sink->Combine(context, combine_input);
+	}
 
 	if (result == SinkCombineResultType::BLOCKED) {
 		return PipelineExecuteResult::INTERRUPTED;
@@ -834,6 +850,7 @@ SinkResultType PipelineExecutor::Sink(DataChunk &chunk, OperatorSinkInput &input
 		return SinkResultType::BLOCKED;
 	}
 #endif
+	OperatorMemoryScope mem_scope(*pipeline.sink); // PROTOTYPE: attribute reservations to the sink operator
 	return pipeline.sink->Sink(context, chunk, input);
 }
 

@@ -144,6 +144,20 @@ string StandardBufferManager::MemoryBreakdownForError() {
 	if (!operator_text.empty()) {
 		result += " (by operator: " + operator_text + ")";
 	}
+	// PROTOTYPE: real bytes attributed per operator via thread-local interception of buffer reservations made
+	// during sink execution. Unlike the TMM reservations above, this reflects the operator's actual buffer-
+	// managed memory (e.g. the real hash-table size), not a reservation. Only sink allocations are attributed;
+	// intermediate operators and off-thread allocations show as unattributed (absent here).
+	string real_text;
+	for (auto &entry : GetBufferPool().GetPerOperatorRealBytes()) {
+		if (!real_text.empty()) {
+			real_text += ", ";
+		}
+		real_text += entry.first + " " + StringUtil::BytesToHumanReadableString(entry.second);
+	}
+	if (!real_text.empty()) {
+		result += " (by operator real bytes: " + real_text + ")";
+	}
 	// Per-memory-tag usage: covers all buffer-managed memory, grouped by subsystem/category.
 	string tag_text;
 	for (auto &info : GetMemoryUsageInfo()) {

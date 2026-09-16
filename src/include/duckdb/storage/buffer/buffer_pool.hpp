@@ -14,7 +14,11 @@
 #include "duckdb/common/file_buffer.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/pair.hpp"
+#include "duckdb/common/string.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/unordered_map.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 
@@ -58,6 +62,17 @@ public:
 	idx_t GetAllocatorBulkDeallocationFlushThreshold();
 
 	void UpdateUsedMemory(MemoryTag tag, int64_t size);
+
+	//! PROTOTYPE: real per-operator memory attribution. A thread-local "current operator" is pushed while a
+	//! sink executes; BufferPoolReservations constructed on that thread capture the label, so alloc/free route
+	//! real bytes to the owning operator (parallel to the per-tag accounting).
+	static void PushCurrentOperator(string name);
+	static void PopCurrentOperator();
+	static const string &CurrentOperator();
+	//! Add/subtract real bytes for an operator label (called from BufferPoolReservation alloc/free).
+	void UpdateUsedMemoryPerOperator(const string &owner, int64_t size);
+	//! Snapshot of real bytes currently attributed to each operator label (only labels with > 0 bytes).
+	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
 
@@ -181,6 +196,10 @@ protected:
 	//! and only updates the global counter when the cache value exceeds a threshold.
 	//! Therefore, the statistics may have slight differences from the actual memory usage.
 	mutable MemoryUsage memory_usage;
+	//! PROTOTYPE: real bytes attributed per operator label. String-keyed (dynamic), so unlike the per-tag
+	//! counters it is a plain locked map rather than a lock-free cached array — fine for a spike.
+	mutable mutex per_operator_lock;
+	unordered_map<string, int64_t> memory_usage_per_operator;
 	//! The block allocator
 	BlockAllocator &block_allocator;
 	//! Per-database singleton object cache managed by buffer pool.
