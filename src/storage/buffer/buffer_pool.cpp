@@ -329,13 +329,14 @@ void BufferPool::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 	memory_usage.UpdateUsedMemory(tag, size);
 }
 
-// PROTOTYPE: thread-local "current operator" stack. A sink pushes its name while executing; any
-// BufferPoolReservation constructed on that thread captures the label at construction time.
-static thread_local vector<string> tl_operator_stack;
-static const string EMPTY_OPERATOR;
+// PROTOTYPE: thread-local "current operator" stack, holding shared_ptrs to the counters. A sink pushes its
+// counter while executing; any BufferPoolReservation constructed on that thread copies the top shared_ptr, so
+// alloc/free later bump that counter's atomic directly — no map, no lock on the hot path.
+static thread_local vector<shared_ptr<OperatorMemoryCounter>> tl_operator_stack;
+static const shared_ptr<OperatorMemoryCounter> EMPTY_COUNTER;
 
-void BufferPool::PushCurrentOperator(string name) {
-	tl_operator_stack.push_back(std::move(name));
+void BufferPool::PushCurrentOperator(const shared_ptr<OperatorMemoryCounter> &counter) {
+	tl_operator_stack.push_back(counter);
 }
 
 void BufferPool::PopCurrentOperator() {
@@ -344,26 +345,33 @@ void BufferPool::PopCurrentOperator() {
 	}
 }
 
-const string &BufferPool::CurrentOperator() {
-	return tl_operator_stack.empty() ? EMPTY_OPERATOR : tl_operator_stack.back();
+const shared_ptr<OperatorMemoryCounter> &BufferPool::CurrentOperator() {
+	return tl_operator_stack.empty() ? EMPTY_COUNTER : tl_operator_stack.back();
 }
 
-void BufferPool::UpdateUsedMemoryPerOperator(const string &owner, int64_t size) {
-	if (owner.empty()) {
-		return; // allocation happened outside any tracked sink -> unattributed
-	}
-	lock_guard<mutex> l(per_operator_lock);
-	memory_usage_per_operator[owner] += size;
+shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(string label) {
+	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(label));
+	lock_guard<mutex> l(counter_registry_lock);
+	operator_counters.push_back(weak_ptr<OperatorMemoryCounter>(counter));
+	return counter;
 }
 
 vector<pair<string, idx_t>> BufferPool::GetPerOperatorRealBytes() const {
-	lock_guard<mutex> l(per_operator_lock);
+	lock_guard<mutex> l(counter_registry_lock);
 	vector<pair<string, idx_t>> result;
-	for (auto &entry : memory_usage_per_operator) {
-		if (entry.second > 0) {
-			result.emplace_back(entry.first, static_cast<idx_t>(entry.second));
+	vector<weak_ptr<OperatorMemoryCounter>> live; // prune expired entries while we are here
+	for (auto &weak : operator_counters) {
+		auto counter = weak.lock();
+		if (!counter) {
+			continue;
+		}
+		live.push_back(weak);
+		auto usage = counter->usage.load(std::memory_order_relaxed);
+		if (usage > 0) {
+			result.emplace_back(counter->label, static_cast<idx_t>(usage));
 		}
 	}
+	operator_counters.swap(live);
 	return result;
 }
 
