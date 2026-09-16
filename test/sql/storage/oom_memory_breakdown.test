@@ -1,0 +1,22 @@
+# name: test/sql/storage/oom_memory_breakdown.test
+# description: Out-of-memory errors report a per-operator and per-memory-tag breakdown
+# group: [storage]
+
+require noforcestorage
+
+# disable spilling so a too-large operator hits the eviction-failure path instead of offloading
+statement ok
+PRAGMA temp_directory=''
+
+statement ok
+PRAGMA memory_limit='150MB'
+
+statement ok
+PRAGMA threads=2
+
+# a hash join whose build side far exceeds the limit and cannot spill: the OOM message
+# carries the per-memory-tag breakdown (e.g. HASH_TABLE) appended to the usual usage figure
+statement error
+SELECT count(*) FROM range(20000000) a JOIN range(20000000) b ON a.range = b.range;
+----
+<REGEX>:.*Out of Memory Error.*could not allocate.*by category.*
