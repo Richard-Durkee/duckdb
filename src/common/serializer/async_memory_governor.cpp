@@ -17,7 +17,7 @@ ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(ClientContext &client_con
 	    MinValue(max_pending_bytes, ManagedAsyncMemoryConfig::MIN_PENDING_BYTES_PER_THREAD * regular_threads);
 	// A reservation is only useful when drain tasks run asynchronously; synchronous draining bounds itself.
 	if (async_threads > 0 && max_pending_bytes > 0) {
-		memory_state = TemporaryMemoryManager::Get(client_context).Register(client_context);
+		memory_state = TemporaryMemoryManager::Get(client_context).Register(client_context, "ASYNC_RESULT_WRITE");
 		memory_state->SetMinimumReservation(min_pending_bytes);
 		memory_state->SetZero();
 	}

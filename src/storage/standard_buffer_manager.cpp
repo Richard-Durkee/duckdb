@@ -1,10 +1,12 @@
 #include "duckdb/storage/standard_buffer_manager.hpp"
 
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/enums/storage_block_prefetch.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/set.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
@@ -123,6 +125,41 @@ idx_t StandardBufferManager::GetOperatorMemoryLimit() const {
 	return GetBufferPool().GetOperatorMemoryLimit();
 }
 
+string StandardBufferManager::MemoryBreakdownForError() {
+	string result;
+	// Per-operator reservations tracked by the TemporaryMemoryManager. This only covers operators that
+	// spill/reserve through the TMM (hash join, order by, grouped aggregate, ...); memory used by other
+	// operators does not appear here and is only visible in the per-tag breakdown below.
+	string operator_text;
+	for (auto &info : GetTemporaryMemoryManager().GetPerOperatorUsage()) {
+		if (info.reservation == 0) {
+			continue;
+		}
+		if (!operator_text.empty()) {
+			operator_text += ", ";
+		}
+		operator_text += info.label + " " + StringUtil::BytesToHumanReadableString(info.reservation);
+	}
+	if (!operator_text.empty()) {
+		result += " (by operator: " + operator_text + ")";
+	}
+	// Per-memory-tag usage: covers all buffer-managed memory, grouped by subsystem/category.
+	string tag_text;
+	for (auto &info : GetMemoryUsageInfo()) {
+		if (info.size == 0) {
+			continue;
+		}
+		if (!tag_text.empty()) {
+			tag_text += ", ";
+		}
+		tag_text += EnumUtil::ToString(info.tag) + " " + StringUtil::BytesToHumanReadableString(info.size);
+	}
+	if (!tag_text.empty()) {
+		result += " (by category: " + tag_text + ")";
+	}
+	return result;
+}
+
 template <typename... ARGS>
 TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext context, MemoryTag tag,
                                                                     idx_t memory_delta, unique_ptr<FileBuffer> *buffer,
@@ -131,6 +168,7 @@ TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext
 	if (!r.success) {
 		string extra_text = StringUtil::Format(" (%s/%s used)", StringUtil::BytesToHumanReadableString(GetUsedMemory()),
 		                                       StringUtil::BytesToHumanReadableString(GetMaxMemory()));
+		extra_text += MemoryBreakdownForError();
 		extra_text += InMemoryWarning();
 		throw OutOfMemoryException(args..., extra_text);
 	}

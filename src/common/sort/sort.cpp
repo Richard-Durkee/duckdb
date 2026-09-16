@@ -162,7 +162,7 @@ class SortGlobalSinkState : public GlobalSinkState {
 public:
 	explicit SortGlobalSinkState(ClientContext &context)
 	    : num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), sorted_tuples(0),
+	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context, "ORDER_BY")), sorted_tuples(0),
 	      external(Settings::Get<DebugForceExternalSetting>(context)), any_combined(false), total_count(0),
 	      partition_size(0) {
 	}
