@@ -9,6 +9,7 @@
 #include "duckdb/common/types/row/block_iterator.hpp"
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/parallel/parallel_destroy_task.hpp"
+#include "duckdb/storage/temporary_memory_manager.hpp"
 
 #include "vergesort.h"
 #include "pdqsort.h"
@@ -162,8 +163,11 @@ private:
 //===--------------------------------------------------------------------===//
 class SortedRunMergerGlobalState : public GlobalSourceState {
 public:
-	explicit SortedRunMergerGlobalState(ClientContext &context_p, const SortedRunMerger &merger_p)
-	    : context(context_p), num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()), merger(merger_p),
+	SortedRunMergerGlobalState(ClientContext &context_p, const SortedRunMerger &merger_p, idx_t max_threads)
+	    : context(context_p),
+	      num_threads(MaxValue<idx_t>(
+	          MinValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfThreads(), max_threads), 1)),
+	      merger(merger_p),
 	      num_runs(merger.sorted_runs.size()),
 	      num_partitions((merger.total_count + (merger.partition_size - 1)) / merger.partition_size),
 	      iterator_state_type(GetBlockIteratorStateType(merger.external)),
@@ -190,12 +194,19 @@ public:
 	}
 
 	idx_t MaxThreads() override {
-		return MaxValue<idx_t>(num_partitions, 1);
+		// Bounded by num_threads, which is capped to the merge memory budget
+		return MaxValue<idx_t>(MinValue<idx_t>(num_partitions, num_threads), 1);
 	}
 
 	void DestroyScannedData() {
+		if (!allow_destroy_scanned_data) {
+			return; // Eager reclamation disabled (e.g. sequential single-run materialization during run reduction)
+		}
 		if (!merger.external) {
 			return; // Only need to destroy when doing an external sort
+		}
+		if (!merger.sorted_runs.empty() && merger.sorted_runs[0]->is_materialized) {
+			return; // Materialized (reduced) runs have a different block layout; rely on buffer eviction
 		}
 
 		// Have to do this under lock, but other threads don't have to wait
@@ -280,6 +291,8 @@ public:
 
 	mutex destroy_lock;
 	idx_t destroy_partition_idx;
+	//! When false, scanned source data is not eagerly destroyed (used by single-run materialization)
+	bool allow_destroy_scanned_data = true;
 
 	mutex materialized_partition_lock;
 	vector<unique_ptr<SortedRun>> materialized_partitions;
@@ -782,6 +795,29 @@ SortedRunMerger::~SortedRunMerger() {
 	ParallelDestroyTask<decltype(sorted_runs)>::Schedule(scheduler, sorted_runs);
 }
 
+idx_t SortedRunMerger::PartitionMemoryUsage() const {
+	if (total_count == 0 || sorted_runs.empty()) {
+		return 0;
+	}
+	// Merging a partition pins its key/payload blocks (roughly partition_size tuples across all runs)
+	idx_t total_bytes = 0;
+	for (const auto &sorted_run : sorted_runs) {
+		total_bytes += sorted_run->SizeInBytes();
+	}
+	const auto bytes_per_tuple = (total_bytes + total_count - 1) / total_count;
+	idx_t usage = partition_size * bytes_per_tuple;
+	// Plus a scratch buffer holding the partition's sort keys
+	usage += partition_size * sort.key_layout->GetRowWidth();
+	// Plus partial-block overhead: each run may pin an extra key (and payload) block at the boundaries
+	const auto &front = *sorted_runs[0];
+	idx_t block_overhead = front.key_data->TuplesPerBlock() * sort.key_layout->GetRowWidth();
+	if (front.payload_data) {
+		block_overhead += front.payload_data->TuplesPerBlock() * sort.payload_layout->GetRowWidth();
+	}
+	usage += sorted_runs.size() * block_overhead;
+	return usage;
+}
+
 unique_ptr<LocalSourceState> SortedRunMerger::GetLocalSourceState(ExecutionContext &,
                                                                   GlobalSourceState &gstate_p) const {
 	auto &gstate = gstate_p.Cast<SortedRunMergerGlobalState>();
@@ -789,8 +825,8 @@ unique_ptr<LocalSourceState> SortedRunMerger::GetLocalSourceState(ExecutionConte
 	return make_uniq<SortedRunMergerLocalState>(gstate);
 }
 
-unique_ptr<GlobalSourceState> SortedRunMerger::GetGlobalSourceState(ClientContext &context) const {
-	return make_uniq<SortedRunMergerGlobalState>(context, *this);
+unique_ptr<GlobalSourceState> SortedRunMerger::GetGlobalSourceState(ClientContext &context, idx_t max_threads) const {
+	return make_uniq<SortedRunMergerGlobalState>(context, *this, max_threads);
 }
 
 SourceResultType SortedRunMerger::GetData(ExecutionContext &, DataChunk &chunk, OperatorSourceInput &input) const {
@@ -870,6 +906,107 @@ unique_ptr<SortedRun> SortedRunMerger::GetSortedRun(GlobalSourceState &global_st
 	auto res = std::move(gstate.materialized_partitions[0]);
 	gstate.materialized_partitions.clear();
 	return res;
+}
+
+unique_ptr<SortedRun> SortedRunMerger::MaterializeSingleRun(ClientContext &context) {
+	if (total_count == 0) {
+		return nullptr;
+	}
+	// Single-threaded: materialize each partition with a FRESH local state. The block-iterator states
+	// are per-local-state; reusing one across a partition's MERGE (pins/advances) and the next
+	// partition's boundary COMPUTE (random-access reads) corrupts them, producing a slightly-unsorted
+	// run. Partition boundaries are propagated through the shared global state, so a fresh state per
+	// partition is both correct and memory-bounded.
+	auto global_state = GetGlobalSourceState(context, 1);
+	auto &gstate = global_state->Cast<SortedRunMergerGlobalState>();
+	gstate.allow_destroy_scanned_data = false;
+	while (true) {
+		context.InterruptCheck();
+		SortedRunMergerLocalState lstate(gstate);
+		if (!gstate.AssignTask(lstate)) {
+			break;
+		}
+		while (!lstate.TaskFinished()) {
+			lstate.ExecuteTask(gstate, nullptr);
+		}
+		lstate.Clear();
+	}
+	return GetSortedRun(gstate);
+}
+
+vector<unique_ptr<SortedRun>> SortedRunMerger::ReduceRuns(const Sort &sort, ClientContext &context,
+                                                         vector<unique_ptr<SortedRun>> &&runs, bool external,
+                                                         TemporaryMemoryState &temporary_memory_state) {
+	idx_t total_bytes = 0;
+	idx_t total_count = 0;
+	for (const auto &run : runs) {
+		total_bytes += run->SizeInBytes();
+		total_count += run->Count();
+	}
+	// Only external sorts spill and merge many runs; in-memory runs stay resident (no reduction needed,
+	// and touching the reservation would evict their blocks).
+	if (!external || total_count == 0 || runs.size() <= 2) {
+		return std::move(runs);
+	}
+
+	// Request a reservation to use as the merge memory budget
+	temporary_memory_state.SetRemainingSizeAndUpdateReservation(context, total_bytes);
+	const auto budget = MaxValue<idx_t>(temporary_memory_state.GetReservation(), 1);
+
+	// Per-run pinned floor: at least a key (and payload) block is pinned per run during the FINAL merge
+	const auto &front = *runs[0];
+	idx_t per_run_block = front.key_data->TuplesPerBlock() * sort.key_layout->GetRowWidth();
+	if (front.payload_data) {
+		per_run_block += front.payload_data->TuplesPerBlock() * sort.payload_layout->GetRowWidth();
+	}
+	per_run_block = MaxValue<idx_t>(per_run_block, 1);
+
+	// The final (parallel, streaming) merge pins ~one block per run; stop reducing once the run count is
+	// small enough that this fits the budget. Bias conservatively (a run can pin several blocks).
+	const idx_t final_fanout = MaxValue<idx_t>(budget / (per_run_block * 8), 2);
+	// Each intermediate group is merged as a SINGLE partition (which is correct - a multi-partition
+	// materialize mis-orders), so a group's whole footprint (pinned blocks + key scratch) is resident at
+	// once. Bound a group by bytes to keep that within the budget. Allow up to ~the full budget so at least
+	// two runs fit per group - a smaller cap can be below one run's size, which would stall reduction.
+	const idx_t key_width = sort.key_layout->GetRowWidth();
+	const idx_t group_byte_budget = MaxValue<idx_t>(budget, 1);
+
+	while (runs.size() > final_fanout) {
+		vector<unique_ptr<SortedRun>> reduced;
+		bool merged_any = false;
+		idx_t i = 0;
+		while (i < runs.size()) {
+			// Greedily accumulate a group whose data + key scratch stays within the budget
+			vector<unique_ptr<SortedRun>> group;
+			idx_t group_rows = 0;
+			idx_t group_footprint = 0;
+			while (i < runs.size()) {
+				const auto run_footprint = runs[i]->SizeInBytes() + runs[i]->Count() * key_width;
+				if (!group.empty() && group_footprint + run_footprint > group_byte_budget) {
+					break;
+				}
+				group_footprint += run_footprint;
+				group_rows += runs[i]->Count();
+				group.push_back(std::move(runs[i]));
+				i++;
+			}
+			if (group.size() == 1) {
+				reduced.push_back(std::move(group[0]));
+				continue;
+			}
+			merged_any = true;
+			// Merge each byte-bounded group as a SINGLE partition. Multi-partition materialize would allow
+			// bounded pinning for larger groups, but it currently corrupts variable-size payloads across
+			// partitions (order_parallel_fixed/complex fail) - keep single-partition until that is fixed.
+			SortedRunMerger group_merger(sort, std::move(group), MaxValue<idx_t>(group_rows, 1), external, false);
+			reduced.push_back(group_merger.MaterializeSingleRun(context));
+		}
+		runs = std::move(reduced);
+		if (!merged_any) {
+			break; // No progress possible (e.g. a single run exceeds the budget) - avoid an infinite loop
+		}
+	}
+	return std::move(runs);
 }
 
 } // namespace duckdb

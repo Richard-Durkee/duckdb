@@ -366,8 +366,35 @@ ProgressData Sort::GetSinkProgress(ClientContext &context, GlobalSinkState &gsta
 class SortGlobalSourceState : public GlobalSourceState {
 public:
 	SortGlobalSourceState(const Sort &sort, ClientContext &context, SortGlobalSinkState &sink_p)
-	    : sink(sink_p), merger(sort, std::move(sink.sorted_runs), sink.partition_size, sink.external, false),
-	      merger_global_state(merger.total_count == 0 ? nullptr : merger.GetGlobalSourceState(context)), registered(0) {
+	    : sink(sink_p),
+	      merger(sort,
+	             SortedRunMerger::ReduceRuns(sort, context, std::move(sink_p.sorted_runs), sink_p.external,
+	                                         *sink_p.temporary_memory_state),
+	             sink_p.partition_size, sink_p.external, false),
+	      registered(0) {
+		if (merger.total_count == 0) {
+			return;
+		}
+		idx_t merge_threads = sink.num_threads;
+		if (sink.external) {
+			// The external merge runs partitions concurrently, each pinning ~a partition's worth of blocks
+			// plus a per-thread scratch buffer, so peak memory scales with the thread count. Bound the merge
+			// thread count to what fits the memory budget. Request the full data footprint so the granted
+			// reservation reflects the operator's real budget (requesting only num_threads*per_partition can
+			// be granted in full when it is below the limit, which would defeat the cap). In-memory sorts
+			// keep their run blocks resident, so we must not touch the reservation there (it would evict them).
+			idx_t data_bytes = 0;
+			for (const auto &run : merger.sorted_runs) {
+				data_bytes += run->SizeInBytes();
+			}
+			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, MaxValue<idx_t>(data_bytes, 1));
+			const auto budget = MaxValue<idx_t>(sink.temporary_memory_state->GetReservation(), 1);
+			// Bias per-partition up (a run pins several blocks per partition, plus heap) so a small
+			// under-estimate cannot push peak past the limit and OOM at high thread counts.
+			const auto per_partition = MaxValue<idx_t>(merger.PartitionMemoryUsage() * 2, 1);
+			merge_threads = MinValue<idx_t>(sink.num_threads, MaxValue<idx_t>(budget / per_partition, 1));
+		}
+		merger_global_state = merger.GetGlobalSourceState(context, merge_threads);
 	}
 
 public:

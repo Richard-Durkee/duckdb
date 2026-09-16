@@ -78,6 +78,8 @@ public:
 
 	//! Whether this run has been finalized
 	bool finalized;
+	//! Whether this run was produced by merge materialization (different block layout than a sunk run)
+	bool is_materialized = false;
 };
 
 } // namespace duckdb

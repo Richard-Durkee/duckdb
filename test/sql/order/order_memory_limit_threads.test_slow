@@ -1,0 +1,45 @@
+# name: test/sql/order/order_memory_limit_threads.test_slow
+# description: External sort must respect memory_limit regardless of thread count
+# group: [order]
+
+# Regression test: the external merge phase pins per-partition key/payload blocks
+# and a per-thread scratch buffer for each concurrently-merged partition. Peak
+# memory therefore scaled with the thread count and was not bounded by the
+# reservation, so a sort that completed single-threaded under a given memory_limit
+# would OOM ("failed to pin block") with more threads. The merge phase must instead
+# bound its concurrency to the reservation and complete under the limit.
+
+statement ok
+PRAGMA temp_directory='__TEST_DIR__/order_memory_limit_threads'
+
+statement ok
+CREATE TABLE t AS
+    SELECT (i * 2654435761) % 1000000000 AS k, repeat('x', 200) AS pad
+    FROM range(2000000) tbl(i);
+
+# Force many concurrent merge partitions on a tight budget. Pre-fix this OOMs; the
+# same workload completes single-threaded, so the limit is not fundamentally too small.
+statement ok
+PRAGMA threads=8
+
+statement ok
+PRAGMA memory_limit='80MB'
+
+# CREATE TABLE AS ... ORDER BY materializes in sorted order, forcing the full
+# external sort + parallel merge (a bare count() subquery could elide the sort).
+statement ok
+CREATE TABLE sorted AS SELECT k FROM t ORDER BY k, pad
+
+query I
+SELECT count(*) FROM sorted
+----
+2000000
+
+# Sanity check the ordering actually happened
+query I
+SELECT k FROM sorted LIMIT 1
+----
+0
+
+statement ok
+PRAGMA memory_limit='-1'

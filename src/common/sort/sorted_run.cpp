@@ -157,6 +157,7 @@ unique_ptr<SortedRun> SortedRun::CreateRunForMaterialization() const {
 	res->key_append_state.pin_state.properties = TupleDataPinProperties::UNPIN_AFTER_DONE;
 	res->payload_append_state.pin_state.properties = TupleDataPinProperties::UNPIN_AFTER_DONE;
 	res->finalized = true;
+	res->is_materialized = true;
 	return res;
 }
 
