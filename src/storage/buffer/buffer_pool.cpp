@@ -329,6 +329,44 @@ void BufferPool::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 	memory_usage.UpdateUsedMemory(tag, size);
 }
 
+// PROTOTYPE: thread-local "current operator" stack. A sink pushes its name while executing; any
+// BufferPoolReservation constructed on that thread captures the label at construction time.
+static thread_local vector<string> tl_operator_stack;
+static const string EMPTY_OPERATOR;
+
+void BufferPool::PushCurrentOperator(string name) {
+	tl_operator_stack.push_back(std::move(name));
+}
+
+void BufferPool::PopCurrentOperator() {
+	if (!tl_operator_stack.empty()) {
+		tl_operator_stack.pop_back();
+	}
+}
+
+const string &BufferPool::CurrentOperator() {
+	return tl_operator_stack.empty() ? EMPTY_OPERATOR : tl_operator_stack.back();
+}
+
+void BufferPool::UpdateUsedMemoryPerOperator(const string &owner, int64_t size) {
+	if (owner.empty()) {
+		return; // allocation happened outside any tracked sink -> unattributed
+	}
+	lock_guard<mutex> l(per_operator_lock);
+	memory_usage_per_operator[owner] += size;
+}
+
+vector<pair<string, idx_t>> BufferPool::GetPerOperatorRealBytes() const {
+	lock_guard<mutex> l(per_operator_lock);
+	vector<pair<string, idx_t>> result;
+	for (auto &entry : memory_usage_per_operator) {
+		if (entry.second > 0) {
+			result.emplace_back(entry.first, static_cast<idx_t>(entry.second));
+		}
+	}
+	return result;
+}
+
 idx_t BufferPool::GetUsedMemory(bool flush) const {
 	return memory_usage.GetUsedMemory(flush ? MemoryUsageCaches::FLUSH : MemoryUsageCaches::NO_FLUSH);
 }
