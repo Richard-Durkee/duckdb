@@ -6,6 +6,7 @@
 
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 #include <chrono>
@@ -14,11 +15,11 @@
 
 namespace duckdb {
 
-// PROTOTYPE: pushes the sink operator's name onto the buffer pool's thread-local "current operator" for the
+// PROTOTYPE: pushes the sink's memory counter onto the buffer pool's thread-local "current operator" for the
 // duration of a sink call, so buffer reservations made while sinking attribute their real bytes to this operator.
 struct OperatorMemoryScope {
-	explicit OperatorMemoryScope(const PhysicalOperator &op) {
-		BufferPool::PushCurrentOperator(op.GetName());
+	explicit OperatorMemoryScope(const shared_ptr<OperatorMemoryCounter> &counter) {
+		BufferPool::PushCurrentOperator(counter);
 	}
 	~OperatorMemoryScope() {
 		BufferPool::PopCurrentOperator();
@@ -44,6 +45,10 @@ PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_
     : pipeline(pipeline_p), thread(context_p), context(context_p, thread, &pipeline_p) {
 	if (pipeline.sink) {
 		local_sink_state = pipeline.sink->GetLocalSinkState(context);
+		// PROTOTYPE: one real-memory counter per sink operator, created + registered once here.
+		sink_memory_counter =
+		    BufferManager::GetBufferManager(context.client).GetBufferPool().RegisterOperatorCounter(
+		        pipeline.sink->GetName());
 		required_partition_info = pipeline.sink->RequiredPartitionInfo();
 		if (required_partition_info.AnyRequired()) {
 			D_ASSERT(pipeline.source->SupportsPartitioning(required_partition_info));
@@ -711,7 +716,7 @@ PipelineExecuteResult PipelineExecutor::PushFinalize() {
 #endif
 	SinkCombineResultType result;
 	{
-		OperatorMemoryScope mem_scope(*pipeline.sink); // PROTOTYPE: attribute reservations to the sink operator
+		OperatorMemoryScope mem_scope(sink_memory_counter); // PROTOTYPE: attribute reservations to the sink
 		result = pipeline.sink->Combine(context, combine_input);
 	}
 
@@ -850,7 +855,7 @@ SinkResultType PipelineExecutor::Sink(DataChunk &chunk, OperatorSinkInput &input
 		return SinkResultType::BLOCKED;
 	}
 #endif
-	OperatorMemoryScope mem_scope(*pipeline.sink); // PROTOTYPE: attribute reservations to the sink operator
+	OperatorMemoryScope mem_scope(sink_memory_counter); // PROTOTYPE: attribute reservations to the sink operator
 	return pipeline.sink->Sink(context, chunk, input);
 }
 
