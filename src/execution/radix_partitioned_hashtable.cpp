@@ -245,9 +245,9 @@ public:
 };
 
 RadixHTGlobalSinkState::RadixHTGlobalSinkState(ClientContext &context_p, const RadixPartitionedHashTable &radix_ht_p)
-    : context(context_p), temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)),
-      finalized(false), external(false), active_threads(0),
-      number_of_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
+    : context(context_p),
+      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context, "HASH_GROUP_BY")), finalized(false),
+      external(false), active_threads(0), number_of_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
       memory_limit(BufferManager::GetBufferManager(context).GetOperatorMemoryLimit()),
       block_alloc_size(BufferManager::GetBufferManager(context).GetBlockAllocSize()), any_combined(false),
       any_abandoned(false), radix_ht(radix_ht_p), config(*this), stored_allocators_size(0), finalize_done(0),

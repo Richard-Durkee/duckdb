@@ -10,14 +10,18 @@
 
 namespace duckdb {
 
-TemporaryMemoryState::TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager_p,
+TemporaryMemoryState::TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager_p, string label_p,
                                            idx_t minimum_reservation_p)
-    : temporary_memory_manager(temporary_memory_manager_p), remaining_size(0),
+    : temporary_memory_manager(temporary_memory_manager_p), label(std::move(label_p)), remaining_size(0),
       minimum_reservation(minimum_reservation_p), reservation(0), materialization_penalty(1) {
 }
 
 TemporaryMemoryState::~TemporaryMemoryState() {
 	temporary_memory_manager.Unregister(*this);
+}
+
+const string &TemporaryMemoryState::GetLabel() const {
+	return label;
 }
 
 void TemporaryMemoryState::SetRemainingSize(idx_t new_remaining_size) {
@@ -110,16 +114,28 @@ TemporaryMemoryManager &TemporaryMemoryManager::Get(ClientContext &context) {
 	return BufferManager::GetBufferManager(context).GetTemporaryMemoryManager();
 }
 
-unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context) {
+unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context, string label) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
 	UpdateConfiguration(context);
 
-	auto result = unique_ptr<TemporaryMemoryState>(new TemporaryMemoryState(*this, DefaultMinimumReservation()));
+	auto result = unique_ptr<TemporaryMemoryState>(
+	    new TemporaryMemoryState(*this, std::move(label), DefaultMinimumReservation()));
 	SetRemainingSize(*result, MinimumReservation(*result));
 	SetReservation(*result, MinimumReservation(*result));
 	active_states.insert(*result);
 
 	Verify();
+	return result;
+}
+
+vector<OperatorMemoryUsageInfo> TemporaryMemoryManager::GetPerOperatorUsage() {
+	const annotated_lock_guard<annotated_mutex> guard(lock);
+	vector<OperatorMemoryUsageInfo> result;
+	result.reserve(active_states.size());
+	for (auto &state_ref : active_states) {
+		auto &state = state_ref.get();
+		result.push_back({state.GetLabel(), state.GetReservation(), state.GetRemainingSize()});
+	}
 	return result;
 }
 
