@@ -20,6 +20,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
+#include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 
 namespace duckdb {
@@ -63,15 +64,17 @@ public:
 
 	void UpdateUsedMemory(MemoryTag tag, int64_t size);
 
-	//! PROTOTYPE: real per-operator memory attribution. A thread-local "current operator" is pushed while a
-	//! sink executes; BufferPoolReservations constructed on that thread capture the label, so alloc/free route
-	//! real bytes to the owning operator (parallel to the per-tag accounting).
-	static void PushCurrentOperator(string name);
+	//! PROTOTYPE: real per-operator memory attribution, lock-free on the hot path. Create one counter per sink
+	//! operator (RegisterOperatorCounter); push it onto the thread-local "current operator" while the sink runs;
+	//! BufferPoolReservations constructed on that thread capture a shared_ptr to it and bump its atomic on
+	//! alloc/free. No map lookup and no lock on the reservation path.
+	static void PushCurrentOperator(const shared_ptr<OperatorMemoryCounter> &counter);
 	static void PopCurrentOperator();
-	static const string &CurrentOperator();
-	//! Add/subtract real bytes for an operator label (called from BufferPoolReservation alloc/free).
-	void UpdateUsedMemoryPerOperator(const string &owner, int64_t size);
-	//! Snapshot of real bytes currently attributed to each operator label (only labels with > 0 bytes).
+	static const shared_ptr<OperatorMemoryCounter> &CurrentOperator();
+	//! Create + register a counter for an operator (registry holds a weak_ptr; the returned shared_ptr keeps it
+	//! alive). Only touched at sink setup, never on the allocation hot path.
+	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(string label);
+	//! Snapshot of real bytes currently attributed to each live operator counter (only counters with > 0 bytes).
 	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
@@ -196,10 +199,11 @@ protected:
 	//! and only updates the global counter when the cache value exceeds a threshold.
 	//! Therefore, the statistics may have slight differences from the actual memory usage.
 	mutable MemoryUsage memory_usage;
-	//! PROTOTYPE: real bytes attributed per operator label. String-keyed (dynamic), so unlike the per-tag
-	//! counters it is a plain locked map rather than a lock-free cached array — fine for a spike.
-	mutable mutex per_operator_lock;
-	unordered_map<string, int64_t> memory_usage_per_operator;
+	//! PROTOTYPE: registry of live per-operator counters (weak_ptr so it never keeps dead counters alive). Only
+	//! mutated at sink setup (RegisterOperatorCounter) and read at OOM — NOT on the allocation hot path, which
+	//! bumps each counter's atomic directly via the shared_ptr the reservation holds.
+	mutable mutex counter_registry_lock;
+	mutable vector<weak_ptr<OperatorMemoryCounter>> operator_counters;
 	//! The block allocator
 	BlockAllocator &block_allocator;
 	//! Per-database singleton object cache managed by buffer pool.

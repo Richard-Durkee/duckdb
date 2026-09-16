@@ -16,7 +16,10 @@ BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexce
 
 BufferPoolReservation &BufferPoolReservation::operator=(BufferPoolReservation &&src) noexcept {
 	pool.UpdateUsedMemory(tag, -UnsafeNumericCast<int64_t>(size));
-	pool.UpdateUsedMemoryPerOperator(owner, -UnsafeNumericCast<int64_t>(size));
+	// PROTOTYPE: lock-free — release these bytes from the owning operator's counter before taking src's.
+	if (owner) {
+		owner->usage.fetch_sub(UnsafeNumericCast<int64_t>(size), std::memory_order_relaxed);
+	}
 	tag = src.tag;
 	size = src.size;
 	owner = std::move(src.owner);
@@ -31,14 +34,29 @@ BufferPoolReservation::~BufferPoolReservation() {
 void BufferPoolReservation::Resize(idx_t new_size) {
 	auto delta = UnsafeNumericCast<int64_t>(new_size) - UnsafeNumericCast<int64_t>(size);
 	pool.UpdateUsedMemory(tag, delta);
-	pool.UpdateUsedMemoryPerOperator(owner, delta);
+	// PROTOTYPE: lock-free per-operator attribution — bump this reservation's owner counter directly.
+	if (owner) {
+		auto usage = owner->usage.fetch_add(delta, std::memory_order_relaxed) + delta;
+		auto peak = owner->peak.load(std::memory_order_relaxed); // best-effort peak (racy, fine for a spike)
+		if (usage > peak) {
+			owner->peak.store(usage, std::memory_order_relaxed);
+		}
+	}
 	size = new_size;
 }
 
 void BufferPoolReservation::Merge(BufferPoolReservation src) {
-	// NOTE (prototype gap): if src.owner != owner, the merged bytes were counted under src.owner at their own
-	// Resize and are not re-attributed here, so a later Resize(0) decrements the wrong owner. Main hash/sort
-	// paths grow a single reservation via Resize and are unaffected.
+	// PROTOTYPE: the pool total already counts both reservations; per-operator, src's bytes were added to
+	// src.owner at its own Resize. Re-attribute them to this owner (lock-free) so a later free decrements the
+	// right counter. This closes the cross-owner Merge gap the string-label version had.
+	if (src.owner != owner) {
+		if (src.owner) {
+			src.owner->usage.fetch_sub(UnsafeNumericCast<int64_t>(src.size), std::memory_order_relaxed);
+		}
+		if (owner) {
+			owner->usage.fetch_add(UnsafeNumericCast<int64_t>(src.size), std::memory_order_relaxed);
+		}
+	}
 	size += src.size;
 	src.size = 0;
 }
