@@ -13,6 +13,7 @@
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline_event.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
@@ -43,8 +44,22 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 
 	pipeline_executor->SetTaskForInterrupts(shared_from_this());
 
+	// Execution-timeline instrumentation (profiling-only): record this slice's wall-clock extent so a
+	// per-task Gantt / per-pipeline extents can be reconstructed. Zero cost when profiling is disabled.
+	auto &profiler = QueryProfiler::Get(pipeline.GetClientContext());
+	const bool record_timeline = profiler.IsEnabled();
+	const int64_t slice_start_us = record_timeline ? profiler.TimelineElapsedUs() : 0;
+	auto record_slice = [&]() {
+		auto sink = pipeline.GetSink();
+		profiler.RecordTaskEvent(reinterpret_cast<idx_t>(&pipeline), sink ? sink->GetName() : string(),
+		                         slice_start_us, profiler.TimelineElapsedUs());
+	};
+
 	if (mode == TaskExecutionMode::PROCESS_PARTIAL) {
 		auto res = pipeline_executor->Execute(PARTIAL_CHUNK_COUNT);
+		if (record_timeline) {
+			record_slice();
+		}
 
 		switch (res) {
 		case PipelineExecuteResult::NOT_FINISHED:
@@ -56,6 +71,9 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 		}
 	} else {
 		auto res = pipeline_executor->Execute();
+		if (record_timeline) {
+			record_slice();
+		}
 		switch (res) {
 		case PipelineExecuteResult::NOT_FINISHED:
 			throw InternalException("Execute without limit should not return NOT_FINISHED");

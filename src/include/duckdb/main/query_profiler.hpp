@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/chrono.hpp"
 #include "duckdb/common/enums/profiling_coverage.hpp"
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/enums/metric_type.hpp"
@@ -38,6 +39,17 @@ class PhysicalOperator;
 class TreeRenderer;
 class SQLStatement;
 struct MetricsTimer;
+
+//! One execution slice of a pipeline task on a worker thread. Offsets are microseconds relative to the
+//! query-start steady anchor; a wall-clock timeline, per-pipeline (stage) extents, and a per-task Gantt
+//! can all be reconstructed from these plus query_start_epoch_us. Recorded only when profiling is enabled.
+struct TaskTimelineEvent {
+	idx_t id;
+	idx_t pipeline_id;
+	string sink;
+	int64_t start_us;
+	int64_t end_us;
+};
 class OperatorProfiler;
 
 //! A JSON-like recursive profiling value.
@@ -102,6 +114,13 @@ public:
 	DUCKDB_API void EndQuery();
 	//! Finalize query metrics for output; safe to call multiple times.
 	DUCKDB_API void FinalizeMetrics();
+
+	//! Microseconds elapsed since the query-start steady anchor. Cheap (one steady_clock read); callers gate on
+	//! IsEnabled() before using it so nothing is measured when profiling is off.
+	DUCKDB_API int64_t TimelineElapsedUs() const;
+	//! Record one execution slice of a pipeline task (profiling-only). start_us/end_us are TimelineElapsedUs()
+	//! readings taken around the slice. Appends under the profiler lock.
+	DUCKDB_API void RecordTaskEvent(idx_t pipeline_id, const string &sink, int64_t start_us, int64_t end_us);
 
 	//! Track bytes read and the time spent reading.
 	DUCKDB_API void TrackBytesRead(idx_t amount, idx_t elapsed_us);
@@ -208,6 +227,13 @@ private:
 	bool is_explain_analyze;
 	//! Whether root metrics have been finalized for output
 	bool metrics_finalized;
+
+	//! Wall-clock origin of the query (system_clock, microseconds since epoch), the timeline's absolute anchor.
+	int64_t query_start_epoch_us = 0;
+	//! Monotonic origin captured at the same instant; per-task offsets are measured against this.
+	steady_clock::time_point query_start_steady;
+	//! Per-task execution slices, appended by worker threads while profiling is enabled (guarded by lock).
+	vector<TaskTimelineEvent> task_events;
 
 public:
 	const TreeMap &GetTreeMap() const {

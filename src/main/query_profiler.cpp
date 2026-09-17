@@ -122,7 +122,20 @@ void QueryProfiler::Start(const string &query) {
 	Reset();
 	running = true;
 	query_metrics.query_sql = query;
+	// Anchor the execution timeline: absolute wall-clock origin plus a monotonic reference taken together.
+	query_start_epoch_us =
+	    duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+	query_start_steady = steady_clock::now();
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
+}
+
+int64_t QueryProfiler::TimelineElapsedUs() const {
+	return duration_cast<microseconds>(steady_clock::now() - query_start_steady).count();
+}
+
+void QueryProfiler::RecordTaskEvent(idx_t pipeline_id, const string &sink, int64_t start_us, int64_t end_us) {
+	lock_guard<std::mutex> guard(lock);
+	task_events.push_back(TaskTimelineEvent {task_events.size(), pipeline_id, sink, start_us, end_us});
 }
 
 void QueryProfiler::Reset() {
@@ -133,6 +146,8 @@ void QueryProfiler::Reset() {
 	query_metrics.Reset();
 	result_tree.reset();
 	metrics_finalized = false;
+	task_events.clear();
+	query_start_epoch_us = 0;
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -994,6 +1009,21 @@ unique_ptr<QueryProfileResult> QueryProfiler::ToResultTree() const {
 		auto &op_list = result->AddList("operator");
 		auto &op_node = op_list.AppendObject();
 		OperatorToResultTree(*metrics, *root, op_node);
+	}
+	// Additive execution-timeline section: query-start wall-clock anchor + per-task slices. A wall-clock
+	// timeline, per-pipeline (stage) extents, and a per-task Gantt are all reconstructable from this.
+	if (!task_events.empty()) {
+		auto &timeline = result->AddObject("execution_timeline");
+		timeline.AddValue("query_start_epoch_us", Value::BIGINT(query_start_epoch_us));
+		auto &tasks = timeline.AddList("tasks");
+		for (const auto &event : task_events) {
+			auto &task = tasks.AppendObject();
+			task.AddValue("id", Value::UBIGINT(event.id));
+			task.AddValue("pipeline", Value::UBIGINT(event.pipeline_id));
+			task.AddValue("sink", Value(event.sink));
+			task.AddValue("start_us", Value::BIGINT(event.start_us));
+			task.AddValue("end_us", Value::BIGINT(event.end_us));
+		}
 	}
 	return result;
 }
