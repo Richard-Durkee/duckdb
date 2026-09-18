@@ -17,6 +17,8 @@ void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
 	info.SetMetric<MetricIOTotalBytesWritten>(GetBytesWritten());
 	info.SetMetric<MetricIOTotalWriteOperations>(GetWriteOperations());
 	info.SetMetric<MetricIOTotalWriteTime>(GetWriteTime());
+	info.SetMetric<MetricIONetworkBandwidthBytesPerS>(GetNetworkBandwidth());
+	info.SetMetric<MetricIONetworkLatencySeconds>(GetNetworkLatency());
 	info.SetMetric<MetricSystemBlockedThreadTime>(blocked_thread_time);
 	info.SetMetric<MetricSystemPeakBufferMemory>(system_peak_buffer_memory);
 	info.SetMetric<MetricSystemPeakStreamingBufferSize>(system_peak_streaming_buffer_size);

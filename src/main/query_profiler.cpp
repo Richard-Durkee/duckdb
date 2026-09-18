@@ -283,6 +283,14 @@ void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 	query_metrics.UpdateTotalMemoryAllocated(amount);
 }
 
+void QueryProfiler::TrackNetworkThroughput(const double bandwidth_bytes_per_s, const double latency_seconds,
+                                           const idx_t bytes) {
+	if (!IsEnabled()) {
+		return;
+	}
+	query_metrics.UpdateNetworkThroughput(bandwidth_bytes_per_s, latency_seconds, bytes);
+}
+
 void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
 	if (IsEnabled()) {
 		query_metrics.UpdateMetricCounter(key, amount);

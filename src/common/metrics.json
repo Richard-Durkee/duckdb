@@ -102,6 +102,16 @@
 			"metric_type": "double",
 			"description": "The total time spent writing to storage",
 			"unit": "seconds"
+		},
+		"network_bandwidth_bytes_per_s": {
+			"metric_type": "double",
+			"description": "Estimated single-stream read bandwidth of remote (network) file systems, byte-weighted across reads; zero when no remote reads occurred",
+			"unit": "bytes_per_second"
+		},
+		"network_latency_seconds": {
+			"metric_type": "double",
+			"description": "Estimated round-trip latency of remote (network) file system reads, byte-weighted across reads; zero when no remote reads occurred",
+			"unit": "seconds"
 		}
 	},
 	"storage": {
