@@ -117,6 +117,34 @@ struct MetricSystemTotalMemoryAllocated {
 };
 
 // Io metrics
+struct MetricIONetworkAggregateBandwidthBytesPerS {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "io.network_aggregate_bandwidth_bytes_per_s";
+	static constexpr const char *Description = "Aggregate delivered read bandwidth for remote (network) file systems: total remote bytes over the query's wall-clock time, capturing parallel range requests; zero when no remote reads occurred";
+	static constexpr const char *Unit = "bytes_per_second";
+	static constexpr const char *TypeStr = "double";
+};
+struct MetricIONetworkBandwidthBytesPerS {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "io.network_bandwidth_bytes_per_s";
+	static constexpr const char *Description = "Estimated single-stream read bandwidth of remote (network) file systems, byte-weighted across reads; zero when no remote reads occurred";
+	static constexpr const char *Unit = "bytes_per_second";
+	static constexpr const char *TypeStr = "double";
+};
+struct MetricIONetworkBytesRead {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "io.network_bytes_read";
+	static constexpr const char *Description = "Total bytes read from remote (network) file systems; zero when no remote reads occurred";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricIONetworkLatencySeconds {
+	using METRIC_TYPE = double;
+	static constexpr const char *Name = "io.network_latency_seconds";
+	static constexpr const char *Description = "Estimated round-trip latency of remote (network) file system reads, byte-weighted across reads; zero when no remote reads occurred";
+	static constexpr const char *Unit = "seconds";
+	static constexpr const char *TypeStr = "double";
+};
 struct MetricIOTotalBytesRead {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "io.total_bytes_read";

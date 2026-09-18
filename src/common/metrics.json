@@ -102,6 +102,26 @@
 			"metric_type": "double",
 			"description": "The total time spent writing to storage",
 			"unit": "seconds"
+		},
+		"network_bandwidth_bytes_per_s": {
+			"metric_type": "double",
+			"description": "Estimated single-stream read bandwidth of remote (network) file systems, byte-weighted across reads; zero when no remote reads occurred",
+			"unit": "bytes_per_second"
+		},
+		"network_latency_seconds": {
+			"metric_type": "double",
+			"description": "Estimated round-trip latency of remote (network) file system reads, byte-weighted across reads; zero when no remote reads occurred",
+			"unit": "seconds"
+		},
+		"network_bytes_read": {
+			"metric_type": "uint64",
+			"description": "Total bytes read from remote (network) file systems; zero when no remote reads occurred",
+			"unit": "bytes"
+		},
+		"network_aggregate_bandwidth_bytes_per_s": {
+			"metric_type": "double",
+			"description": "Aggregate delivered read bandwidth for remote (network) file systems: total remote bytes over the query's wall-clock time, capturing parallel range requests; zero when no remote reads occurred",
+			"unit": "bytes_per_second"
 		}
 	},
 	"storage": {

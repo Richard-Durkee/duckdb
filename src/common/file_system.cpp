@@ -805,6 +805,20 @@ int64_t FileHandle::Read(void *buffer, idx_t nr_bytes) {
 	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 }
 
+void FileHandle::TrackNetworkThroughput(QueryProfiler &profiler, idx_t bytes) {
+	// Gate on profiling first so we never take the remote file system's estimate lock when profiling is off,
+	// and never touch local files (their TryGetNetworkThroughput returns false).
+	if (bytes == 0 || !profiler.IsEnabled()) {
+		return;
+	}
+	NetworkThroughputEstimate estimate;
+	if (TryGetNetworkThroughput(estimate)) {
+		// A valid estimate means a remote file system; count the bytes (aggregate) even before the
+		// single-stream estimate converges (bandwidth == 0), which the profiler handles internally.
+		profiler.TrackNetworkThroughput(estimate.bandwidth_bytes_per_s, estimate.latency_seconds, bytes);
+	}
+}
+
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
 	const bool track = track_io && context.GetClientContext();
 	const auto start = track ? TimePoint::Tick() : TimePoint();
@@ -813,8 +827,9 @@ int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
 	auto bytes_read = file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext())
-		    .TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
+		auto &profiler = QueryProfiler::Get(*context.GetClientContext());
+		profiler.TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
+		TrackNetworkThroughput(profiler, UnsafeNumericCast<idx_t>(bytes_read));
 	}
 
 	return bytes_read;
@@ -851,7 +866,9 @@ void FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes, idx_t 
 	file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesRead(nr_bytes, elapsed_us);
+		auto &profiler = QueryProfiler::Get(*context.GetClientContext());
+		profiler.TrackBytesRead(nr_bytes, elapsed_us);
+		TrackNetworkThroughput(profiler, nr_bytes);
 	}
 }
 

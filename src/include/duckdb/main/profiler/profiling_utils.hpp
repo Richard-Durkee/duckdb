@@ -13,6 +13,7 @@
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
 #include "duckdb/common/profiler.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb_yyjson {
 struct yyjson_mut_doc;
@@ -48,6 +49,14 @@ public:
 	// Thread-safe memory allocation counter (updated from allocator callbacks on any thread)
 	atomic<idx_t> total_memory_allocated;
 
+	// Remote (network) read throughput accumulation (profiling-only).
+	// Guarded by network_throughput_lock because the components are doubles.
+	mutable mutex network_throughput_lock;
+	idx_t network_total_bytes;             // all bytes read from remote handles (aggregate throughput numerator)
+	double network_bandwidth_weighted_sum; // sum of (bandwidth_bytes_per_s * bytes) over reads with a positive estimate
+	double network_latency_weighted_sum;   // sum of (latency_seconds * bytes) over reads with a positive estimate
+	idx_t network_estimate_bytes;          // sum of bytes for reads with a positive estimate (weighted-avg denominator)
+
 public:
 	void UpdateMetric(const string &key, idx_t addition) {
 		string_timings[key] += addition;
@@ -75,6 +84,17 @@ public:
 
 	void UpdateTotalMemoryAllocated(idx_t n) {
 		total_memory_allocated += n;
+	}
+
+	void UpdateNetworkThroughput(double bandwidth_bytes_per_s, double latency_seconds, idx_t bytes) {
+		lock_guard<mutex> guard(network_throughput_lock);
+		network_total_bytes += bytes;
+		// Only reads with a converged (positive) estimate contribute to the single-stream weighted average.
+		if (bandwidth_bytes_per_s > 0) {
+			network_bandwidth_weighted_sum += bandwidth_bytes_per_s * static_cast<double>(bytes);
+			network_latency_weighted_sum += latency_seconds * static_cast<double>(bytes);
+			network_estimate_bytes += bytes;
+		}
 	}
 
 	double GetStringMetricInSeconds(const string &key) const {
@@ -125,6 +145,38 @@ public:
 		return total_memory_allocated.load();
 	}
 
+	// Single-stream (per-connection) bandwidth: byte-weighted average of the remote file system's estimate.
+	double GetNetworkBandwidth() const {
+		lock_guard<mutex> guard(network_throughput_lock);
+		if (network_estimate_bytes == 0) {
+			return 0.0;
+		}
+		return network_bandwidth_weighted_sum / static_cast<double>(network_estimate_bytes);
+	}
+
+	double GetNetworkLatency() const {
+		lock_guard<mutex> guard(network_throughput_lock);
+		if (network_estimate_bytes == 0) {
+			return 0.0;
+		}
+		return network_latency_weighted_sum / static_cast<double>(network_estimate_bytes);
+	}
+
+	idx_t GetNetworkBytes() const {
+		lock_guard<mutex> guard(network_throughput_lock);
+		return network_total_bytes;
+	}
+
+	// Aggregate delivered throughput: total remote bytes over the query's wall-clock time. Captures the
+	// speed-up from parallel range requests, unlike the single-stream estimate.
+	double GetNetworkAggregateBandwidth(double query_total_seconds) const {
+		lock_guard<mutex> guard(network_throughput_lock);
+		if (query_total_seconds <= 0 || network_total_bytes == 0) {
+			return 0.0;
+		}
+		return static_cast<double>(network_total_bytes) / query_total_seconds;
+	}
+
 	const unordered_map<string, idx_t> &GetMetricTimings() const {
 		return string_timings;
 	}
@@ -145,6 +197,13 @@ public:
 		write_time_us = 0;
 		bytes_spilled = 0;
 		total_memory_allocated = 0;
+		{
+			lock_guard<mutex> guard(network_throughput_lock);
+			network_total_bytes = 0;
+			network_bandwidth_weighted_sum = 0;
+			network_latency_weighted_sum = 0;
+			network_estimate_bytes = 0;
+		}
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -171,6 +230,13 @@ public:
 		write_time_us += other.write_time_us.load();
 		bytes_spilled += other.bytes_spilled.load();
 		total_memory_allocated += other.total_memory_allocated.load();
+		{
+			lock_guard<mutex> guard(network_throughput_lock);
+			network_total_bytes += other.network_total_bytes;
+			network_bandwidth_weighted_sum += other.network_bandwidth_weighted_sum;
+			network_latency_weighted_sum += other.network_latency_weighted_sum;
+			network_estimate_bytes += other.network_estimate_bytes;
+		}
 	}
 
 private:

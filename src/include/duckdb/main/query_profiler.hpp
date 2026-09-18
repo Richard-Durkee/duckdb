@@ -111,6 +111,8 @@ public:
 	DUCKDB_API void TrackBytesSpilled(idx_t amount);
 	//! Track memory allocated (thread-safe; always tracked).
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
+	//! Record a remote (network) read's throughput estimate, byte-weighted (profiling-only).
+	DUCKDB_API void TrackNetworkThroughput(double bandwidth_bytes_per_s, double latency_seconds, idx_t bytes);
 	//! Add to a metric counter (profiling-only).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
 	//! Add parser time measured before the per-statement profiler was started.

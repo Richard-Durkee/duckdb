@@ -104,6 +104,8 @@ struct FileMetadata {
 	unordered_map<string, Value> extended_file_info;
 };
 
+class QueryProfiler;
+
 //! Measured network throughput for a (remote) file handle. Used to size prefetch coalescing gaps.
 struct NetworkThroughputEstimate {
 	//! Round-trip latency + request setup, in seconds
@@ -186,6 +188,11 @@ public:
 	//! wrapper handles (e.g. compressed files) that delegate the real on-disk I/O to a child handle, so that
 	//! the bytes are attributed to the child handle (the actual disk I/O) and not double-counted.
 	bool track_io = true;
+
+private:
+	//! Sample this handle's network throughput estimate into the profiler, byte-weighted. No-op unless
+	//! profiling is enabled and the underlying file system is remote (local files report no estimate).
+	void TrackNetworkThroughput(QueryProfiler &profiler, idx_t bytes);
 };
 
 class FileSystem {

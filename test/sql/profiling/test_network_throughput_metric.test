@@ -1,0 +1,31 @@
+# name: test/sql/profiling/test_network_throughput_metric.test
+# description: Test the io.network_bandwidth_bytes_per_s / io.network_latency_seconds profiling metrics
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/network_throughput.json';
+
+statement ok
+SET tracked_metrics = ['io.network_bandwidth_bytes_per_s', 'io.network_latency_seconds', 'io.network_bytes_read', 'io.network_aggregate_bandwidth_bytes_per_s'];
+
+# Local reads produce no network throughput estimate (LocalFileSystem reports none),
+# so all four remote-I/O metrics must be present in the profile and equal to zero.
+statement ok
+SELECT count(*) FROM range(1000000) t(i);
+
+statement ok
+PRAGMA disable_profiling;
+
+query IIII
+SELECT prof.io.network_bandwidth_bytes_per_s = 0, prof.io.network_latency_seconds = 0,
+       prof.io.network_bytes_read = 0, prof.io.network_aggregate_bandwidth_bytes_per_s = 0
+FROM read_json('{TEST_DIR}/network_throughput.json') prof;
+----
+true	true	true	true
