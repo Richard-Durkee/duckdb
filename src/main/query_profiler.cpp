@@ -289,6 +289,22 @@ void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
 	}
 }
 
+void QueryProfiler::AddOperatorRuntimeInfo(const PhysicalOperator &op, InsertionOrderPreservingMap<string> info) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	auto entry = operator_runtime_info.find(op);
+	if (entry == operator_runtime_info.end()) {
+		operator_runtime_info.emplace(op, std::move(info));
+		return;
+	}
+	// Merge into the existing entry; existing keys are preserved (insert is a no-op on collision).
+	for (auto &kv : info) {
+		entry->second.insert(kv.first, std::move(kv.second));
+	}
+}
+
 void QueryProfiler::SetMetric(const string &key, Value new_value) {
 	if (!IsEnabled()) {
 		return;
@@ -1138,6 +1154,19 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		// operators of the view in would expose how much of the table behind it was scanned. The time of the view
 		// is accumulated onto its boundary node, so the total CPU time still covers the whole query.
 		CollapseSecureViews(*root);
+		// Fold operator-contributed runtime diagnostics into each operator's extra_info. This runs once, after all
+		// pipelines have flushed and all sinks finalized, so the counters are complete. AddExtraInfo never overwrites
+		// existing (plan-time) keys.
+		for (auto &entry : operator_runtime_info) {
+			auto node_entry = tree_map.find(entry.first);
+			if (node_entry == tree_map.end()) {
+				continue;
+			}
+			auto &info = node_entry->second.get().GetOperatorMetrics();
+			for (auto &kv : entry.second) {
+				info.AddExtraInfo(kv.first, kv.second);
+			}
+		}
 		OperatorMetrics cumulative_metrics;
 		MergeOperatorMeasurements(*root, cumulative_metrics);
 		metrics->SetMetric<MetricQueryCPUTime>(cumulative_metrics.time);

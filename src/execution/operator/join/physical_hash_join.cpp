@@ -1855,6 +1855,24 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	}
 	DUCKDB_LOG(context, PhysicalOperatorLogType, *this, "PhysicalHashJoin", "Finalize",
 	           {{"external", to_string(sink.external)}});
+	{
+		// Surface build-side spilling and radix-partition skew in the query profile. These are computed here anyway
+		// (for the external-join / repartition decisions) but were otherwise discarded.
+		const auto num_partitions = RadixPartitioning::NumberOfPartitions(ht.GetRadixBits());
+		InsertionOrderPreservingMap<string> runtime_info;
+		runtime_info.insert("Spilled To Disk", string(sink.external ? "true" : "false"));
+		runtime_info.insert("Radix Partitions", to_string(num_partitions));
+		if (num_partitions > 1 && sink.total_size > 0) {
+			const auto avg_partition_size = sink.total_size / num_partitions;
+			if (avg_partition_size > 0) {
+				// Ratio of the largest partition to the average; 1.0 is perfectly balanced, higher means more skew.
+				const auto skew =
+				    static_cast<double>(sink.max_partition_size) / static_cast<double>(avg_partition_size);
+				runtime_info.insert("Partition Skew", StringUtil::Format("%.2f", skew));
+			}
+		}
+		QueryProfiler::Get(context).AddOperatorRuntimeInfo(*this, std::move(runtime_info));
+	}
 	if (sink.external) {
 		// External Hash Join
 		// Recursive preserved-build reuse only applies to the in-memory finalized HT. External hash join
@@ -1948,6 +1966,12 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	if (!use_perfect_hash) {
 		ht.PrepareBloomFilterForFinalize();
 		sink.ScheduleFinalize(pipeline, event);
+	}
+	{
+		// Record which build path was taken; the perfect-hash path is an internal executor, not a distinct operator.
+		InsertionOrderPreservingMap<string> algo_info;
+		algo_info.insert("Join Algorithm", string(use_perfect_hash ? "perfect_hash" : "hash"));
+		QueryProfiler::Get(context).AddOperatorRuntimeInfo(*this, std::move(algo_info));
 	}
 	sink.finalized = true;
 	if (ht.Count() == 0 && EmptyResultIfRHSIsEmpty()) {

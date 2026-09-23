@@ -14,6 +14,7 @@
 #include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/main/profiler/profiler_print_format.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/pair.hpp"
@@ -115,6 +116,11 @@ public:
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer);
+	//! Attach runtime diagnostics to an operator's extra_info (profiling-only; no-op when profiling is disabled).
+	//! Called from an operator's single-threaded Finalize, where sink-state counters (e.g. whether the operator
+	//! spilled to disk) are complete. Keys are merged into the operator's extra_info at query end and never overwrite
+	//! plan-time keys. Safe to call more than once per operator.
+	DUCKDB_API void AddOperatorRuntimeInfo(const PhysicalOperator &op, InsertionOrderPreservingMap<string> info);
 
 	//! Set an arbitrary metric value (profiling-only; no-op when profiling is disabled).
 	DUCKDB_API void SetMetric(const string &key, Value new_value);
@@ -206,6 +212,9 @@ private:
 
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
+	//! Runtime diagnostics contributed by operators (via AddOperatorRuntimeInfo), keyed by operator. Folded into each
+	//! operator's extra_info in FinalizeMetricsInternal, after all pipelines have flushed and all sinks finalized.
+	reference_map_t<const PhysicalOperator, InsertionOrderPreservingMap<string>> operator_runtime_info;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
 	//! Whether root metrics have been finalized for output

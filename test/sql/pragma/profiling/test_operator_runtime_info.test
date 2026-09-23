@@ -1,0 +1,39 @@
+# name: test/sql/pragma/profiling/test_operator_runtime_info.test
+# description: Hash join surfaces runtime diagnostics (spill / partitions / algorithm) in operator extra_info
+# group: [profiling]
+
+require json
+
+statement ok
+CREATE TABLE t1 AS SELECT range AS i FROM range(1000);
+
+statement ok
+CREATE TABLE t2 AS SELECT range AS i FROM range(1000);
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/runtime_info.json';
+
+statement ok
+SELECT count(*) FROM t1 JOIN t2 USING (i);
+
+statement ok
+PRAGMA disable_profiling;
+
+# The in-memory hash join reports that it did not spill, its radix partition count, and which build path it took.
+query III
+SELECT content LIKE '%Spilled To Disk%',
+       content LIKE '%Radix Partitions%',
+       content LIKE '%Join Algorithm%'
+FROM read_text('{TEST_DIR}/runtime_info.json');
+----
+true	true	true
+
+# Runtime keys never overwrite plan-time keys: the join still reports its plan-time Join Type / Conditions.
+query II
+SELECT content LIKE '%Join Type%', content LIKE '%Conditions%'
+FROM read_text('{TEST_DIR}/runtime_info.json');
+----
+true	true
