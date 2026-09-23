@@ -25,6 +25,8 @@ class PipelineExecutor;
 class Pipeline;
 class PipelineBuildStateData;
 class PhysicalCTE;
+class BufferPool;
+struct OperatorMemoryCounter;
 
 enum class PipelineInputMode : uint8_t { SCHEDULED_SOURCE, EXTERNAL_INPUT };
 enum class PipelineDependencyType : uint8_t { REQUIRED, OPTIONAL_DEPENDENCY };
@@ -164,6 +166,11 @@ public:
 		return sink;
 	}
 
+	//! PROTOTYPE: the real-memory counter shared by all of this pipeline's thread-executors, created once and
+	//! keyed by the sink operator instance so its memory is attributed per-instance and summed across threads.
+	//! Returns nullptr for a sink-less pipeline.
+	const shared_ptr<OperatorMemoryCounter> &GetSinkMemoryCounter(BufferPool &buffer_pool);
+
 	optional_ptr<PhysicalOperator> GetSource() {
 		return source;
 	}
@@ -206,6 +213,11 @@ private:
 	vector<reference<PhysicalOperator>> operators;
 	//! The sink (i.e. destination) for data; this is e.g. a hash table to-be-built
 	optional_ptr<PhysicalOperator> sink;
+
+	//! PROTOTYPE: one real-memory counter for this pipeline's sink instance, shared by all its thread-executors
+	//! (so per-thread contributions aggregate). Lazily created under sink_memory_counter_lock.
+	shared_ptr<OperatorMemoryCounter> sink_memory_counter;
+	mutex sink_memory_counter_lock;
 
 	//! The global source state
 	shared_ptr<GlobalSourceState> source_state DUCKDB_GUARDED_BY(source_state_lock);

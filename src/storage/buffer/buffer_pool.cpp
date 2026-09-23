@@ -9,6 +9,8 @@
 #include "duckdb/storage/block_allocator.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
+#include "duckdb/common/unordered_map.hpp"
+#include "duckdb/execution/physical_operator.hpp"
 
 namespace duckdb {
 
@@ -349,8 +351,8 @@ const shared_ptr<OperatorMemoryCounter> &BufferPool::CurrentOperator() {
 	return tl_operator_stack.empty() ? EMPTY_COUNTER : tl_operator_stack.back();
 }
 
-shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(string label) {
-	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(label));
+shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(const PhysicalOperator &op) {
+	auto counter = make_shared_ptr<OperatorMemoryCounter>(op.GetName(), &op);
 	lock_guard<mutex> l(counter_registry_lock);
 	operator_counters.push_back(weak_ptr<OperatorMemoryCounter>(counter));
 	return counter;
@@ -372,6 +374,18 @@ vector<pair<string, idx_t>> BufferPool::GetPerOperatorRealBytes() const {
 		}
 	}
 	operator_counters.swap(live);
+	// Each counter is a distinct operator instance (one per pipeline sink). Disambiguate instances that share a
+	// type name (e.g. two HASH_JOINs) by numbering them, so per-operator memory is legible per instance.
+	unordered_map<string, idx_t> label_total;
+	for (auto &entry : result) {
+		label_total[entry.first]++;
+	}
+	unordered_map<string, idx_t> label_seen;
+	for (auto &entry : result) {
+		if (label_total[entry.first] > 1) {
+			entry.first += " #" + to_string(++label_seen[entry.first]);
+		}
+	}
 	return result;
 }
 

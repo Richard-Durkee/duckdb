@@ -11,12 +11,15 @@ PRAGMA temp_directory=''
 statement ok
 PRAGMA memory_limit='150MB'
 
+# single-threaded so the OOM is thrown after the hash table's memory is attributed
+# (with multiple threads a thread can hit the allocation failure before attribution completes)
 statement ok
-PRAGMA threads=2
+PRAGMA threads=1
 
 # a hash join whose build side far exceeds the limit and cannot spill: the OOM message
-# carries the per-memory-tag breakdown (e.g. HASH_TABLE) appended to the usual usage figure
+# carries the per-operator breakdown (real bytes attributed to the HASH_JOIN) and the
+# per-memory-tag breakdown (HASH_TABLE) appended to the usual usage figure
 statement error
 SELECT count(*) FROM range(20000000) a JOIN range(20000000) b ON a.range = b.range;
 ----
-<REGEX>:.*Out of Memory Error.*could not allocate.*by category.*
+<REGEX>:.*Out of Memory Error.*could not allocate.*by operator.*HASH_JOIN.*by category.*HASH_TABLE.*

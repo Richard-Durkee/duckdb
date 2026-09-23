@@ -27,6 +27,7 @@ namespace duckdb {
 
 class TemporaryMemoryManager;
 class ObjectCache;
+class PhysicalOperator;
 struct EvictionQueue;
 
 struct BufferEvictionNode {
@@ -73,7 +74,7 @@ public:
 	static const shared_ptr<OperatorMemoryCounter> &CurrentOperator();
 	//! Create + register a counter for an operator (registry holds a weak_ptr; the returned shared_ptr keeps it
 	//! alive). Only touched at sink setup, never on the allocation hot path.
-	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(string label);
+	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(const PhysicalOperator &op);
 	//! Snapshot of real bytes currently attributed to each live operator counter (only counters with > 0 bytes).
 	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
 

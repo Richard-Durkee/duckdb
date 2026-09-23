@@ -45,10 +45,10 @@ PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_
     : pipeline(pipeline_p), thread(context_p), context(context_p, thread, &pipeline_p) {
 	if (pipeline.sink) {
 		local_sink_state = pipeline.sink->GetLocalSinkState(context);
-		// PROTOTYPE: one real-memory counter per sink operator, created + registered once here.
+		// PROTOTYPE: share the pipeline's single sink counter across all thread-executors, so the sink
+		// operator's memory is attributed per-instance and summed across threads (not one counter per thread).
 		sink_memory_counter =
-		    BufferManager::GetBufferManager(context.client).GetBufferPool().RegisterOperatorCounter(
-		        pipeline.sink->GetName());
+		    pipeline.GetSinkMemoryCounter(BufferManager::GetBufferManager(context.client).GetBufferPool());
 		required_partition_info = pipeline.sink->RequiredPartitionInfo();
 		if (required_partition_info.AnyRequired()) {
 			D_ASSERT(pipeline.source->SupportsPartitioning(required_partition_info));
