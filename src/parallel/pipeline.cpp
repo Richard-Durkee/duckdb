@@ -20,6 +20,7 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 
 namespace duckdb {
 
@@ -73,6 +74,14 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 
 Pipeline::Pipeline(Executor &executor_p)
     : executor(executor_p), ready(false), initialized(false), source(nullptr), sink(nullptr) {
+}
+
+const shared_ptr<OperatorMemoryCounter> &Pipeline::GetSinkMemoryCounter(BufferPool &buffer_pool) {
+	lock_guard<mutex> guard(sink_memory_counter_lock);
+	if (!sink_memory_counter && sink) {
+		sink_memory_counter = buffer_pool.RegisterOperatorCounter(*sink);
+	}
+	return sink_memory_counter;
 }
 
 ClientContext &Pipeline::GetClientContext() {

@@ -10,6 +10,7 @@
 
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/string.hpp"
 
@@ -17,18 +18,24 @@ namespace duckdb {
 
 enum class BlockState : uint8_t { BLOCK_UNLOADED = 0, BLOCK_LOADED = 1 };
 
-// Forward declaration.
+// Forward declarations.
 class BufferPool;
+class PhysicalOperator;
 
-//! PROTOTYPE: a lock-free per-operator memory counter. One is created per sink operator; reservations made
-//! while that sink runs hold a shared_ptr to it and bump `usage` directly (no map, no mutex on the hot path).
-//! shared_ptr ownership makes lifetime safe: the counter outlives every reservation pointing at it.
+//! PROTOTYPE: a lock-free per-operator memory counter. One is created per sink operator instance (shared by all
+//! of that operator's thread-executors, so threads aggregate); reservations made while that sink runs hold a
+//! shared_ptr to it and bump `usage` directly (no map, no mutex on the hot path). shared_ptr ownership makes
+//! lifetime safe: the counter outlives every reservation pointing at it.
 struct OperatorMemoryCounter {
-	explicit OperatorMemoryCounter(string label_p) : label(std::move(label_p)) {
+	explicit OperatorMemoryCounter(string label_p, optional_ptr<const PhysicalOperator> op_p = nullptr)
+	    : label(std::move(label_p)), op(op_p) {
 	}
 	atomic<int64_t> usage {0};
 	atomic<int64_t> peak {0};
 	string label;
+	//! The physical operator instance this counter attributes memory to. Identity that distinguishes two
+	//! operators of the same type, and the key to map this attribution onto the profiler's per-operator tree.
+	optional_ptr<const PhysicalOperator> op;
 };
 
 struct BufferPoolReservation {
