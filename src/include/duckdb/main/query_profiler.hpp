@@ -39,6 +39,7 @@ class TreeRenderer;
 class SQLStatement;
 struct MetricsTimer;
 class OperatorProfiler;
+struct OperatorMemoryCounter;
 
 //! A JSON-like recursive profiling value.
 //! FIXME: this should at some point be replaced by a "Value" - but that's not easily possible until our VARIANT Value
@@ -206,12 +207,19 @@ private:
 
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
+	//! PROTOTYPE: strong refs to per-operator memory counters, so their peaks survive until metrics are finalized
+	//! (the buffer pool only holds weak refs, and the pipelines that own them are torn down before finalize).
+	vector<shared_ptr<OperatorMemoryCounter>> operator_memory_counters;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
 	//! Whether root metrics have been finalized for output
 	bool metrics_finalized;
 
 public:
+	//! PROTOTYPE: keep a per-operator memory counter alive for the duration of the query so its peak can be read
+	//! at metric finalization. No-op-safe to call with a null counter.
+	DUCKDB_API void RegisterOperatorMemoryCounter(shared_ptr<OperatorMemoryCounter> counter);
+
 	const TreeMap &GetTreeMap() const {
 		return tree_map;
 	}

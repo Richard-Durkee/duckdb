@@ -20,7 +20,10 @@
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
+#include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/json_document.hpp"
+#include "duckdb/common/unordered_set.hpp"
 
 #include <utility>
 
@@ -760,6 +763,9 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
 	}
+	if (info.MetricIsTracked<MetricOperatorPeakMemory>() && peak_memory > 0) {
+		result["peak_memory"] = Value::UBIGINT(peak_memory);
+	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
 	}
@@ -1126,6 +1132,14 @@ static void CollapseSecureViews(ProfilingNode &node) {
 	}
 }
 
+void QueryProfiler::RegisterOperatorMemoryCounter(shared_ptr<OperatorMemoryCounter> counter) {
+	if (!counter) {
+		return;
+	}
+	lock_guard<std::mutex> guard(lock);
+	operator_memory_counters.push_back(std::move(counter));
+}
+
 void QueryProfiler::FinalizeMetricsInternal() {
 	if (metrics_finalized || !IsEnabled() || !metrics) {
 		return;
@@ -1146,6 +1160,30 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
+
+		// Per-operator peak memory: attribute each operator counter's peak onto its tree node, and report the
+		// leftover (system peak minus the sum of per-operator peaks) as an unattributed residual. The counters are
+		// held on the profiler (query-scoped) because the pipelines that own them are torn down before this runs.
+		idx_t attributed_peak = 0;
+		unordered_set<const OperatorMemoryCounter *> seen;
+		for (auto &counter : operator_memory_counters) {
+			if (!counter || !counter->op || !seen.insert(counter.get()).second) {
+				continue;
+			}
+			auto peak = static_cast<idx_t>(counter->peak.load(std::memory_order_relaxed));
+			if (peak == 0) {
+				continue;
+			}
+			attributed_peak += peak;
+			auto node_entry = tree_map.find(*counter->op);
+			if (node_entry != tree_map.end()) {
+				node_entry->second.get().GetOperatorMetrics().peak_memory = peak;
+			}
+		}
+		// Approximate: peak-of-the-whole != sum-of-per-operator-peaks, so this residual is a best-effort figure.
+		const idx_t system_peak = query_metrics.system_peak_buffer_memory;
+		metrics->SetMetric<MetricSystemUnattributedPeakMemory>(
+		    system_peak > attributed_peak ? system_peak - attributed_peak : 0);
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

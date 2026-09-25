@@ -70,6 +70,11 @@
 			"metric_type": "uint64",
 			"description": "The total memory allocated by the buffer manager",
 			"unit": "bytes"
+		},
+		"unattributed_peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer memory not attributed to any operator (approximate: system peak minus the sum of per-operator peaks)",
+			"unit": "bytes"
 		}
 	},
 	"io": {
@@ -164,6 +169,11 @@
 		"intermediate_size_bytes": {
 			"metric_type": "uint64",
 			"description": "Intermediate size in bytes produced by the operator",
+			"unit": "bytes"
+		},
+		"peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory attributed to this operator instance",
 			"unit": "bytes"
 		},
 		"row_groups_scanned": {
