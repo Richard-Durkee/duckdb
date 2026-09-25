@@ -29,6 +29,9 @@ struct OperatorMetrics {
 	idx_t rows_scanned;
 	idx_t row_groups_scanned;
 	idx_t total_row_groups_to_scan;
+	//! Peak buffer-managed memory attributed to this operator instance (set post-merge from the buffer pool's
+	//! per-operator counters; not aggregated up the tree).
+	idx_t peak_memory;
 
 	profiler_metrics_t GetMetrics(const GatheredMetrics &info) const;
 	void ResetMetrics() {
@@ -40,6 +43,7 @@ struct OperatorMetrics {
 		rows_scanned = 0;
 		row_groups_scanned = 0;
 		total_row_groups_to_scan = 0;
+		peak_memory = 0;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
 	}

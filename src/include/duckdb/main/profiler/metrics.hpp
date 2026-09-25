@@ -115,6 +115,13 @@ struct MetricSystemTotalMemoryAllocated {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricSystemUnattributedPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "system.unattributed_peak_memory";
+	static constexpr const char *Description = "Peak buffer memory not attributed to any operator (approximate: system peak minus the sum of per-operator peaks)";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 
 // Io metrics
 struct MetricIOTotalBytesRead {
@@ -244,6 +251,13 @@ struct MetricOperatorIntermediateSizeBytes {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.intermediate_size_bytes";
 	static constexpr const char *Description = "Intermediate size in bytes produced by the operator";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.peak_memory";
+	static constexpr const char *Description = "Peak buffer-managed memory attributed to this operator instance";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };

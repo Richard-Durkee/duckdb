@@ -3,6 +3,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
@@ -18,11 +19,16 @@ namespace duckdb {
 // PROTOTYPE: pushes the sink's memory counter onto the buffer pool's thread-local "current operator" for the
 // duration of a sink call, so buffer reservations made while sinking attribute their real bytes to this operator.
 struct OperatorMemoryScope {
-	explicit OperatorMemoryScope(const shared_ptr<OperatorMemoryCounter> &counter) {
-		BufferPool::PushCurrentOperator(counter);
+	const bool active;
+	explicit OperatorMemoryScope(const shared_ptr<OperatorMemoryCounter> &counter) : active(counter != nullptr) {
+		if (active) {
+			BufferPool::PushCurrentOperator(counter);
+		}
 	}
 	~OperatorMemoryScope() {
-		BufferPool::PopCurrentOperator();
+		if (active) {
+			BufferPool::PopCurrentOperator();
+		}
 	}
 };
 
@@ -45,10 +51,16 @@ PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_
     : pipeline(pipeline_p), thread(context_p), context(context_p, thread, &pipeline_p) {
 	if (pipeline.sink) {
 		local_sink_state = pipeline.sink->GetLocalSinkState(context);
-		// PROTOTYPE: share the pipeline's single sink counter across all thread-executors, so the sink
-		// operator's memory is attributed per-instance and summed across threads (not one counter per thread).
-		sink_memory_counter =
-		    pipeline.GetSinkMemoryCounter(BufferManager::GetBufferManager(context.client).GetBufferPool());
+		// PROTOTYPE: only attribute per-operator memory when profiling is enabled. When it is off we create no
+		// counter, push nothing onto the thread-local stack, and reservations capture a null owner — so the
+		// allocation hot path does no shared_ptr or atomic work. When on, one counter per pipeline sink is shared
+		// across all thread-executors, so the operator's memory is attributed per-instance and summed across threads.
+		if (QueryProfiler::Get(context_p).IsEnabled()) {
+			sink_memory_counter =
+			    pipeline.GetSinkMemoryCounter(BufferManager::GetBufferManager(context.client).GetBufferPool());
+			// Hold the counter on the (query-scoped) profiler so its peak survives until metrics are finalized.
+			QueryProfiler::Get(context_p).RegisterOperatorMemoryCounter(sink_memory_counter);
+		}
 		required_partition_info = pipeline.sink->RequiredPartitionInfo();
 		if (required_partition_info.AnyRequired()) {
 			D_ASSERT(pipeline.source->SupportsPartitioning(required_partition_info));

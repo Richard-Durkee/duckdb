@@ -77,6 +77,8 @@ public:
 	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(const PhysicalOperator &op);
 	//! Snapshot of real bytes currently attributed to each live operator counter (only counters with > 0 bytes).
 	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
+	//! Peak bytes per operator instance, keyed by the PhysicalOperator, for the profiler tree.
+	vector<pair<optional_ptr<const PhysicalOperator>, idx_t>> GetPerOperatorPeak() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
 
