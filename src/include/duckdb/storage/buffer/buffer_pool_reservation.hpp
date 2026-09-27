@@ -55,6 +55,8 @@ struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCoun
 	//! The physical operator instance this counter attributes memory to. Identity that distinguishes two
 	//! operators of the same type, and the key to map this attribution onto the profiler's per-operator tree.
 	optional_ptr<const PhysicalOperator> op;
+	//! The query-wide total this counter rolls up into; its peak is the peak of the query's live memory
+	shared_ptr<OperatorMemoryCounter> parent;
 
 	void Update(MemoryTag tag, int64_t delta);
 	OperatorMemoryInformation GetInformation() const;

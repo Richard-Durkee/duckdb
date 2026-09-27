@@ -39,6 +39,8 @@ private:
 	ClientContext &context;
 	//! PROTOTYPE: memory counter of `op`, current while the task runs; nullptr when profiling is disabled
 	shared_ptr<OperatorMemoryCounter> memory_counter;
+	//! PROTOTYPE: the query's unattributed-memory counter, current underneath any operator scope while the task runs
+	shared_ptr<OperatorMemoryCounter> query_memory_counter;
 
 public:
 	virtual TaskExecutionResult ExecuteTask(TaskExecutionMode mode) = 0;

@@ -38,6 +38,16 @@
 			"metric_type": "uint64",
 			"description": "Cumulative size in bytes of all intermediate results produced by the query",
 			"unit": "bytes"
+		},
+		"peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time",
+			"unit": "bytes"
+		},
+		"unattributed_peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory the query allocated outside any operator scope",
+			"unit": "bytes"
 		}
 	},
 	"system": {
@@ -69,11 +79,6 @@
 		"total_memory_allocated": {
 			"metric_type": "uint64",
 			"description": "The total memory allocated by the buffer manager",
-			"unit": "bytes"
-		},
-		"unattributed_peak_memory": {
-			"metric_type": "uint64",
-			"description": "Peak buffer memory not attributed to any operator (approximate: system peak minus the sum of per-operator peaks)",
 			"unit": "bytes"
 		}
 	},

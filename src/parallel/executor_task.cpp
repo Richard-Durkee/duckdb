@@ -10,6 +10,7 @@ namespace duckdb {
 
 ExecutorTask::ExecutorTask(Executor &executor_p, shared_ptr<Event> event_p)
     : executor(executor_p), event(std::move(event_p)), context(executor_p.context) {
+	query_memory_counter = QueryProfiler::Get(context).GetQueryMemoryCounter();
 	executor.RegisterTask();
 }
 
@@ -17,6 +18,7 @@ ExecutorTask::ExecutorTask(ClientContext &context_p, shared_ptr<Event> event_p, 
     : executor(Executor::Get(context_p)), event(std::move(event_p)), op(&op_p), context(context_p) {
 	thread_context = make_uniq<ThreadContext>(context_p);
 	memory_counter = QueryProfiler::Get(context_p).GetOperatorMemoryCounter(op_p);
+	query_memory_counter = QueryProfiler::Get(context_p).GetQueryMemoryCounter();
 	executor.RegisterTask();
 }
 
@@ -41,6 +43,8 @@ void ExecutorTask::Reschedule() {
 
 TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 	try {
+		// PROTOTYPE: memory this task allocates outside an operator scope belongs to its query
+		OperatorMemoryScope query_scope(query_memory_counter);
 		if (thread_context) {
 			// PROTOTYPE: attribute memory allocated by an operator's own tasks (e.g. hash join finalize) to it
 			OperatorMemoryScope mem_scope(memory_counter);

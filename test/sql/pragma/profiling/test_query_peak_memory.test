@@ -1,0 +1,61 @@
+# name: test/sql/pragma/profiling/test_query_peak_memory.test
+# description: query.peak_memory measures the query's own memory, not everything resident in the buffer pool
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET threads = 4;
+
+# memory that belongs to the database, not to any later query
+statement ok
+CREATE TABLE big AS SELECT range AS a, range::VARCHAR AS c FROM range(5000000);
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['operator.peak_memory', 'operator.type', 'query.peak_memory', 'query.unattributed_peak_memory', 'system.peak_buffer_memory'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/query_peak_memory_select.json';
+
+statement ok
+SELECT 42;
+
+# the pool holds the table, but the query itself allocated almost nothing
+query II
+SELECT prof.system.peak_buffer_memory > 50 * 1024 * 1024,
+       prof.query.peak_memory * 10 < prof.system.peak_buffer_memory
+FROM '{TEST_DIR}/query_peak_memory_select.json' prof;
+----
+true	true
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/query_peak_memory_joins.json';
+
+# two hash tables alive at the same time
+statement ok
+SELECT count(*) FROM range(2000000) a JOIN range(2000000) b ON a.range = b.range JOIN range(2000000) c ON a.range = c.range;
+
+statement ok
+PRAGMA disable_profiling;
+
+# the query peak is at least the largest operator peak, and at most the sum of all peaks: operators peak at
+# different moments, so the peak of the live total can be lower than the sum of their individual peaks
+query II
+WITH ops AS (
+	SELECT substring(content, strpos(content, '"operator"'), strpos(content, '"query"') - strpos(content, '"operator"')) AS s
+	FROM read_text('{TEST_DIR}/query_peak_memory_joins.json')
+),
+peaks AS (
+	SELECT list_max(p) AS max_peak, list_sum(p) AS sum_peaks
+	FROM (SELECT list_transform(regexp_extract_all(s, '"peak_memory": *([0-9]+)', 1), lambda x: x::BIGINT) AS p FROM ops)
+)
+SELECT prof.query.peak_memory >= peaks.max_peak,
+       prof.query.peak_memory <= peaks.sum_peaks + prof.query.unattributed_peak_memory
+FROM '{TEST_DIR}/query_peak_memory_joins.json' prof, peaks;
+----
+true	true

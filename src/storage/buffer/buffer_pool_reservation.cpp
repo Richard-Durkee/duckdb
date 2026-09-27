@@ -18,6 +18,9 @@ void OperatorMemoryCounter::Update(MemoryTag tag, int64_t delta) {
 	auto current_peak = peak.load(std::memory_order_relaxed);
 	while (new_usage > current_peak && !peak.compare_exchange_weak(current_peak, new_usage)) {
 	}
+	if (parent) {
+		parent->Update(tag, delta);
+	}
 }
 
 static idx_t ClampUsage(int64_t usage) {

@@ -353,8 +353,8 @@ optional_ptr<OperatorMemoryCounter> BufferPool::CurrentOperator() {
 }
 
 shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(OperatorMemoryIdentity identity,
-                                                                      const PhysicalOperator &op) {
-	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(identity), &op);
+                                                                      optional_ptr<const PhysicalOperator> op) {
+	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(identity), op);
 	lock_guard<mutex> l(counter_registry_lock);
 	if (operator_counters.size() >= operator_counter_prune_threshold) {
 		operator_counters.erase(
