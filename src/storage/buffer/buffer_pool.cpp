@@ -389,22 +389,6 @@ vector<pair<string, idx_t>> BufferPool::GetPerOperatorRealBytes() const {
 	return result;
 }
 
-vector<pair<optional_ptr<const PhysicalOperator>, idx_t>> BufferPool::GetPerOperatorPeak() const {
-	lock_guard<mutex> l(counter_registry_lock);
-	vector<pair<optional_ptr<const PhysicalOperator>, idx_t>> result;
-	for (auto &weak : operator_counters) {
-		auto counter = weak.lock();
-		if (!counter || !counter->op) {
-			continue;
-		}
-		auto peak = counter->peak.load(std::memory_order_relaxed);
-		if (peak > 0) {
-			result.emplace_back(counter->op, static_cast<idx_t>(peak));
-		}
-	}
-	return result;
-}
-
 idx_t BufferPool::GetUsedMemory(bool flush) const {
 	return memory_usage.GetUsedMemory(flush ? MemoryUsageCaches::FLUSH : MemoryUsageCaches::NO_FLUSH);
 }
