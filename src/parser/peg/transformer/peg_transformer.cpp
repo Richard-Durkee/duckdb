@@ -8,25 +8,6 @@
 
 namespace duckdb {
 
-TransformStep TransformStep::Child(TransformInput input) {
-	return TransformStep(input, nullptr);
-}
-
-TransformStep TransformStep::Complete(unique_ptr<TransformResultValue> result) {
-	D_ASSERT(result);
-	return TransformStep(nullopt, std::move(result));
-}
-
-optional<TransformInput> TransformStep::GetChild() {
-	return child;
-}
-
-unique_ptr<TransformResultValue> TransformStep::TakeResult() {
-	D_ASSERT(!child);
-	D_ASSERT(result);
-	return std::move(result);
-}
-
 GeneratedTransformProcess::GeneratedTransformProcess(PEGTransformer &transformer_p, TransformInput input,
                                                      const TransformFrameOps &info_p)
     : parse_result(input.parse_result), info(info_p), transformer(transformer_p) {
@@ -141,11 +122,10 @@ unique_ptr<TransformResultValue> TransformStack::ExecuteFrame(TransformStackFram
 	}
 	D_ASSERT(frame.process);
 	auto step = frame.process->Resume(std::move(frame.child_result));
-	auto child = step.GetChild();
-	if (!child) {
+	if (!step.HasChild()) {
 		return step.TakeResult();
 	}
-	PushFrame(*child);
+	PushFrame(step.GetChild());
 	return nullptr;
 }
 
@@ -199,13 +179,12 @@ unique_ptr<TransformResultValue> PEGTransformer::ExecuteRecursive(TransformInput
 	unique_ptr<TransformResultValue> child_result;
 	while (true) {
 		auto step = process->Resume(std::move(child_result));
-		auto child = step.GetChild();
-		if (!child) {
+		if (!step.HasChild()) {
 			auto result = step.TakeResult();
 			SetResultLocation(input.parse_result, *result);
 			return result;
 		}
-		child_result = ExecuteRecursive(*child);
+		child_result = ExecuteRecursive(step.GetChild());
 	}
 }
 

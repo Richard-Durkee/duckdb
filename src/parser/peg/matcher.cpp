@@ -35,17 +35,17 @@ static MatcherResult ExecuteRecursive(MatchInput input) {
 	while (true) {
 		auto step = process->Resume(child_result);
 		child_result.reset();
-		auto child = step.GetChild();
-		if (!child) {
+		if (!step.HasChild()) {
 			auto result = step.GetResult();
 			packrat_state.StoreResult(matcher, state, result);
 			return result;
 		}
-		if (!child->state.CanStart(child->matcher)) {
+		auto child = step.GetChild();
+		if (!child.state.CanStart(child.matcher)) {
 			child_result = MatcherResult::Failure();
 			continue;
 		}
-		child_result = ExecuteRecursive(*child);
+		child_result = ExecuteRecursive(child);
 	}
 }
 

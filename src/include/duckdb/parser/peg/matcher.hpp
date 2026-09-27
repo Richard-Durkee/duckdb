@@ -311,20 +311,36 @@ struct MatchInput {
 //! Produced by a MatchProcess::Resume call, controlling the next step in the execution
 class MatchStep {
 public:
-	static MatchStep Child(MatchInput input);
-	static MatchStep Complete(MatcherResult result);
+	static MatchStep Child(MatchInput input) {
+		return MatchStep(input.matcher, input.state);
+	}
+	static MatchStep Complete(MatcherResult result) {
+		return MatchStep(result);
+	}
 
-	optional<MatchInput> GetChild();
-	MatcherResult GetResult() const;
-
-private:
-	MatchStep(optional<MatchInput> child_p, optional<MatcherResult> result_p)
-	    : child(std::move(child_p)), result(std::move(result_p)) {
+	bool HasChild() const {
+		return child_matcher != nullptr;
+	}
+	MatchInput GetChild() {
+		D_ASSERT(HasChild());
+		return MatchInput {*child_matcher, *child_state};
+	}
+	MatcherResult GetResult() const {
+		D_ASSERT(!HasChild());
+		return result;
 	}
 
 private:
-	optional<MatchInput> child;
-	optional<MatcherResult> result;
+	MatchStep(const Matcher &child_matcher_p, MatchState &child_state_p)
+	    : child_matcher(&child_matcher_p), child_state(&child_state_p), result(MatcherResult::Failure()) {
+	}
+	explicit MatchStep(MatcherResult result_p) : result(result_p) {
+	}
+
+private:
+	optional_ptr<const Matcher> child_matcher;
+	optional_ptr<MatchState> child_state;
+	MatcherResult result;
 };
 
 class MatchProcess {

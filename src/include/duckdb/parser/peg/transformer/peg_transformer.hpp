@@ -291,19 +291,39 @@ struct TransformInput {
 //! Produced by TransformProcess::Resume to control the next execution step.
 class TransformStep {
 public:
-	static TransformStep Child(TransformInput input);
-	static TransformStep Complete(unique_ptr<TransformResultValue> result);
+	static TransformStep Child(TransformInput input) {
+		return TransformStep(input.rule, &input.parse_result, nullptr);
+	}
+	static TransformStep Complete(unique_ptr<TransformResultValue> result) {
+		D_ASSERT(result);
+		return TransformStep(nullptr, nullptr, std::move(result));
+	}
 
-	optional<TransformInput> GetChild();
-	unique_ptr<TransformResultValue> TakeResult();
-
-private:
-	TransformStep(optional<TransformInput> child_p, unique_ptr<TransformResultValue> result_p)
-	    : child(std::move(child_p)), result(std::move(result_p)) {
+	bool HasChild() const {
+		return child_parse_result != nullptr;
+	}
+	TransformInput GetChild() {
+		D_ASSERT(HasChild());
+		if (child_rule) {
+			return TransformInput(*child_rule, *child_parse_result);
+		}
+		return TransformInput(*child_parse_result);
+	}
+	unique_ptr<TransformResultValue> TakeResult() {
+		D_ASSERT(!HasChild());
+		D_ASSERT(result);
+		return std::move(result);
 	}
 
 private:
-	optional<TransformInput> child;
+	TransformStep(optional_ptr<const CompiledGrammarRule> child_rule_p, optional_ptr<ParseResult> child_parse_result_p,
+	              unique_ptr<TransformResultValue> result_p)
+	    : child_rule(child_rule_p), child_parse_result(child_parse_result_p), result(std::move(result_p)) {
+	}
+
+private:
+	optional_ptr<const CompiledGrammarRule> child_rule;
+	optional_ptr<ParseResult> child_parse_result;
 	unique_ptr<TransformResultValue> result;
 };
 
