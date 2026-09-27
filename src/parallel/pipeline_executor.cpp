@@ -33,6 +33,10 @@ bool PipelineExecutor::TryDebugBlock(int &debug_counter, const InterruptState &i
 
 PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_p, optional_idx reserved_batch_index)
     : pipeline(pipeline_p), thread(context_p), context(context_p, thread, &pipeline_p) {
+	source_memory_counter = QueryProfiler::Get(context_p).GetOperatorMemoryCounter(*pipeline.source);
+	for (auto &op : pipeline.operators) {
+		intermediate_memory_counters.push_back(QueryProfiler::Get(context_p).GetOperatorMemoryCounter(op.get()));
+	}
 	if (pipeline.sink) {
 		local_sink_state = pipeline.sink->GetLocalSinkState(context);
 		// PROTOTYPE: the sink's per-operator memory counter; nullptr when profiling is disabled, so the
@@ -199,6 +203,7 @@ bool PipelineExecutor::TryFlushCachingOperators(ExecutionBudget &chunk_budget) {
 		if (!resuming_push) {
 			curr_chunk.Reset();
 			StartOperator(current_operator);
+			OperatorMemoryScope mem_scope(intermediate_memory_counters[flushing_idx]);
 			auto finalize_result = current_operator.FinalExecute(context, curr_chunk, *current_operator.op_state,
 			                                                     *intermediate_states[flushing_idx]);
 			EndOperator(current_operator, &curr_chunk);
@@ -779,8 +784,12 @@ OperatorResultType PipelineExecutor::Execute(DataChunk &input, DataChunk &result
 			// if current_idx > source_idx, we pass the previous operators' output through the Execute of the current
 			// operator
 			StartOperator(current_operator);
-			auto result = current_operator.Execute(context, prev_chunk, current_chunk, *current_operator.op_state,
-			                                       *intermediate_states[current_intermediate - 1]);
+			OperatorResultType result;
+			{
+				OperatorMemoryScope mem_scope(intermediate_memory_counters[operator_idx]);
+				result = current_operator.Execute(context, prev_chunk, current_chunk, *current_operator.op_state,
+				                                  *intermediate_states[current_intermediate - 1]);
+			}
 			EndOperator(current_operator, &current_chunk);
 			if (result == OperatorResultType::HAVE_MORE_OUTPUT) {
 				// more data remains in this operator
@@ -834,6 +843,7 @@ SourceResultType PipelineExecutor::GetData(DataChunk &chunk, OperatorSourceInput
 	}
 #endif
 
+	OperatorMemoryScope mem_scope(source_memory_counter); // PROTOTYPE: attribute reservations to the source
 	return pipeline.source->GetData(context, chunk, input);
 }
 
