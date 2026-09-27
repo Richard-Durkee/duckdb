@@ -67,9 +67,9 @@ public:
 	//! operator (RegisterOperatorCounter); push it onto the thread-local "current operator" while the sink runs;
 	//! BufferPoolReservations constructed on that thread capture a shared_ptr to it and bump its atomic on
 	//! alloc/free. No map lookup and no lock on the reservation path.
-	static void PushCurrentOperator(const shared_ptr<OperatorMemoryCounter> &counter);
+	static void PushCurrentOperator(OperatorMemoryCounter &counter);
 	static void PopCurrentOperator();
-	static const shared_ptr<OperatorMemoryCounter> &CurrentOperator();
+	static optional_ptr<OperatorMemoryCounter> CurrentOperator();
 	//! Create + register a counter for an operator (registry holds a weak_ptr; the returned shared_ptr keeps it
 	//! alive). Only touched at sink setup, never on the allocation hot path.
 	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(OperatorMemoryIdentity identity,
@@ -216,9 +216,11 @@ protected:
 //! PROTOTYPE: makes `counter` the current operator on this thread for the scope's lifetime, so buffer
 //! reservations made meanwhile are attributed to it. A null counter (profiling off) makes this a no-op.
 struct OperatorMemoryScope {
+	//! The caller keeps `counter` alive for the scope's lifetime; the stack holds only a reference, so
+	//! entering and leaving a scope does no reference counting.
 	explicit OperatorMemoryScope(const shared_ptr<OperatorMemoryCounter> &counter) : active(counter != nullptr) {
 		if (active) {
-			BufferPool::PushCurrentOperator(counter);
+			BufferPool::PushCurrentOperator(*counter);
 		}
 	}
 	~OperatorMemoryScope() {

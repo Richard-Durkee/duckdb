@@ -1143,6 +1143,10 @@ shared_ptr<OperatorMemoryCounter> QueryProfiler::GetOperatorMemoryCounter(const 
 		return nullptr;
 	}
 	lock_guard<std::mutex> guard(lock);
+	if (!running) {
+		// profiling is on, but this query is not being profiled (e.g. excluded by profiling_coverage)
+		return nullptr;
+	}
 	auto entry = operator_memory_counters.find(op);
 	if (entry != operator_memory_counters.end()) {
 		return entry->second;
@@ -1194,7 +1198,8 @@ void QueryProfiler::FinalizeMetricsInternal() {
 			attributed_peak += peak;
 			auto node_entry = tree_map.find(entry.first.get());
 			if (node_entry != tree_map.end()) {
-				node_entry->second.get().GetOperatorMetrics().peak_memory = peak;
+				auto &node_metrics = node_entry->second.get().GetOperatorMetrics();
+				node_metrics.peak_memory = MaxValue(node_metrics.peak_memory, peak);
 			}
 		}
 		// Approximate: peak-of-the-whole != sum-of-per-operator-peaks, so this residual is a best-effort figure.

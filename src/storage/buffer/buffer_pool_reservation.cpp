@@ -35,8 +35,13 @@ OperatorMemoryInformation OperatorMemoryCounter::GetInformation() const {
 	return result;
 }
 
+static shared_ptr<OperatorMemoryCounter> CurrentOwner() {
+	auto current = BufferPool::CurrentOperator();
+	return current ? current->shared_from_this() : nullptr;
+}
+
 BufferPoolReservation::BufferPoolReservation(MemoryTag tag, BufferPool &pool)
-    : tag(tag), pool(pool), owner(BufferPool::CurrentOperator()) {
+    : tag(tag), pool(pool), owner(CurrentOwner()) {
 }
 
 BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexcept : tag(src.tag), pool(src.pool) {

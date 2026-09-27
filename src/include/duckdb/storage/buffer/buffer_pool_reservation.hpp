@@ -45,7 +45,7 @@ struct OperatorMemoryInformation {
 //! of that operator's thread-executors, so threads aggregate); reservations made while that sink runs hold a
 //! shared_ptr to it and bump it directly (no map, no mutex on the hot path). shared_ptr ownership makes
 //! lifetime safe: the counter outlives every reservation pointing at it.
-struct OperatorMemoryCounter {
+struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCounter> {
 	OperatorMemoryCounter(OperatorMemoryIdentity identity_p, optional_ptr<const PhysicalOperator> op_p);
 
 	OperatorMemoryIdentity identity;

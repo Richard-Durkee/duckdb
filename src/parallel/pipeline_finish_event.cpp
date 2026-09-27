@@ -52,7 +52,8 @@ public:
 
 		OperatorSinkFinalizeInput finalize_input {*sink->sink_state, interrupt_state};
 		// PROTOTYPE: attribute memory allocated while finalizing (e.g. a hash join's pointer table) to the sink.
-		OperatorMemoryScope mem_scope(QueryProfiler::Get(executor.context).GetOperatorMemoryCounter(*sink));
+		auto memory_counter = QueryProfiler::Get(executor.context).GetOperatorMemoryCounter(*sink);
+		OperatorMemoryScope mem_scope(memory_counter);
 		auto sink_state = sink->Finalize(pipeline, *event, executor.context, finalize_input);
 
 		if (sink_state == SinkFinalizeType::BLOCKED) {
