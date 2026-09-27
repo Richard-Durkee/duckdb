@@ -8,11 +8,13 @@
 
 #pragma once
 
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/typedefs.hpp"
 
 namespace duckdb {
 
@@ -22,20 +24,40 @@ enum class BlockState : uint8_t { BLOCK_UNLOADED = 0, BLOCK_LOADED = 1 };
 class BufferPool;
 class PhysicalOperator;
 
+//! Identifies an operator instance across memory snapshots. `operator_id` is the operator's pre-order position in
+//! the query profiler's tree, so snapshot entries can be joined onto the profiled plan.
+struct OperatorMemoryIdentity {
+	connection_t connection_id = DConstants::INVALID_INDEX;
+	idx_t query_id = DConstants::INVALID_INDEX;
+	idx_t operator_id = DConstants::INVALID_INDEX;
+	string operator_name;
+};
+
+//! Point-in-time memory attributed to one operator instance (see BufferPool::GetOperatorMemorySnapshot).
+struct OperatorMemoryInformation {
+	OperatorMemoryIdentity identity;
+	idx_t memory_usage_bytes;
+	idx_t peak_memory_usage_bytes;
+	array<idx_t, MEMORY_TAG_COUNT> memory_usage_bytes_per_tag;
+};
+
 //! PROTOTYPE: a lock-free per-operator memory counter. One is created per sink operator instance (shared by all
 //! of that operator's thread-executors, so threads aggregate); reservations made while that sink runs hold a
-//! shared_ptr to it and bump `usage` directly (no map, no mutex on the hot path). shared_ptr ownership makes
+//! shared_ptr to it and bump it directly (no map, no mutex on the hot path). shared_ptr ownership makes
 //! lifetime safe: the counter outlives every reservation pointing at it.
 struct OperatorMemoryCounter {
-	explicit OperatorMemoryCounter(string label_p, optional_ptr<const PhysicalOperator> op_p = nullptr)
-	    : label(std::move(label_p)), op(op_p) {
-	}
+	OperatorMemoryCounter(OperatorMemoryIdentity identity_p, optional_ptr<const PhysicalOperator> op_p);
+
+	OperatorMemoryIdentity identity;
 	atomic<int64_t> usage {0};
 	atomic<int64_t> peak {0};
-	string label;
+	array<atomic<int64_t>, MEMORY_TAG_COUNT> usage_per_tag;
 	//! The physical operator instance this counter attributes memory to. Identity that distinguishes two
 	//! operators of the same type, and the key to map this attribution onto the profiler's per-operator tree.
 	optional_ptr<const PhysicalOperator> op;
+
+	void Update(MemoryTag tag, int64_t delta);
+	OperatorMemoryInformation GetInformation() const;
 };
 
 struct BufferPoolReservation {

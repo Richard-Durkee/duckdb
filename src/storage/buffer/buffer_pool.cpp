@@ -1,5 +1,6 @@
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/thread.hpp"
 #include "duckdb/common/typedefs.hpp"
@@ -9,8 +10,6 @@
 #include "duckdb/storage/block_allocator.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
-#include "duckdb/common/unordered_map.hpp"
-#include "duckdb/execution/physical_operator.hpp"
 
 namespace duckdb {
 
@@ -351,39 +350,28 @@ const shared_ptr<OperatorMemoryCounter> &BufferPool::CurrentOperator() {
 	return tl_operator_stack.empty() ? EMPTY_COUNTER : tl_operator_stack.back();
 }
 
-shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(const PhysicalOperator &op) {
-	auto counter = make_shared_ptr<OperatorMemoryCounter>(op.GetName(), &op);
+shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(OperatorMemoryIdentity identity,
+                                                                      const PhysicalOperator &op) {
+	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(identity), &op);
 	lock_guard<mutex> l(counter_registry_lock);
+	if (operator_counters.size() >= operator_counter_prune_threshold) {
+		operator_counters.erase(
+		    std::remove_if(operator_counters.begin(), operator_counters.end(),
+		                   [](const weak_ptr<OperatorMemoryCounter> &weak) { return weak.expired(); }),
+		    operator_counters.end());
+		operator_counter_prune_threshold = MaxValue<idx_t>(64, operator_counters.size() * 2);
+	}
 	operator_counters.push_back(weak_ptr<OperatorMemoryCounter>(counter));
 	return counter;
 }
 
-vector<pair<string, idx_t>> BufferPool::GetPerOperatorRealBytes() const {
+vector<OperatorMemoryInformation> BufferPool::GetOperatorMemorySnapshot() const {
 	lock_guard<mutex> l(counter_registry_lock);
-	vector<pair<string, idx_t>> result;
-	vector<weak_ptr<OperatorMemoryCounter>> live; // prune expired entries while we are here
+	vector<OperatorMemoryInformation> result;
 	for (auto &weak : operator_counters) {
 		auto counter = weak.lock();
-		if (!counter) {
-			continue;
-		}
-		live.push_back(weak);
-		auto usage = counter->usage.load(std::memory_order_relaxed);
-		if (usage > 0) {
-			result.emplace_back(counter->label, static_cast<idx_t>(usage));
-		}
-	}
-	operator_counters.swap(live);
-	// Each counter is a distinct operator instance (one per pipeline sink). Disambiguate instances that share a
-	// type name (e.g. two HASH_JOINs) by numbering them, so per-operator memory is legible per instance.
-	unordered_map<string, idx_t> label_total;
-	for (auto &entry : result) {
-		label_total[entry.first]++;
-	}
-	unordered_map<string, idx_t> label_seen;
-	for (auto &entry : result) {
-		if (label_total[entry.first] > 1) {
-			entry.first += " #" + to_string(++label_seen[entry.first]);
+		if (counter) {
+			result.push_back(counter->GetInformation());
 		}
 	}
 	return result;

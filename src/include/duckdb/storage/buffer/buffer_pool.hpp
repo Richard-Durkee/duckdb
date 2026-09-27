@@ -14,10 +14,8 @@
 #include "duckdb/common/file_buffer.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
-#include "duckdb/common/pair.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/typedefs.hpp"
-#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
@@ -74,9 +72,11 @@ public:
 	static const shared_ptr<OperatorMemoryCounter> &CurrentOperator();
 	//! Create + register a counter for an operator (registry holds a weak_ptr; the returned shared_ptr keeps it
 	//! alive). Only touched at sink setup, never on the allocation hot path.
-	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(const PhysicalOperator &op);
-	//! Snapshot of real bytes currently attributed to each live operator counter (only counters with > 0 bytes).
-	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
+	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(OperatorMemoryIdentity identity,
+	                                                          const PhysicalOperator &op);
+	//! Point-in-time memory attributed to every live operator counter, across all connections. Counters live
+	//! until their connection starts its next query, so finished operators of the last query are included.
+	DUCKDB_API vector<OperatorMemoryInformation> GetOperatorMemorySnapshot() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
 
@@ -205,6 +205,8 @@ protected:
 	//! bumps each counter's atomic directly via the shared_ptr the reservation holds.
 	mutable mutex counter_registry_lock;
 	mutable vector<weak_ptr<OperatorMemoryCounter>> operator_counters;
+	//! Registry size at which RegisterOperatorCounter next prunes expired counters
+	idx_t operator_counter_prune_threshold = 64;
 	//! The block allocator
 	BlockAllocator &block_allocator;
 	//! Per-database singleton object cache managed by buffer pool.

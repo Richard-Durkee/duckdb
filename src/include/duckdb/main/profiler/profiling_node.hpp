@@ -112,6 +112,8 @@ private:
 
 public:
 	idx_t depth = 0;
+	//! Pre-order position of this node in the profiled tree
+	idx_t operator_id = DConstants::INVALID_INDEX;
 	vector<unique_ptr<ProfilingNode>> children;
 
 public:
