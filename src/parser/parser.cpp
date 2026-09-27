@@ -26,12 +26,18 @@ Parser::Parser(const ParserOptions &options_p) : options(options_p) {
 
 Parser::~Parser() = default;
 
+static shared_ptr<CompiledGrammar> GetDefaultGrammar() {
+	// compiling the grammar is expensive, so all parsers without a grammar share one
+	static const auto default_grammar = CompiledGrammar::Create();
+	return default_grammar;
+}
+
 CompiledGrammar &Parser::GetGrammar() {
 	if (!compiled_grammar) {
 		if (options.compiled_grammar) {
 			compiled_grammar = options.compiled_grammar;
 		} else {
-			compiled_grammar = CompiledGrammar::Create();
+			compiled_grammar = GetDefaultGrammar();
 		}
 	}
 	return *compiled_grammar;
