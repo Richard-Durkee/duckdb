@@ -154,6 +154,28 @@
 				"CHECKPOINT"
 			],
 			"check": ["write"]
+		},
+		{
+			"name": "spill_hash_join",
+			"comment": "External hash join under a memory limit. The probe side spills through a ColumnDataCollection, whose allocations and pins go through the client buffer manager. Only reads are checked: evictions triggered by buffer-allocator allocations (e.g. the join pointer table) still write spilled blocks without a query context.",
+			"include": ["{dir}/tmp"],
+			"measure": [
+				"SET memory_limit='100MB'",
+				"SET temp_directory='{dir}/tmp'",
+				"SELECT count(*) FROM range(5000000) a(i) JOIN (SELECT j, j::VARCHAR s FROM range(5000000) b(j)) ON i = j"
+			],
+			"check": ["read"]
+		},
+		{
+			"name": "spill_window",
+			"comment": "Window partitions spilled under a memory limit and read back through the client buffer manager. Only reads are checked: evictions triggered by buffer-allocator allocations (e.g. the join pointer table) still write spilled blocks without a query context.",
+			"include": ["{dir}/tmp"],
+			"measure": [
+				"SET memory_limit='100MB'",
+				"SET temp_directory='{dir}/tmp'",
+				"SELECT max(r) FROM (SELECT row_number() OVER (PARTITION BY i % 100 ORDER BY i DESC) r, i::VARCHAR s FROM range(5000000) t(i))"
+			],
+			"check": ["read"]
 		}
 	]
 }
