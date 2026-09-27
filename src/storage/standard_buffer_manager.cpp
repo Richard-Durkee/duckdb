@@ -843,13 +843,22 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	                                                   "failed to allocate data of size %s%s",
 	                                                   StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
+	// PROTOTYPE: the reservation already attributed `size` to the current operator; keep that owner so the free
+	// releases it from the same operator.
+	auto owner = std::move(reservation.owner);
 	reservation.size = 0;
-	return Allocator::Get(data.manager.db).AllocateData(size);
+	auto pointer = Allocator::Get(data.manager.db).AllocateData(size);
+	if (owner) {
+		data.manager.TrackAllocatorOwner(pointer, std::move(owner));
+	}
+	return pointer;
 }
 
 void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
 	auto &data = private_data->Cast<BufferAllocatorData>();
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
+	// PROTOTYPE: release from the allocating operator (or none), never from whatever operator is current here
+	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = size;
 	r.Resize(0);
 	return Allocator::Get(data.manager.db).FreeData(pointer, size);
@@ -862,10 +871,38 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	}
 	auto &data = private_data->Cast<BufferAllocatorData>();
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
+	// PROTOTYPE: the size change belongs to the allocation's owner, which moves with it to the new pointer
+	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
-	return Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	auto owner = std::move(r.owner);
+	auto new_pointer = Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	if (owner) {
+		data.manager.TrackAllocatorOwner(new_pointer, std::move(owner));
+	}
+	return new_pointer;
+}
+
+void StandardBufferManager::TrackAllocatorOwner(data_ptr_t pointer, shared_ptr<OperatorMemoryCounter> owner) {
+	lock_guard<mutex> guard(allocator_owner_lock);
+	allocator_owners[pointer] = std::move(owner);
+	allocator_owner_count.store(allocator_owners.size(), std::memory_order_relaxed);
+}
+
+shared_ptr<OperatorMemoryCounter> StandardBufferManager::ReleaseAllocatorOwner(data_ptr_t pointer) {
+	if (allocator_owner_count.load(std::memory_order_relaxed) == 0) {
+		return nullptr;
+	}
+	lock_guard<mutex> guard(allocator_owner_lock);
+	auto entry = allocator_owners.find(pointer);
+	if (entry == allocator_owners.end()) {
+		return nullptr;
+	}
+	auto owner = std::move(entry->second);
+	allocator_owners.erase(entry);
+	allocator_owner_count.store(allocator_owners.size(), std::memory_order_relaxed);
+	return owner;
 }
 
 Allocator &BufferAllocator::Get(ClientContext &context) {

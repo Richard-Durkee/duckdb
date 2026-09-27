@@ -130,6 +130,7 @@ void QueryProfiler::Start(const string &query) {
 
 void QueryProfiler::Reset() {
 	tree_map.clear();
+	operator_memory_counters.clear();
 	root = nullptr;
 	metrics.reset();
 	running = false;
@@ -1132,12 +1133,18 @@ static void CollapseSecureViews(ProfilingNode &node) {
 	}
 }
 
-void QueryProfiler::RegisterOperatorMemoryCounter(shared_ptr<OperatorMemoryCounter> counter) {
-	if (!counter) {
-		return;
+shared_ptr<OperatorMemoryCounter> QueryProfiler::GetOperatorMemoryCounter(const PhysicalOperator &op) {
+	if (!IsEnabled()) {
+		return nullptr;
 	}
 	lock_guard<std::mutex> guard(lock);
-	operator_memory_counters.push_back(std::move(counter));
+	auto entry = operator_memory_counters.find(op);
+	if (entry != operator_memory_counters.end()) {
+		return entry->second;
+	}
+	auto counter = BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(op);
+	operator_memory_counters.insert(make_pair(reference<const PhysicalOperator>(op), counter));
+	return counter;
 }
 
 void QueryProfiler::FinalizeMetricsInternal() {
@@ -1165,17 +1172,13 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		// leftover (system peak minus the sum of per-operator peaks) as an unattributed residual. The counters are
 		// held on the profiler (query-scoped) because the pipelines that own them are torn down before this runs.
 		idx_t attributed_peak = 0;
-		unordered_set<const OperatorMemoryCounter *> seen;
-		for (auto &counter : operator_memory_counters) {
-			if (!counter || !counter->op || !seen.insert(counter.get()).second) {
-				continue;
-			}
-			auto peak = static_cast<idx_t>(counter->peak.load(std::memory_order_relaxed));
+		for (auto &entry : operator_memory_counters) {
+			auto peak = static_cast<idx_t>(entry.second->peak.load(std::memory_order_relaxed));
 			if (peak == 0) {
 				continue;
 			}
 			attributed_peak += peak;
-			auto node_entry = tree_map.find(*counter->op);
+			auto node_entry = tree_map.find(entry.first.get());
 			if (node_entry != tree_map.end()) {
 				node_entry->second.get().GetOperatorMetrics().peak_memory = peak;
 			}

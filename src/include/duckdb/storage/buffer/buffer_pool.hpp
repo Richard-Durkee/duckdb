@@ -77,8 +77,6 @@ public:
 	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(const PhysicalOperator &op);
 	//! Snapshot of real bytes currently attributed to each live operator counter (only counters with > 0 bytes).
 	vector<pair<string, idx_t>> GetPerOperatorRealBytes() const;
-	//! Peak bytes per operator instance, keyed by the PhysicalOperator, for the profiler tree.
-	vector<pair<optional_ptr<const PhysicalOperator>, idx_t>> GetPerOperatorPeak() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
 
@@ -211,6 +209,25 @@ protected:
 	BlockAllocator &block_allocator;
 	//! Per-database singleton object cache managed by buffer pool.
 	optional_ptr<ObjectCache> object_cache = nullptr;
+};
+
+//! PROTOTYPE: makes `counter` the current operator on this thread for the scope's lifetime, so buffer
+//! reservations made meanwhile are attributed to it. A null counter (profiling off) makes this a no-op.
+struct OperatorMemoryScope {
+	explicit OperatorMemoryScope(const shared_ptr<OperatorMemoryCounter> &counter) : active(counter != nullptr) {
+		if (active) {
+			BufferPool::PushCurrentOperator(counter);
+		}
+	}
+	~OperatorMemoryScope() {
+		if (active) {
+			BufferPool::PopCurrentOperator();
+		}
+	}
+	OperatorMemoryScope(const OperatorMemoryScope &) = delete;
+	OperatorMemoryScope &operator=(const OperatorMemoryScope &) = delete;
+
+	const bool active;
 };
 
 } // namespace duckdb

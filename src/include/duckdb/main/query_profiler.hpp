@@ -207,18 +207,18 @@ private:
 
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
-	//! PROTOTYPE: strong refs to per-operator memory counters, so their peaks survive until metrics are finalized
-	//! (the buffer pool only holds weak refs, and the pipelines that own them are torn down before finalize).
-	vector<shared_ptr<OperatorMemoryCounter>> operator_memory_counters;
+	//! PROTOTYPE: one memory counter per operator instance, held strongly so peaks survive until metrics are
+	//! finalized (the buffer pool only holds weak refs, and pipelines are torn down before finalize).
+	reference_map_t<const PhysicalOperator, shared_ptr<OperatorMemoryCounter>> operator_memory_counters;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
 	//! Whether root metrics have been finalized for output
 	bool metrics_finalized;
 
 public:
-	//! PROTOTYPE: keep a per-operator memory counter alive for the duration of the query so its peak can be read
-	//! at metric finalization. No-op-safe to call with a null counter.
-	DUCKDB_API void RegisterOperatorMemoryCounter(shared_ptr<OperatorMemoryCounter> counter);
+	//! PROTOTYPE: the memory counter for `op`, created on first use; every phase of the operator (sink, combine,
+	//! finalize, its scheduled tasks) shares it. Returns nullptr when profiling is disabled.
+	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetOperatorMemoryCounter(const PhysicalOperator &op);
 
 	const TreeMap &GetTreeMap() const {
 		return tree_map;

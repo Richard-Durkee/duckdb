@@ -15,6 +15,7 @@ namespace duckdb {
 class Event;
 class PhysicalOperator;
 class ThreadContext;
+struct OperatorMemoryCounter;
 
 //! Execute a task within an executor, including exception handling
 //! This should be used within queries
@@ -36,6 +37,8 @@ public:
 
 private:
 	ClientContext &context;
+	//! PROTOTYPE: memory counter of `op`, current while the task runs; nullptr when profiling is disabled
+	shared_ptr<OperatorMemoryCounter> memory_counter;
 
 public:
 	virtual TaskExecutionResult ExecuteTask(TaskExecutionMode mode) = 0;

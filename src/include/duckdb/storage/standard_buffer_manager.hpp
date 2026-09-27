@@ -13,6 +13,7 @@
 #include "duckdb/common/checked_integer.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
@@ -167,6 +168,12 @@ protected:
 	static data_ptr_t BufferAllocatorRealloc(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t old_size,
 	                                         idx_t size);
 
+	//! PROTOTYPE: buffer-allocator allocations keep no reservation for their lifetime, so their per-operator
+	//! owner is recorded here at allocate and released at free, whichever thread frees them. Costs a lock per
+	//! allocator alloc/free only while attributed allocations are outstanding (i.e. while a query is profiled).
+	void TrackAllocatorOwner(data_ptr_t pointer, shared_ptr<OperatorMemoryCounter> owner);
+	shared_ptr<OperatorMemoryCounter> ReleaseAllocatorOwner(data_ptr_t pointer);
+
 	//! When the BlockHandle reaches 0 readers, this creates a new FileBuffer for this BlockHandle and
 	//! overwrites the data within with garbage. Any readers that do not hold the pin will notice
 	void VerifyZeroReaders(BlockLock &l, shared_ptr<BlockHandle> &handle);
@@ -215,6 +222,10 @@ protected:
 	unique_ptr<BlockManager> temp_block_manager;
 	//! Temporary evicted memory data per tag
 	atomic<CheckedInteger<idx_t, InternalException>> evicted_data_per_tag[MEMORY_TAG_COUNT];
+	//! PROTOTYPE: owner of each outstanding buffer-allocator allocation made while an operator was current
+	mutex allocator_owner_lock;
+	unordered_map<data_ptr_t, shared_ptr<OperatorMemoryCounter>> allocator_owners;
+	atomic<idx_t> allocator_owner_count {0};
 };
 
 } // namespace duckdb

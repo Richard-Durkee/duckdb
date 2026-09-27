@@ -3,6 +3,8 @@
 #include "duckdb/execution/executor.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/thread_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 
 namespace duckdb {
 
@@ -14,6 +16,7 @@ ExecutorTask::ExecutorTask(Executor &executor_p, shared_ptr<Event> event_p)
 ExecutorTask::ExecutorTask(ClientContext &context_p, shared_ptr<Event> event_p, const PhysicalOperator &op_p)
     : executor(Executor::Get(context_p)), event(std::move(event_p)), op(&op_p), context(context_p) {
 	thread_context = make_uniq<ThreadContext>(context_p);
+	memory_counter = QueryProfiler::Get(context_p).GetOperatorMemoryCounter(op_p);
 	executor.RegisterTask();
 }
 
@@ -39,6 +42,8 @@ void ExecutorTask::Reschedule() {
 TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 	try {
 		if (thread_context) {
+			// PROTOTYPE: attribute memory allocated by an operator's own tasks (e.g. hash join finalize) to it
+			OperatorMemoryScope mem_scope(memory_counter);
 			TaskExecutionResult result;
 			do {
 				TaskNotifier task_notifier {context};
