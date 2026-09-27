@@ -131,6 +131,8 @@ void QueryProfiler::Start(const string &query) {
 void QueryProfiler::Reset() {
 	tree_map.clear();
 	operator_memory_counters.clear();
+	query_memory_total = nullptr;
+	query_memory_unattributed = nullptr;
 	root = nullptr;
 	metrics.reset();
 	running = false;
@@ -1160,9 +1162,38 @@ shared_ptr<OperatorMemoryCounter> QueryProfiler::GetOperatorMemoryCounter(const 
 		identity.operator_id = node_entry->second.get().operator_id;
 	}
 	auto counter =
-	    BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(std::move(identity), op);
+	    BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(std::move(identity), &op);
+	InitializeQueryMemoryCounters();
+	counter->parent = query_memory_total;
 	operator_memory_counters.insert(make_pair(reference<const PhysicalOperator>(op), counter));
 	return counter;
+}
+
+void QueryProfiler::InitializeQueryMemoryCounters() {
+	if (query_memory_total) {
+		return;
+	}
+	OperatorMemoryIdentity identity;
+	identity.connection_id = context.GetConnectionId();
+	identity.query_id = profiled_query_id;
+	identity.operator_name = "QUERY";
+	query_memory_total = make_shared_ptr<OperatorMemoryCounter>(identity, nullptr);
+	identity.operator_name = "UNATTRIBUTED";
+	query_memory_unattributed =
+	    BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(std::move(identity), nullptr);
+	query_memory_unattributed->parent = query_memory_total;
+}
+
+shared_ptr<OperatorMemoryCounter> QueryProfiler::GetQueryMemoryCounter() {
+	if (!IsEnabled()) {
+		return nullptr;
+	}
+	lock_guard<std::mutex> guard(lock);
+	if (!running) {
+		return nullptr;
+	}
+	InitializeQueryMemoryCounters();
+	return query_memory_unattributed;
 }
 
 void QueryProfiler::FinalizeMetricsInternal() {
@@ -1186,26 +1217,26 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
 
-		// Per-operator peak memory: attribute each operator counter's peak onto its tree node, and report the
-		// leftover (system peak minus the sum of per-operator peaks) as an unattributed residual. The counters are
-		// held on the profiler (query-scoped) because the pipelines that own them are torn down before this runs.
-		idx_t attributed_peak = 0;
+		// Per-operator peak memory onto each operator's tree node. The counters are held on the profiler
+		// (query-scoped) because the pipelines that own them are torn down before this runs.
 		for (auto &entry : operator_memory_counters) {
 			auto peak = static_cast<idx_t>(entry.second->peak.load(std::memory_order_relaxed));
 			if (peak == 0) {
 				continue;
 			}
-			attributed_peak += peak;
 			auto node_entry = tree_map.find(entry.first.get());
 			if (node_entry != tree_map.end()) {
 				auto &node_metrics = node_entry->second.get().GetOperatorMetrics();
 				node_metrics.peak_memory = MaxValue(node_metrics.peak_memory, peak);
 			}
 		}
-		// Approximate: peak-of-the-whole != sum-of-per-operator-peaks, so this residual is a best-effort figure.
-		const idx_t system_peak = query_metrics.system_peak_buffer_memory;
-		metrics->SetMetric<MetricSystemUnattributedPeakMemory>(
-		    system_peak > attributed_peak ? system_peak - attributed_peak : 0);
+		// Query-level peaks are measured on the query's own counters, not derived from the database-wide pool.
+		auto peak_of = [](const shared_ptr<OperatorMemoryCounter> &counter) {
+			auto peak = counter ? counter->peak.load(std::memory_order_relaxed) : 0;
+			return peak > 0 ? static_cast<idx_t>(peak) : idx_t(0);
+		};
+		metrics->SetMetric<MetricQueryPeakMemory>(peak_of(query_memory_total));
+		metrics->SetMetric<MetricQueryUnattributedPeakMemory>(peak_of(query_memory_unattributed));
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

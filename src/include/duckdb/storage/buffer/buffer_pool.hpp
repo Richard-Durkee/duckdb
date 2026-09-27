@@ -73,7 +73,7 @@ public:
 	//! Create + register a counter for an operator (registry holds a weak_ptr; the returned shared_ptr keeps it
 	//! alive). Only touched at sink setup, never on the allocation hot path.
 	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(OperatorMemoryIdentity identity,
-	                                                          const PhysicalOperator &op);
+	                                                          optional_ptr<const PhysicalOperator> op);
 	//! Point-in-time memory attributed to every live operator counter, across all connections. Counters live
 	//! until their connection starts its next query, so finished operators of the last query are included.
 	DUCKDB_API vector<OperatorMemoryInformation> GetOperatorMemorySnapshot() const;

@@ -22,6 +22,13 @@ struct MetricQueryCPUTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricQueryPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.peak_memory";
+	static constexpr const char *Description = "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQuerySQL {
 	using METRIC_TYPE = string;
 	static constexpr const char *Name = "query.sql";
@@ -71,6 +78,13 @@ struct MetricQueryTotalTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricQueryUnattributedPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.unattributed_peak_memory";
+	static constexpr const char *Description = "Peak buffer-managed memory the query allocated outside any operator scope";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 
 // System metrics
 struct MetricSystemBlockedThreadTime {
@@ -112,13 +126,6 @@ struct MetricSystemTotalMemoryAllocated {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "system.total_memory_allocated";
 	static constexpr const char *Description = "The total memory allocated by the buffer manager";
-	static constexpr const char *Unit = "bytes";
-	static constexpr const char *TypeStr = "uint64";
-};
-struct MetricSystemUnattributedPeakMemory {
-	using METRIC_TYPE = uint64_t;
-	static constexpr const char *Name = "system.unattributed_peak_memory";
-	static constexpr const char *Description = "Peak buffer memory not attributed to any operator (approximate: system peak minus the sum of per-operator peaks)";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
