@@ -1,0 +1,123 @@
+# name: test/sql/pragma/profiling/test_query_peak_memory_edge_cases.test
+# description: query and operator memory counters stay consistent under spilling, errors and non-profiled statements
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET threads = 4;
+
+statement ok con1
+SET threads = 4;
+
+statement ok con1
+PRAGMA enable_profiling = 'json';
+
+statement ok con1
+SET tracked_metrics = ['operator.peak_memory', 'operator.type', 'query.peak_memory', 'query.unattributed_peak_memory'];
+
+# --- spilling: two hash joins that do not fit, so blocks are evicted and reloaded ----------------------------
+statement ok con1
+SET memory_limit = '200MB';
+
+statement ok con1
+SET temp_directory = '{TEST_DIR}/query_peak_memory_spill';
+
+statement ok con1
+PRAGMA profiling_output = '{TEST_DIR}/query_peak_memory_spill.json';
+
+statement ok con1
+SELECT count(*) FROM range(4000000) a JOIN range(4000000) b ON a.range = b.range JOIN range(4000000) c ON a.range = c.range;
+
+# the query's live peak respects the limit (allowing the brief reserve-before-evict overshoot) and covers the operators;
+# an external join builds and probes its partitions as a source and intermediate operator, and that is attributed too
+query III
+WITH ops AS (
+	SELECT substring(content, strpos(content, '"operator"'), strpos(content, '"query"') - strpos(content, '"operator"')) AS s
+	FROM read_text('{TEST_DIR}/query_peak_memory_spill.json')
+)
+SELECT prof.query.peak_memory <= 1.2 * 200 * 1024 * 1024,
+       prof.query.peak_memory >= (SELECT list_max(list_transform(regexp_extract_all(s, '"peak_memory": *([0-9]+)', 1), lambda x: x::BIGINT)) FROM ops),
+       prof.query.unattributed_peak_memory <= 0.1 * prof.query.peak_memory
+FROM '{TEST_DIR}/query_peak_memory_spill.json' prof;
+----
+true	true	true
+
+# every byte the finished query allocated has been released from its counters: nothing is left over
+query I
+SELECT coalesce(sum(memory_usage_bytes), 0) < 1024 * 1024 FROM duckdb_operator_memory();
+----
+true
+
+# --- an out-of-memory error part-way through, then a normal query ---------------------------------------------
+statement ok con1
+SET max_temp_directory_size = '1MB';
+
+statement error con1
+SELECT count(*) FROM range(8000000) a JOIN range(8000000) b ON a.range = b.range;
+----
+<REGEX>:.*Out of Memory Error.*
+
+statement ok con1
+SET memory_limit = '4GB';
+
+statement ok con1
+RESET max_temp_directory_size;
+
+statement ok con1
+PRAGMA profiling_output = '{TEST_DIR}/query_peak_memory_after_oom.json';
+
+statement ok con1
+SELECT count(*) FROM range(1000000) a JOIN range(1000000) b ON a.range = b.range;
+
+query II
+SELECT prof.query.peak_memory > 0, prof.query.unattributed_peak_memory <= 0.1 * prof.query.peak_memory
+FROM '{TEST_DIR}/query_peak_memory_after_oom.json' prof;
+----
+true	true
+
+# --- statements the profiler does not cover (DDL with no execution operators) get no counters ---------------
+statement ok con1
+CREATE TABLE t_empty (a INTEGER);
+
+query I
+SELECT count(*) FROM duckdb_operator_memory();
+----
+0
+
+# --- memory that outlives its query ---------------------------------------------------------------------------
+statement ok con1
+CREATE TABLE t2 AS SELECT range AS a, range::VARCHAR AS b FROM range(2000000);
+
+statement ok con1
+SELECT count(*) FROM t2;
+
+# the new table's data is still attributed to the statement that created it, after later queries have run
+query I
+SELECT count(*) FROM duckdb_operator_memory() WHERE operator_name = 'CREATE_TABLE_AS' AND memory_usage_bytes > 0;
+----
+1
+
+# dropping the table releases it
+statement ok con1
+DROP TABLE t2;
+
+statement ok con1
+SELECT 42;
+
+query I
+SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_operator_memory() WHERE operator_name = 'CREATE_TABLE_AS';
+----
+0
+
+statement ok con1
+DROP TABLE t_empty;
+
+# --- EXPLAIN ANALYZE enables profiling through a different path ------------------------------------------------
+statement ok con1
+PRAGMA disable_profiling;
+
+statement ok con1
+EXPLAIN ANALYZE SELECT count(*) FROM range(1000000) a JOIN range(1000000) b ON a.range = b.range;
