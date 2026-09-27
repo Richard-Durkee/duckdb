@@ -837,7 +837,7 @@ SinkCombineResultType PhysicalHashJoin::Combine(ExecutionContext &context, Opera
 // Finalize
 //===--------------------------------------------------------------------===//
 
-static constexpr idx_t PARALLEL_CONSTRUCT_THRESHOLD = 1048576;
+static constexpr idx_t PARALLEL_CONSTRUCT_THRESHOLD = 262144;
 static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
 
 //! If the data is very skewed (many of the exact same key), our finalize will become slow,
@@ -851,7 +851,7 @@ static bool KeysAreSkewed(const HashJoinGlobalSinkState &sink) {
 }
 
 //! If we have only one thread, always finalize single-threaded. Otherwise, we finalize in parallel if we
-//! have more than 1M rows or if we want to verify parallelism.
+//! have more than 256K rows or if we want to verify parallelism.
 static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bool consider_skew) {
 	// if only one thread, finalize single-threaded
 	const auto num_threads = NumericCast<idx_t>(sink.num_threads);
@@ -864,7 +864,7 @@ static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bo
 		return false;
 	}
 
-	// finalize single-threaded if we have less than 1M rows
+	// finalize single-threaded if we have less than 256K rows
 	const auto &ht = *sink.hash_table;
 	const bool ht_is_small = ht.Count() < PARALLEL_CONSTRUCT_THRESHOLD;
 
