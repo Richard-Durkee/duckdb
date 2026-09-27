@@ -122,7 +122,7 @@ void DictionaryCompressionStorage::FinalizeCompress(CompressionState &state_p) {
 unique_ptr<SegmentScanState> DictionaryCompressionStorage::StringInitScan(const QueryContext &context,
                                                                           ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto state = make_uniq<CompressedStringScanState>(buffer_manager.Pin(segment.GetBlockHandle()));
+	auto state = make_uniq<CompressedStringScanState>(buffer_manager.Pin(context, segment.GetBlockHandle()));
 	state->Initialize(segment, true);
 	return std::move(state);
 }

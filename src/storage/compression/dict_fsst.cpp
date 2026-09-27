@@ -113,7 +113,7 @@ void DictFSSTCompressionStorage::FinalizeCompress(CompressionState &state_p) {
 unique_ptr<SegmentScanState> DictFSSTCompressionStorage::StringInitScan(const QueryContext &context,
                                                                         ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(segment.GetBlockHandle()));
+	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(context, segment.GetBlockHandle()));
 	state->Initialize(true);
 
 	const auto &stats = segment.GetStats();
@@ -253,9 +253,9 @@ static string DictFSSTModeToString(const DictFSSTMode mode) {
 //===--------------------------------------------------------------------===//
 // GetSegmentInfo
 //===--------------------------------------------------------------------===//
-static InsertionOrderPreservingMap<string> DictFSSTGetSegmentInfo(QueryContext, ColumnSegment &segment) {
+static InsertionOrderPreservingMap<string> DictFSSTGetSegmentInfo(QueryContext context, ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(segment.GetBlockHandle()));
+	auto state = make_uniq<CompressedStringScanState>(segment, buffer_manager.Pin(context, segment.GetBlockHandle()));
 	state->Initialize(false);
 
 	const auto tuple_count = segment.count.load();

@@ -1,0 +1,123 @@
+# name: test/sql/profiling/test_compressed_string_scan_io.test
+# description: Cold scans of compressed string columns count their block reads in io.total_bytes_read
+# group: [profiling]
+
+require json
+
+statement ok
+SET threads = 1;
+
+statement ok
+ATTACH '{TEST_DIR}/string_scan_io_dict_fsst.db' AS d;
+
+statement ok
+SET force_compression = 'dict_fsst';
+
+statement ok
+CREATE TABLE d.t AS SELECT (range % 50000)::VARCHAR || '_padding' AS s FROM range(1000000);
+
+statement ok
+CHECKPOINT d;
+
+statement ok
+DETACH d;
+
+statement ok
+RESET force_compression;
+
+statement ok
+ATTACH '{TEST_DIR}/string_scan_io_dict_fsst.db' AS d (READ_ONLY);
+
+query I
+SELECT DISTINCT lower(compression) = 'dict_fsst' FROM pragma_storage_info('d.t') WHERE segment_type = 'VARCHAR';
+----
+true
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/string_scan_io_dict_fsst.json';
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read'];
+
+statement ok
+SELECT max(s) FROM d.t;
+
+statement ok
+PRAGMA disable_profiling;
+
+# every block holding a string segment is read in full by the cold scan
+query I
+SELECT prof.io.total_bytes_read >= (
+	SELECT count(DISTINCT block_id) * (SELECT block_size FROM pragma_database_size() WHERE database_name = 'd')
+	FROM pragma_storage_info('d.t')
+	WHERE segment_type = 'VARCHAR' AND persistent
+)
+FROM read_json('{TEST_DIR}/string_scan_io_dict_fsst.json') prof;
+----
+true
+
+statement ok
+DETACH d;
+
+# dictionary and fsst are only written by older storage versions
+foreach compression dictionary fsst
+
+statement ok
+ATTACH '{TEST_DIR}/string_scan_io_{compression}.db' AS d (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+SET force_compression = '{compression}';
+
+statement ok
+CREATE TABLE d.t AS SELECT (range % 50000)::VARCHAR || '_padding' AS s FROM range(1000000);
+
+statement ok
+CHECKPOINT d;
+
+statement ok
+DETACH d;
+
+statement ok
+RESET force_compression;
+
+statement ok
+ATTACH '{TEST_DIR}/string_scan_io_{compression}.db' AS d (READ_ONLY);
+
+query I
+SELECT DISTINCT lower(compression) = '{compression}' FROM pragma_storage_info('d.t') WHERE segment_type = 'VARCHAR';
+----
+true
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/string_scan_io_{compression}.json';
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read'];
+
+statement ok
+SELECT max(s) FROM d.t;
+
+statement ok
+PRAGMA disable_profiling;
+
+# every block holding a string segment is read in full by the cold scan
+query I
+SELECT prof.io.total_bytes_read >= (
+	SELECT count(DISTINCT block_id) * (SELECT block_size FROM pragma_database_size() WHERE database_name = 'd')
+	FROM pragma_storage_info('d.t')
+	WHERE segment_type = 'VARCHAR' AND persistent
+)
+FROM read_json('{TEST_DIR}/string_scan_io_{compression}.json') prof;
+----
+true
+
+statement ok
+DETACH d;
+
+endloop
