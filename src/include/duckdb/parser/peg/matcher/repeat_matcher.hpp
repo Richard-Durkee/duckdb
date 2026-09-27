@@ -19,6 +19,13 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		auto &child = builder.GetChildStartSet(element);
+		result.AddTokens(child);
+		result.can_be_empty = child.can_be_empty;
+		return true;
+	}
+
 	string ToString() const override {
 		return element.GetName() + "*";
 	}

@@ -143,6 +143,7 @@ CompiledGrammar::Create(const case_insensitive_map_t<reference<GrammarExtension>
 	MatcherFactory factory(new_matcher->allocator, grammar, *new_matcher, std::move(terminal_rule_overrides));
 	new_matcher->program_matcher = factory.CreateRootMatcher("Program");
 	new_matcher->top_level_statement_matcher = factory.GetMatcher("TopLevelStatement");
+	new_matcher->allocator.ComputeStartSets(new_matcher->literal_ids);
 	return new_matcher;
 }
 

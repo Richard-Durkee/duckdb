@@ -109,6 +109,10 @@ bool MatchStack::ExecuteFrame(MatchStackFrame &frame) {
 		frame.result = step.GetResult();
 		return true;
 	}
+	if (!child->state.CanStart(child->matcher)) {
+		frame.child_result = MatcherResult::Failure();
+		return false;
+	}
 	if (child->matcher.IsAtomic()) {
 		frame.child_result = ExecuteAtomicMatcher(*child);
 		return false;

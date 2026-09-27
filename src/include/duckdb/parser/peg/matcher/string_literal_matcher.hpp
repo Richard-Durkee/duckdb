@@ -64,6 +64,12 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		// prefixed strings such as E'...' start with a word character
+		result.token_classes |= MatcherStartSet::SINGLE_QUOTED | MatcherStartSet::DOLLAR | MatcherStartSet::WORD;
+		return true;
+	}
+
 	string ToString() const override {
 		return "STRING_LITERAL";
 	}

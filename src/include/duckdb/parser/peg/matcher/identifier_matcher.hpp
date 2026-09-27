@@ -127,6 +127,11 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		result.token_classes |= MatcherStartSet::WORD | MatcherStartSet::DOUBLE_QUOTED | MatcherStartSet::SINGLE_QUOTED;
+		return true;
+	}
+
 	string ToString() const override {
 		switch (suggestion_type) {
 		case SuggestionState::SUGGEST_KEYWORD:

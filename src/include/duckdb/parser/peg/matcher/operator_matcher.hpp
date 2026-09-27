@@ -32,6 +32,12 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		// an empty token trivially consists of operator characters
+		result.token_classes |= MatcherStartSet::OPERATOR | MatcherStartSet::EMPTY_TEXT;
+		return true;
+	}
+
 	string ToString() const override {
 		return "OPERATOR";
 	}

@@ -27,6 +27,11 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		result.token_classes |= MatcherStartSet::END_OF_INPUT;
+		return true;
+	}
+
 	string ToString() const override {
 		return "EndOfInput";
 	}

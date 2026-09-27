@@ -38,6 +38,11 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		result.token_classes |= MatcherStartSet::NUMBER;
+		return true;
+	}
+
 	string ToString() const override {
 		return "NUMBER_LITERAL";
 	}

@@ -13,6 +13,7 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/reference_map.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/enums/identifier_case_mode.hpp"
 #include "duckdb/parser/parser_extension.hpp"
 #include "duckdb/parser/peg/keyword_helper.hpp"
@@ -146,6 +147,84 @@ struct MatcherSuggestion {
 	char extra_char = '\0';
 };
 
+//! Over-approximation of the tokens a matcher can start with, used to skip matchers that cannot match
+struct MatcherStartSet {
+	static constexpr uint8_t WORD = 1 << 0;
+	static constexpr uint8_t DOUBLE_QUOTED = 1 << 1;
+	static constexpr uint8_t SINGLE_QUOTED = 1 << 2;
+	static constexpr uint8_t DOLLAR = 1 << 3;
+	static constexpr uint8_t NUMBER = 1 << 4;
+	static constexpr uint8_t OPERATOR = 1 << 5;
+	static constexpr uint8_t END_OF_INPUT = 1 << 6;
+	//! Tokens with empty text, such as the end of input
+	static constexpr uint8_t EMPTY_TEXT = 1 << 7;
+
+	//! The matcher can succeed without consuming a token
+	bool can_be_empty = false;
+	//! The start tokens are unknown
+	bool any_token = true;
+	//! Classes (see above) of the tokens the matcher can start with
+	uint8_t token_classes = 0;
+	//! Bitmap over the literal ids of the keywords the matcher can start with
+	vector<uint64_t> literals;
+
+	static MatcherStartSet Empty();
+	bool AlwaysTry() const {
+		return can_be_empty || any_token;
+	}
+	bool HasLiteral(idx_t literal_id) const {
+		auto word = literal_id / 64;
+		return word < literals.size() && (literals[word] >> (literal_id % 64)) & 1;
+	}
+	void AddLiteral(idx_t literal_id);
+	//! Adds the start tokens of "other" (but not whether it can be empty)
+	void AddTokens(const MatcherStartSet &other);
+	bool operator==(const MatcherStartSet &other) const;
+};
+
+//! Computes the start sets of the matchers of a grammar
+class MatcherStartSetBuilder {
+public:
+	explicit MatcherStartSetBuilder(case_insensitive_map_t<idx_t> &literal_ids_p) : literal_ids(literal_ids_p) {
+	}
+
+	idx_t GetLiteralId(const string &keyword);
+	//! Returns the start set of a child of the matcher whose start set is being computed
+	const MatcherStartSet &GetChildStartSet(const Matcher &child);
+
+private:
+	friend class MatcherAllocator;
+	case_insensitive_map_t<idx_t> &literal_ids;
+	//! The matcher whose start set is being computed
+	optional_idx current_matcher;
+	//! For each matcher, the matchers whose start set was computed from its start set
+	vector<vector<idx_t>> dependents;
+	unordered_set<uint64_t> dependencies;
+};
+
+//! Checks tokens against start sets during a match, classifying each token once
+class MatcherStartContext {
+public:
+	explicit MatcherStartContext(const case_insensitive_map_t<idx_t> &literal_ids_p) : literal_ids(literal_ids_p) {
+	}
+
+	bool CanStart(const MatcherStartSet &start_set, const TokenIterator &token_iterator);
+
+private:
+	struct TokenInfo {
+		bool classified = false;
+		bool always_try = false;
+		uint8_t token_classes = 0;
+		optional_idx literal_id;
+	};
+
+	void Classify(TokenInfo &info, const MatcherToken &token) const;
+
+private:
+	const case_insensitive_map_t<idx_t> &literal_ids;
+	vector<TokenInfo> token_infos;
+};
+
 struct MatchContext {
 	MatchContext(vector<MatcherSuggestion> &suggestions_p, ParseResultAllocator &allocator_p,
 	             ArenaAllocator &process_allocator_p, idx_t &max_token_index_p,
@@ -165,6 +244,8 @@ struct MatchContext {
 	ParserPackratCache *packrat_cache;
 	MatchMode mode;
 	bool use_heap_based_parser;
+	//! If set, matchers that cannot start with the current token are skipped
+	optional_ptr<MatcherStartContext> start_context;
 };
 
 struct MatchState {
@@ -189,6 +270,9 @@ struct MatchState {
 
 	template <class PROCESS, class... ARGS>
 	arena_ptr<MatchProcess> Make(ARGS &&... args);
+
+	//! Returns false if the matcher cannot match at the current token
+	bool CanStart(const Matcher &matcher);
 
 	void UpdateMaxTokenIndex() {
 		if (token_iterator.Position() > context.max_token_index) {
@@ -280,6 +364,11 @@ public:
 	}
 	virtual SuggestionType AddSuggestion(MatchState &state) const;
 	virtual SuggestionType AddSuggestionInternal(MatchState &state) const = 0;
+	//! Adds the tokens this matcher can start with to "result", returns false if they are unknown.
+	//! A matcher that changes the matching logic of a built-in matcher must override this as well.
+	virtual bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const {
+		return false;
+	}
 	virtual string ToString() const = 0;
 	void Print() const;
 
@@ -309,6 +398,12 @@ public:
 	bool IsPackratMemoized() const {
 		return packrat_memoized;
 	}
+	const MatcherStartSet &GetStartSet() const {
+		return start_set;
+	}
+	void SetStartSet(const MatcherStartSet &start_set_p) {
+		start_set = start_set_p;
+	}
 
 public:
 	template <class TARGET>
@@ -334,6 +429,7 @@ protected:
 	optional_idx packrat_id;
 	bool packrat_memoized = false;
 	optional_ptr<const CompiledGrammarRule> rule;
+	MatcherStartSet start_set;
 };
 
 class AtomicMatcher : public Matcher {
@@ -364,6 +460,8 @@ public:
 class MatcherAllocator {
 public:
 	Matcher &Allocate(unique_ptr<Matcher> matcher);
+	//! Computes the start set of every allocated matcher
+	void ComputeStartSets(case_insensitive_map_t<idx_t> &literal_ids);
 
 private:
 	vector<unique_ptr<Matcher>> matchers;

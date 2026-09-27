@@ -20,6 +20,12 @@ public:
 		return SuggestionType::OPTIONAL;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		result.AddTokens(builder.GetChildStartSet(matcher));
+		result.can_be_empty = true;
+		return true;
+	}
+
 	string ToString() const override {
 		return matcher.GetName() + "?";
 	}

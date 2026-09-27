@@ -40,6 +40,11 @@ public:
 		return SuggestionType::MANDATORY;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		result.AddLiteral(builder.GetLiteralId(keyword));
+		return true;
+	}
+
 	string ToString() const override {
 		return "'" + keyword + "'";
 	}

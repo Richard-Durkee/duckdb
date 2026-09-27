@@ -31,6 +31,18 @@ public:
 		return SuggestionType::OPTIONAL;
 	}
 
+	bool AddStartTokens(MatcherStartSet &result, MatcherStartSetBuilder &builder) const override {
+		for (auto &matcher : matchers) {
+			auto &child = builder.GetChildStartSet(matcher.get());
+			result.AddTokens(child);
+			if (!child.can_be_empty) {
+				return true;
+			}
+		}
+		result.can_be_empty = true;
+		return true;
+	}
+
 	string ToString() const override {
 		string result = "";
 		for (auto &matcher : matchers) {

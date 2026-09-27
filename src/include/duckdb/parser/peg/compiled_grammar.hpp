@@ -32,6 +32,10 @@ public:
 	bool HasGrammarChanges() const {
 		return has_grammar_changes;
 	}
+	//! Ids of the keywords used by the start sets of the matchers
+	const case_insensitive_map_t<idx_t> &GetLiteralIds() const {
+		return literal_ids;
+	}
 
 public:
 	static shared_ptr<CompiledGrammar> Get(ClientContext &context);
@@ -50,6 +54,7 @@ private:
 	const PEGKeywordHelper &keyword_helper;
 	Tokenizer tokenizer;
 	case_insensitive_map_t<unique_ptr<CompiledGrammarRule>> rules;
+	case_insensitive_map_t<idx_t> literal_ids;
 
 private:
 	const bool has_grammar_changes;
