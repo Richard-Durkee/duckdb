@@ -175,7 +175,7 @@ public:
 	bool HasRoot() const;
 
 private:
-	unique_ptr<ProfilingNode> CreateTree(const PhysicalOperator &root, const idx_t depth = 0);
+	unique_ptr<ProfilingNode> CreateTree(const PhysicalOperator &root, idx_t &next_operator_id, const idx_t depth = 0);
 	void Render(const ProfilingNode &node, BaseTreeRenderer &str) const;
 	//! Render the profiler output to a string via the given renderer (nullptr renders nothing), handling the disabled
 	//! case. Used for the programmatic / string paths.
@@ -194,6 +194,8 @@ private:
 
 	//! Whether or not the query requires profiling
 	bool query_requires_profiling;
+	//! Query number of the profiled query, recorded in the identity of its operator memory counters
+	idx_t profiled_query_id = DConstants::INVALID_INDEX;
 
 	//! The root of the query tree
 	unique_ptr<ProfilingNode> root;

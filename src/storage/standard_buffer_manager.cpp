@@ -149,11 +149,18 @@ string StandardBufferManager::MemoryBreakdownForError() {
 	// managed memory (e.g. the real hash-table size), not a reservation. Only sink allocations are attributed;
 	// intermediate operators and off-thread allocations show as unattributed (absent here).
 	string real_text;
-	for (auto &entry : GetBufferPool().GetPerOperatorRealBytes()) {
+	for (auto &info : GetBufferPool().GetOperatorMemorySnapshot()) {
+		if (info.memory_usage_bytes == 0) {
+			continue;
+		}
 		if (!real_text.empty()) {
 			real_text += ", ";
 		}
-		real_text += entry.first + " " + StringUtil::BytesToHumanReadableString(entry.second);
+		real_text += info.identity.operator_name;
+		if (info.identity.operator_id != DConstants::INVALID_INDEX) {
+			real_text += " #" + to_string(info.identity.operator_id);
+		}
+		real_text += " " + StringUtil::BytesToHumanReadableString(info.memory_usage_bytes);
 	}
 	if (!real_text.empty()) {
 		result += " (by operator real bytes: " + real_text + ")";

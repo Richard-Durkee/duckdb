@@ -1038,7 +1038,8 @@ void QueryProfiler::WriteToFile(const char *path, string &info) const {
 	file->Close();
 }
 
-unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root_p, const idx_t depth) {
+unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root_p, idx_t &next_operator_id,
+                                                    const idx_t depth) {
 	if (OperatorRequiresProfiling(root_p.type)) {
 		query_requires_profiling = true;
 	}
@@ -1046,6 +1047,7 @@ unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root
 	auto node = make_uniq<ProfilingNode>();
 	auto &info = node->GetOperatorMetrics();
 	node->depth = depth;
+	node->operator_id = next_operator_id++;
 
 	info.name = EnumUtil::ToString(root_p.type);
 	info.operator_type = root_p.type;
@@ -1062,7 +1064,7 @@ unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root
 	}
 	auto children = root_p.GetChildren();
 	for (auto &child : children) {
-		auto child_node = CreateTree(child.get(), depth + 1);
+		auto child_node = CreateTree(child.get(), next_operator_id, depth + 1);
 		node->AddChild(std::move(child_node));
 	}
 	return node;
@@ -1074,7 +1076,10 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 		return;
 	}
 	query_requires_profiling = false;
-	root = CreateTree(root_op, 0);
+	profiled_query_id =
+	    context.transaction.HasActiveTransaction() ? context.transaction.GetActiveQuery() : DConstants::INVALID_INDEX;
+	idx_t next_operator_id = 0;
+	root = CreateTree(root_op, next_operator_id, 0);
 	if (!query_requires_profiling) {
 		// query does not require profiling: disable profiling for this query
 		running = false;
@@ -1142,7 +1147,16 @@ shared_ptr<OperatorMemoryCounter> QueryProfiler::GetOperatorMemoryCounter(const 
 	if (entry != operator_memory_counters.end()) {
 		return entry->second;
 	}
-	auto counter = BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(op);
+	OperatorMemoryIdentity identity;
+	identity.connection_id = context.GetConnectionId();
+	identity.query_id = profiled_query_id;
+	identity.operator_name = op.GetName();
+	auto node_entry = tree_map.find(op);
+	if (node_entry != tree_map.end()) {
+		identity.operator_id = node_entry->second.get().operator_id;
+	}
+	auto counter =
+	    BufferManager::GetBufferManager(context).GetBufferPool().RegisterOperatorCounter(std::move(identity), op);
 	operator_memory_counters.insert(make_pair(reference<const PhysicalOperator>(op), counter));
 	return counter;
 }
