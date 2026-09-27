@@ -13,6 +13,7 @@
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/thread_annotation.hpp"
+#include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
@@ -21,14 +22,19 @@ namespace duckdb {
 class ClientContext;
 class TemporaryMemoryManager;
 
-//! A snapshot of one operator's temporary-memory footprint, for reporting (e.g. in an out-of-memory message).
-struct OperatorMemoryUsageInfo {
+//! A snapshot of one active TemporaryMemoryState, for reporting (e.g. duckdb_temporary_memory() or OOM errors)
+struct TemporaryMemoryStateInformation {
 	//! Label of the operator that owns the state (e.g. "HASH_JOIN")
 	string label;
+	//! Connection and query that registered the state
+	connection_t connection_id;
+	idx_t query_id;
 	//! Current reservation granted to the state
 	idx_t reservation;
 	//! Remaining size the state has requested (what it would need to fit fully in memory)
 	idx_t remaining_size;
+	//! Minimum reservation of the state
+	idx_t minimum_reservation;
 };
 
 //! State of the temporary memory to be managed concurrently with other states
@@ -37,7 +43,8 @@ class TemporaryMemoryState {
 	friend class TemporaryMemoryManager;
 
 private:
-	TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager, string label, idx_t minimum_reservation);
+	TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager, string label, connection_t connection_id,
+	                     idx_t query_id, idx_t minimum_reservation);
 
 public:
 	~TemporaryMemoryState();
@@ -72,6 +79,9 @@ private:
 
 	//! Label of the operator that owns this state (reporting only, e.g. "HASH_JOIN")
 	string label;
+	//! Connection and query that registered this state (reporting only)
+	connection_t connection_id;
+	idx_t query_id;
 	//! The remaining size needed if it could fit fully in memory
 	atomic<idx_t> remaining_size;
 	//! The minimum reservation for this state
@@ -114,10 +124,9 @@ public:
 	static TemporaryMemoryManager &Get(ClientContext &context);
 	//! Register a TemporaryMemoryState. The label identifies the owning operator for reporting (e.g. "HASH_JOIN").
 	unique_ptr<TemporaryMemoryState> Register(ClientContext &context, string label);
-	//! Snapshot the per-operator temporary-memory usage of all active states (for reporting, e.g. on OOM).
-	//! NOTE: only covers operators that spill/reserve through the TemporaryMemoryManager; other memory does not
-	//! appear here (see the per-tag breakdown for that).
-	vector<OperatorMemoryUsageInfo> GetPerOperatorUsage();
+	//! Snapshot all active states. Only covers operators that reserve memory through the TemporaryMemoryManager
+	//! (hash join, sort, hash aggregate, ...); other memory is only visible in the per-tag breakdown.
+	DUCKDB_API vector<TemporaryMemoryStateInformation> GetStateInformation();
 
 private:
 	//! Get the default minimum reservation

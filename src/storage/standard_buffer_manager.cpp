@@ -132,7 +132,7 @@ string StandardBufferManager::MemoryBreakdownForError() {
 	// spill/reserve through the TMM (hash join, order by, grouped aggregate, ...); memory used by other
 	// operators does not appear here and is only visible in the per-tag breakdown below.
 	string operator_text;
-	for (auto &info : GetTemporaryMemoryManager().GetPerOperatorUsage()) {
+	for (auto &info : GetTemporaryMemoryManager().GetStateInformation()) {
 		if (info.reservation == 0) {
 			continue;
 		}

@@ -1,0 +1,19 @@
+# name: test/sql/table_function/duckdb_temporary_memory.test
+# description: duckdb_temporary_memory() lists the TemporaryMemoryManager's active states
+# group: [table_function]
+
+query IIIIII
+DESCRIBE SELECT * FROM duckdb_temporary_memory();
+----
+operator_name	VARCHAR	YES	NULL	NULL	NULL
+connection_id	UBIGINT	YES	NULL	NULL	NULL
+query_id	UBIGINT	YES	NULL	NULL	NULL
+reservation_bytes	BIGINT	YES	NULL	NULL	NULL
+remaining_size_bytes	BIGINT	YES	NULL	NULL	NULL
+minimum_reservation_bytes	BIGINT	YES	NULL	NULL	NULL
+
+# states only exist while an operator that reserves temporary memory is running
+query I
+SELECT count(*) FROM duckdb_temporary_memory();
+----
+0

@@ -157,7 +157,14 @@ struct DuckDBIndexesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+//! Clamps a byte count to the BIGINT range reported by the memory system functions
+int64_t ClampReportedMemory(idx_t memory_usage);
+
 struct DuckDBMemoryFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBTemporaryMemoryFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

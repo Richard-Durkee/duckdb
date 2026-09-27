@@ -11,9 +11,10 @@
 namespace duckdb {
 
 TemporaryMemoryState::TemporaryMemoryState(TemporaryMemoryManager &temporary_memory_manager_p, string label_p,
-                                           idx_t minimum_reservation_p)
-    : temporary_memory_manager(temporary_memory_manager_p), label(std::move(label_p)), remaining_size(0),
-      minimum_reservation(minimum_reservation_p), reservation(0), materialization_penalty(1) {
+                                           connection_t connection_id_p, idx_t query_id_p, idx_t minimum_reservation_p)
+    : temporary_memory_manager(temporary_memory_manager_p), label(std::move(label_p)), connection_id(connection_id_p),
+      query_id(query_id_p), remaining_size(0), minimum_reservation(minimum_reservation_p), reservation(0),
+      materialization_penalty(1) {
 }
 
 TemporaryMemoryState::~TemporaryMemoryState() {
@@ -118,8 +119,10 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext 
 	const annotated_lock_guard<annotated_mutex> guard(lock);
 	UpdateConfiguration(context);
 
-	auto result = unique_ptr<TemporaryMemoryState>(
-	    new TemporaryMemoryState(*this, std::move(label), DefaultMinimumReservation()));
+	auto query_id =
+	    context.transaction.HasActiveTransaction() ? context.transaction.GetActiveQuery() : DConstants::INVALID_INDEX;
+	auto result = unique_ptr<TemporaryMemoryState>(new TemporaryMemoryState(
+	    *this, std::move(label), context.GetConnectionId(), query_id, DefaultMinimumReservation()));
 	SetRemainingSize(*result, MinimumReservation(*result));
 	SetReservation(*result, MinimumReservation(*result));
 	active_states.insert(*result);
@@ -128,13 +131,14 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext 
 	return result;
 }
 
-vector<OperatorMemoryUsageInfo> TemporaryMemoryManager::GetPerOperatorUsage() {
+vector<TemporaryMemoryStateInformation> TemporaryMemoryManager::GetStateInformation() {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
-	vector<OperatorMemoryUsageInfo> result;
+	vector<TemporaryMemoryStateInformation> result;
 	result.reserve(active_states.size());
 	for (auto &state_ref : active_states) {
 		auto &state = state_ref.get();
-		result.push_back({state.GetLabel(), state.GetReservation(), state.GetRemainingSize()});
+		result.push_back({state.GetLabel(), state.connection_id, state.query_id, state.GetReservation(),
+		                  state.GetRemainingSize(), state.GetMinimumReservation()});
 	}
 	return result;
 }

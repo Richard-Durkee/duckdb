@@ -36,6 +36,7 @@ add_library_unity(
   duckdb_settings.cpp
   duckdb_tables.cpp
   duckdb_temporary_files.cpp
+  duckdb_temporary_memory.cpp
   duckdb_types.cpp
   duckdb_variables.cpp
   duckdb_views.cpp
