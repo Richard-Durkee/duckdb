@@ -113,7 +113,7 @@ public:
 	//! Get the TemporaryMemoryManager
 	static TemporaryMemoryManager &Get(ClientContext &context);
 	//! Register a TemporaryMemoryState. The label identifies the owning operator for reporting (e.g. "HASH_JOIN").
-	unique_ptr<TemporaryMemoryState> Register(ClientContext &context, string label);
+	unique_ptr<TemporaryMemoryState> Register(ClientContext &context, string label = string());
 	//! Snapshot the per-operator temporary-memory usage of all active states (for reporting, e.g. on OOM).
 	//! NOTE: only covers operators that spill/reserve through the TemporaryMemoryManager; other memory does not
 	//! appear here (see the per-tag breakdown for that).

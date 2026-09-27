@@ -374,7 +374,8 @@ void Pipeline::PrepareFinalize() {
 		if (!sink->sink_state) {
 			throw InternalException("Sink of pipeline does not have sink state");
 		}
-		OperatorMemoryScope mem_scope(QueryProfiler::Get(GetClientContext()).GetOperatorMemoryCounter(*sink));
+		auto memory_counter = QueryProfiler::Get(GetClientContext()).GetOperatorMemoryCounter(*sink);
+		OperatorMemoryScope mem_scope(memory_counter);
 		sink->PrepareFinalize(GetClientContext(), *sink->sink_state);
 	}
 }

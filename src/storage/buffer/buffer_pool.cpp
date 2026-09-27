@@ -333,10 +333,9 @@ void BufferPool::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 // PROTOTYPE: thread-local "current operator" stack, holding shared_ptrs to the counters. A sink pushes its
 // counter while executing; any BufferPoolReservation constructed on that thread copies the top shared_ptr, so
 // alloc/free later bump that counter's atomic directly — no map, no lock on the hot path.
-static thread_local vector<shared_ptr<OperatorMemoryCounter>> tl_operator_stack;
-static const shared_ptr<OperatorMemoryCounter> EMPTY_COUNTER;
+static thread_local vector<reference<OperatorMemoryCounter>> tl_operator_stack;
 
-void BufferPool::PushCurrentOperator(const shared_ptr<OperatorMemoryCounter> &counter) {
+void BufferPool::PushCurrentOperator(OperatorMemoryCounter &counter) {
 	tl_operator_stack.push_back(counter);
 }
 
@@ -346,8 +345,11 @@ void BufferPool::PopCurrentOperator() {
 	}
 }
 
-const shared_ptr<OperatorMemoryCounter> &BufferPool::CurrentOperator() {
-	return tl_operator_stack.empty() ? EMPTY_COUNTER : tl_operator_stack.back();
+optional_ptr<OperatorMemoryCounter> BufferPool::CurrentOperator() {
+	if (tl_operator_stack.empty()) {
+		return nullptr;
+	}
+	return &tl_operator_stack.back().get();
 }
 
 shared_ptr<OperatorMemoryCounter> BufferPool::RegisterOperatorCounter(OperatorMemoryIdentity identity,
