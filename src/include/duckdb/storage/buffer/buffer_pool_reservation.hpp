@@ -15,6 +15,7 @@
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/unique_ptr.hpp"
 
 namespace duckdb {
 
@@ -48,10 +49,19 @@ struct OperatorMemoryInformation {
 struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCounter> {
 	OperatorMemoryCounter(OperatorMemoryIdentity identity_p, optional_ptr<const PhysicalOperator> op_p);
 
+	//! Same caching scheme as BufferPool::MemoryUsage: small deltas accumulate in per-CPU caches and reach the
+	//! global counters (and the peak) once a cache exceeds the threshold, so peaks are exact to within
+	//! CACHE_COUNT * CACHE_THRESHOLD bytes and threads of one operator rarely contend on a cache line
+	static constexpr idx_t CACHE_COUNT = 64;
+	static constexpr idx_t CACHE_THRESHOLD = 32 << 10;
+	static constexpr idx_t TOTAL_INDEX = MEMORY_TAG_COUNT;
+	using Counters = array<atomic<int64_t>, MEMORY_TAG_COUNT + 1>;
+
 	OperatorMemoryIdentity identity;
-	atomic<int64_t> usage {0};
+	//! Global usage per tag, plus the total at TOTAL_INDEX
+	Counters usage;
 	atomic<int64_t> peak {0};
-	array<atomic<int64_t>, MEMORY_TAG_COUNT> usage_per_tag;
+	unique_ptr<array<Counters, CACHE_COUNT>> caches;
 	//! The physical operator instance this counter attributes memory to. Identity that distinguishes two
 	//! operators of the same type, and the key to map this attribution onto the profiler's per-operator tree.
 	optional_ptr<const PhysicalOperator> op;
@@ -63,6 +73,9 @@ struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCoun
 
 	void Update(MemoryTag tag, int64_t delta);
 	OperatorMemoryInformation GetInformation() const;
+
+private:
+	void UpdateGlobal(idx_t index, int64_t delta);
 };
 
 struct BufferPoolReservation {

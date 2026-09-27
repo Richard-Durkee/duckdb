@@ -1,22 +1,46 @@
 #include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
 
 #include "duckdb/storage/buffer/buffer_pool.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
 namespace duckdb {
 
 OperatorMemoryCounter::OperatorMemoryCounter(OperatorMemoryIdentity identity_p,
                                              optional_ptr<const PhysicalOperator> op_p)
-    : identity(std::move(identity_p)), op(op_p) {
-	for (auto &tag_usage : usage_per_tag) {
-		tag_usage = 0;
+    : identity(std::move(identity_p)), caches(make_uniq<array<Counters, CACHE_COUNT>>()), op(op_p) {
+	for (auto &value : usage) {
+		value = 0;
+	}
+	for (auto &cache : *caches) {
+		for (auto &value : cache) {
+			value = 0;
+		}
+	}
+}
+
+void OperatorMemoryCounter::UpdateGlobal(idx_t index, int64_t delta) {
+	auto new_usage = usage[index].fetch_add(delta, std::memory_order_relaxed) + delta;
+	if (index != TOTAL_INDEX) {
+		return;
+	}
+	auto current_peak = peak.load(std::memory_order_relaxed);
+	while (new_usage > current_peak && !peak.compare_exchange_weak(current_peak, new_usage)) {
 	}
 }
 
 void OperatorMemoryCounter::Update(MemoryTag tag, int64_t delta) {
-	usage_per_tag[static_cast<idx_t>(tag)].fetch_add(delta, std::memory_order_relaxed);
-	auto new_usage = usage.fetch_add(delta, std::memory_order_relaxed) + delta;
-	auto current_peak = peak.load(std::memory_order_relaxed);
-	while (new_usage > current_peak && !peak.compare_exchange_weak(current_peak, new_usage)) {
+	auto tag_idx = static_cast<idx_t>(tag);
+	if (static_cast<idx_t>(AbsValue(delta)) >= CACHE_THRESHOLD) {
+		UpdateGlobal(tag_idx, delta);
+		UpdateGlobal(TOTAL_INDEX, delta);
+	} else {
+		auto &cache = (*caches)[TaskScheduler::GetEstimatedCPUId() % CACHE_COUNT];
+		for (auto index : {tag_idx, TOTAL_INDEX}) {
+			auto cached = cache[index].fetch_add(delta, std::memory_order_relaxed) + delta;
+			if (static_cast<idx_t>(AbsValue(cached)) >= CACHE_THRESHOLD) {
+				UpdateGlobal(index, cache[index].exchange(0, std::memory_order_relaxed));
+			}
+		}
 	}
 	if (parent) {
 		parent->Update(tag, delta);
@@ -28,12 +52,20 @@ static idx_t ClampUsage(int64_t usage) {
 }
 
 OperatorMemoryInformation OperatorMemoryCounter::GetInformation() const {
+	// current usage includes the unflushed caches; the peak is only as exact as the cache threshold allows
+	int64_t totals[MEMORY_TAG_COUNT + 1];
+	for (idx_t index = 0; index <= TOTAL_INDEX; index++) {
+		totals[index] = usage[index].load(std::memory_order_relaxed);
+		for (auto &cache : *caches) {
+			totals[index] += cache[index].load(std::memory_order_relaxed);
+		}
+	}
 	OperatorMemoryInformation result;
 	result.identity = identity;
-	result.memory_usage_bytes = ClampUsage(usage.load(std::memory_order_relaxed));
+	result.memory_usage_bytes = ClampUsage(totals[TOTAL_INDEX]);
 	result.peak_memory_usage_bytes = ClampUsage(peak.load(std::memory_order_relaxed));
 	for (idx_t tag_idx = 0; tag_idx < MEMORY_TAG_COUNT; tag_idx++) {
-		result.memory_usage_bytes_per_tag[tag_idx] = ClampUsage(usage_per_tag[tag_idx].load(std::memory_order_relaxed));
+		result.memory_usage_bytes_per_tag[tag_idx] = ClampUsage(totals[tag_idx]);
 	}
 	return result;
 }

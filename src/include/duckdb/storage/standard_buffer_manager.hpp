@@ -13,6 +13,7 @@
 #include "duckdb/common/checked_integer.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -224,9 +225,15 @@ protected:
 	//! Temporary evicted memory data per tag
 	atomic<CheckedInteger<idx_t, InternalException>> evicted_data_per_tag[MEMORY_TAG_COUNT];
 	//! PROTOTYPE: owner of each outstanding buffer-allocator allocation made while an operator was current
-	mutex allocator_owner_lock;
-	unordered_map<data_ptr_t, shared_ptr<OperatorMemoryCounter>> allocator_owners;
-	atomic<idx_t> allocator_owner_count {0};
+	//! Sharded by pointer so concurrent allocator calls rarely share a lock
+	struct AllocatorOwnerShard {
+		mutex lock;
+		unordered_map<data_ptr_t, shared_ptr<OperatorMemoryCounter>> owners;
+		atomic<idx_t> count {0};
+	};
+	static constexpr idx_t ALLOCATOR_OWNER_SHARD_COUNT = 64;
+	AllocatorOwnerShard &GetAllocatorOwnerShard(data_ptr_t pointer);
+	array<AllocatorOwnerShard, ALLOCATOR_OWNER_SHARD_COUNT> allocator_owner_shards;
 };
 
 } // namespace duckdb

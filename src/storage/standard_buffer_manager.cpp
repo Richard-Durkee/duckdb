@@ -901,24 +901,32 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	return new_pointer;
 }
 
+StandardBufferManager::AllocatorOwnerShard &StandardBufferManager::GetAllocatorOwnerShard(data_ptr_t pointer) {
+	// allocations are 16-byte aligned, so the low bits carry no information
+	auto hash = static_cast<idx_t>(reinterpret_cast<uintptr_t>(pointer) >> 4) * 0x9E3779B97F4A7C15ULL;
+	return allocator_owner_shards[(hash >> 58) % ALLOCATOR_OWNER_SHARD_COUNT];
+}
+
 void StandardBufferManager::TrackAllocatorOwner(data_ptr_t pointer, shared_ptr<OperatorMemoryCounter> owner) {
-	lock_guard<mutex> guard(allocator_owner_lock);
-	allocator_owners[pointer] = std::move(owner);
-	allocator_owner_count.store(allocator_owners.size(), std::memory_order_relaxed);
+	auto &shard = GetAllocatorOwnerShard(pointer);
+	lock_guard<mutex> guard(shard.lock);
+	shard.owners[pointer] = std::move(owner);
+	shard.count.store(shard.owners.size(), std::memory_order_relaxed);
 }
 
 shared_ptr<OperatorMemoryCounter> StandardBufferManager::ReleaseAllocatorOwner(data_ptr_t pointer) {
-	if (allocator_owner_count.load(std::memory_order_relaxed) == 0) {
+	auto &shard = GetAllocatorOwnerShard(pointer);
+	if (shard.count.load(std::memory_order_relaxed) == 0) {
 		return nullptr;
 	}
-	lock_guard<mutex> guard(allocator_owner_lock);
-	auto entry = allocator_owners.find(pointer);
-	if (entry == allocator_owners.end()) {
+	lock_guard<mutex> guard(shard.lock);
+	auto entry = shard.owners.find(pointer);
+	if (entry == shard.owners.end()) {
 		return nullptr;
 	}
 	auto owner = std::move(entry->second);
-	allocator_owners.erase(entry);
-	allocator_owner_count.store(allocator_owners.size(), std::memory_order_relaxed);
+	shard.owners.erase(entry);
+	shard.count.store(shard.owners.size(), std::memory_order_relaxed);
 	return owner;
 }
 

@@ -21,7 +21,7 @@ TEST_CASE("Test reserved memory is not charged to the current operator", "[api][
 		buffer_manager.ReserveMemory(reservation_size);
 	}
 	buffer_manager.FreeReservedMemory(reservation_size);
-	REQUIRE(counter->usage.load() == 0);
+	REQUIRE(counter->GetInformation().memory_usage_bytes == 0);
 	REQUIRE(counter->peak.load() == 0);
 }
 
