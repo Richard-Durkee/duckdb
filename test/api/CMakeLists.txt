@@ -38,6 +38,7 @@ set(TEST_API_OBJECTS
     test_relation_api.cpp
     test_stream_result_buffer.cpp
     test_operator_memory_limit.cpp
+    test_operator_memory_attribution.cpp
     test_query_profiler.cpp
     test_read_ahead_abandon.cpp
     test_read_ahead_progress.cpp
