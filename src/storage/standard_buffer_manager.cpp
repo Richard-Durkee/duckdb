@@ -185,7 +185,7 @@ string StandardBufferManager::MemoryBreakdownForError() {
 template <typename... ARGS>
 TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext context, MemoryTag tag,
                                                                     idx_t memory_delta, unique_ptr<FileBuffer> *buffer,
-                                                                    ARGS... args) {
+                                                                    ReservationAttribution attribution, ARGS... args) {
 	auto r = buffer_pool.EvictBlocks(context, tag, memory_delta, buffer_pool.maximum_memory, buffer);
 	if (!r.success) {
 		string extra_text = StringUtil::Format(" (%s/%s used)", StringUtil::BytesToHumanReadableString(GetUsedMemory()),
@@ -193,6 +193,9 @@ TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext
 		extra_text += MemoryBreakdownForError();
 		extra_text += InMemoryWarning();
 		throw OutOfMemoryException(args..., extra_text);
+	}
+	if (attribution == ReservationAttribution::CURRENT_OPERATOR) {
+		r.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
 	}
 	return std::move(r.reservation);
 }
@@ -213,8 +216,9 @@ shared_ptr<BlockHandle> StandardBufferManager::RegisterTransientMemory(const idx
 
 shared_ptr<BlockHandle> StandardBufferManager::RegisterSmallMemory(MemoryTag tag, const idx_t size) {
 	D_ASSERT(size < GetBlockSize());
-	auto reservation = EvictBlocksOrThrow(QueryContext(), tag, size, nullptr, "could not allocate block of size %s%s",
-	                                      StringUtil::BytesToHumanReadableString(size));
+	auto reservation =
+	    EvictBlocksOrThrow(QueryContext(), tag, size, nullptr, ReservationAttribution::CURRENT_OPERATOR,
+	                       "could not allocate block of size %s%s", StringUtil::BytesToHumanReadableString(size));
 
 	auto buffer = ConstructManagedBuffer(size, DEFAULT_BLOCK_HEADER_STORAGE_SIZE, nullptr, FileBufferType::TINY_BUFFER);
 
@@ -234,8 +238,9 @@ shared_ptr<BlockHandle> StandardBufferManager::RegisterMemory(MemoryTag tag, idx
 
 	// Evict blocks until there is enough memory to store the buffer.
 	unique_ptr<FileBuffer> reusable_buffer;
-	auto res = EvictBlocksOrThrow(context, tag, alloc_size, &reusable_buffer, "could not allocate block of size %s%s",
-	                              StringUtil::BytesToHumanReadableString(alloc_size));
+	auto res =
+	    EvictBlocksOrThrow(context, tag, alloc_size, &reusable_buffer, ReservationAttribution::CURRENT_OPERATOR,
+	                       "could not allocate block of size %s%s", StringUtil::BytesToHumanReadableString(alloc_size));
 
 	// Create a new buffer and a block to hold the buffer.
 	const auto file_buffer_type =
@@ -311,6 +316,7 @@ void StandardBufferManager::BatchRead(QueryContext context, PrefetchRun &run) {
 	if (!staging_result.success) {
 		return;
 	}
+	staging_result.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
 	// the reservation is held for the staging buffer's lifetime, released when this function returns
 	auto intermediate_buffer =
 	    ConstructManagedBuffer(total_block_size, 0, std::move(staging_reuse), FileBufferType::MANAGED_BUFFER);
@@ -334,6 +340,7 @@ void StandardBufferManager::BatchRead(QueryContext context, PrefetchRun &run) {
 			// the remaining blocks do not fit next to what the pool holds, the scan pins them on demand
 			return;
 		}
+		block_result.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
 		// load the block, the handle is not kept, the scan pins it again before it can be evicted
 		BufferHandle buf;
 		{
@@ -446,9 +453,9 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 
 	// evict blocks until we have space for the current block
 	unique_ptr<FileBuffer> reusable_buffer;
-	auto reservation =
-	    EvictBlocksOrThrow(context, block_memory.GetMemoryTag(), required_memory, &reusable_buffer,
-	                       "failed to pin block of size %s%s", StringUtil::BytesToHumanReadableString(required_memory));
+	auto reservation = EvictBlocksOrThrow(context, block_memory.GetMemoryTag(), required_memory, &reusable_buffer,
+	                                      ReservationAttribution::CURRENT_OPERATOR, "failed to pin block of size %s%s",
+	                                      StringUtil::BytesToHumanReadableString(required_memory));
 
 	// lock the handle again and repeat the check (in case anybody loaded in the meantime)
 	auto lock = block_memory.GetLock();
@@ -828,9 +835,9 @@ void StandardBufferManager::ReserveMemory(idx_t size) {
 	if (size == 0) {
 		return;
 	}
-	auto reservation =
-	    EvictBlocksOrThrow(QueryContext(), MemoryTag::EXTENSION, size, nullptr,
-	                       "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
+	auto reservation = EvictBlocksOrThrow(
+	    QueryContext(), MemoryTag::EXTENSION, size, nullptr, ReservationAttribution::CURRENT_OPERATOR,
+	    "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
 	reservation.size = 0;
 }
 
@@ -846,9 +853,9 @@ void StandardBufferManager::FreeReservedMemory(idx_t size) {
 //===--------------------------------------------------------------------===//
 data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *private_data, idx_t size) {
 	auto &data = private_data->Cast<BufferAllocatorData>();
-	auto reservation = data.manager.EvictBlocksOrThrow(QueryContext(), MemoryTag::ALLOCATOR, size, nullptr,
-	                                                   "failed to allocate data of size %s%s",
-	                                                   StringUtil::BytesToHumanReadableString(size));
+	auto reservation = data.manager.EvictBlocksOrThrow(
+	    QueryContext(), MemoryTag::ALLOCATOR, size, nullptr, ReservationAttribution::CURRENT_OPERATOR,
+	    "failed to allocate data of size %s%s", StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
 	// PROTOTYPE: the reservation already attributed `size` to the current operator; keep that owner so the free
 	// releases it from the same operator.

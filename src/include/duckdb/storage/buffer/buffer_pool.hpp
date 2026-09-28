@@ -103,7 +103,8 @@ protected:
 	//! If the "buffer" argument is specified AND the system can find a buffer to re-use for the given allocation size
 	//! "buffer" will be made to point to the re-usable memory. Note that this is not guaranteed.
 	//! Returns a pair. result.first indicates if eviction was successful. result.second contains the
-	//! reservation handle, which can be moved to the BlockHandle that will own the reservation.
+	//! reservation handle, which can be moved to the BlockHandle that will own the reservation. The reservation is
+	//! not attributed to any operator.
 	struct EvictionResult {
 		bool success;
 		TempBufferPoolReservation reservation;

@@ -38,13 +38,17 @@ OperatorMemoryInformation OperatorMemoryCounter::GetInformation() const {
 	return result;
 }
 
-static shared_ptr<OperatorMemoryCounter> CurrentOwner() {
+shared_ptr<OperatorMemoryCounter> BufferPoolReservation::CurrentOwner() {
 	auto current = BufferPool::CurrentOperator();
 	return current ? current->shared_from_this() : nullptr;
 }
 
 BufferPoolReservation::BufferPoolReservation(MemoryTag tag, BufferPool &pool)
     : tag(tag), pool(pool), owner(CurrentOwner()) {
+}
+
+BufferPoolReservation::BufferPoolReservation(MemoryTag tag, BufferPool &pool, shared_ptr<OperatorMemoryCounter> owner)
+    : tag(tag), pool(pool), owner(std::move(owner)) {
 }
 
 BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexcept : tag(src.tag), pool(src.pool) {
@@ -94,6 +98,20 @@ void BufferPoolReservation::Merge(BufferPoolReservation src) {
 	}
 	size += src.size;
 	src.size = 0;
+}
+
+void BufferPoolReservation::SetOwner(shared_ptr<OperatorMemoryCounter> new_owner) {
+	if (new_owner == owner) {
+		return;
+	}
+	auto bytes = UnsafeNumericCast<int64_t>(size);
+	if (owner) {
+		owner->Update(tag, -bytes);
+	}
+	if (new_owner) {
+		new_owner->Update(tag, bytes);
+	}
+	owner = std::move(new_owner);
 }
 
 } // namespace duckdb

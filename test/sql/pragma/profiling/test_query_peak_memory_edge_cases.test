@@ -31,14 +31,14 @@ PRAGMA profiling_output = '{TEST_DIR}/query_peak_memory_spill.json';
 statement ok con1
 SELECT count(*) FROM range(4000000) a JOIN range(4000000) b ON a.range = b.range JOIN range(4000000) c ON a.range = c.range;
 
-# the query's live peak respects the limit (allowing the brief reserve-before-evict overshoot) and covers the operators;
+# the query's live peak respects the limit (1% for memory that grows without eviction) and covers the operators;
 # an external join builds and probes its partitions as a source and intermediate operator, and that is attributed too
 query III
 WITH ops AS (
 	SELECT substring(content, strpos(content, '"operator"'), strpos(content, '"query"') - strpos(content, '"operator"')) AS s
 	FROM read_text('{TEST_DIR}/query_peak_memory_spill.json')
 )
-SELECT prof.query.peak_memory <= 1.2 * 200 * 1024 * 1024,
+SELECT prof.query.peak_memory <= 1.01 * 200 * 1000 * 1000,
        prof.query.peak_memory >= (SELECT list_max(list_transform(regexp_extract_all(s, '"peak_memory": *([0-9]+)', 1), lambda x: x::BIGINT)) FROM ops),
        prof.query.unattributed_peak_memory <= 0.1 * prof.query.peak_memory
 FROM '{TEST_DIR}/query_peak_memory_spill.json' prof;

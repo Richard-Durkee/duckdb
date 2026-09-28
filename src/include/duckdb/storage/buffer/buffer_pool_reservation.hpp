@@ -72,6 +72,8 @@ struct BufferPoolReservation {
 	shared_ptr<OperatorMemoryCounter> owner;
 
 	BufferPoolReservation(MemoryTag tag, BufferPool &pool);
+	//! A reservation attributed to `owner` (nullptr: to no operator) instead of the thread's current operator
+	BufferPoolReservation(MemoryTag tag, BufferPool &pool, shared_ptr<OperatorMemoryCounter> owner);
 	BufferPoolReservation(const BufferPoolReservation &) = delete;
 	BufferPoolReservation &operator=(const BufferPoolReservation &) = delete;
 
@@ -82,10 +84,22 @@ struct BufferPoolReservation {
 
 	void Resize(idx_t new_size);
 	void Merge(BufferPoolReservation src);
+	//! Moves this reservation's bytes from its current owner to `new_owner`
+	void SetOwner(shared_ptr<OperatorMemoryCounter> new_owner);
+
+	//! The counter of the operator running on this thread, or nullptr outside any operator scope
+	static shared_ptr<OperatorMemoryCounter> CurrentOwner();
 };
+
+//! Whether a reservation obtained by evicting blocks is charged to the operator running on this thread
+enum class ReservationAttribution : uint8_t { CURRENT_OPERATOR, NONE };
 
 struct TempBufferPoolReservation : BufferPoolReservation {
 	TempBufferPoolReservation(MemoryTag tag, BufferPool &pool, idx_t size) : BufferPoolReservation(tag, pool) {
+		Resize(size);
+	}
+	TempBufferPoolReservation(MemoryTag tag, BufferPool &pool, idx_t size, shared_ptr<OperatorMemoryCounter> owner)
+	    : BufferPoolReservation(tag, pool, std::move(owner)) {
 		Resize(size);
 	}
 	TempBufferPoolReservation(TempBufferPoolReservation &&) = default;
