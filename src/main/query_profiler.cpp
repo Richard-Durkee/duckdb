@@ -128,8 +128,21 @@ void QueryProfiler::Start(const string &query) {
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
 }
 
+//! Memory still charged to a finished query's counters (e.g. the data of a table it created) belongs to the database
+static void ReleaseQueryMemoryCounters(
+    const reference_map_t<const PhysicalOperator, shared_ptr<OperatorMemoryCounter>> &operator_counters,
+    const shared_ptr<OperatorMemoryCounter> &unattributed) {
+	for (auto &entry : operator_counters) {
+		entry.second->released = true;
+	}
+	if (unattributed) {
+		unattributed->released = true;
+	}
+}
+
 void QueryProfiler::Reset() {
 	tree_map.clear();
+	ReleaseQueryMemoryCounters(operator_memory_counters, query_memory_unattributed);
 	operator_memory_counters.clear();
 	query_memory_total = nullptr;
 	query_memory_unattributed = nullptr;
@@ -238,6 +251,7 @@ void QueryProfiler::EndQuery() {
 	}
 
 	FinalizeMetricsInternal();
+	ReleaseQueryMemoryCounters(operator_memory_counters, query_memory_unattributed);
 	running = false;
 	bool emit_output = false;
 

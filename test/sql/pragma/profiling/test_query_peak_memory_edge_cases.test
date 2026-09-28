@@ -94,23 +94,15 @@ CREATE TABLE t2 AS SELECT range AS a, range::VARCHAR AS b FROM range(2000000);
 statement ok con1
 SELECT count(*) FROM t2;
 
-# the new table's data is still attributed to the statement that created it, after later queries have run
+# the new table's data outlives the statement that created it, but it now belongs to the database: no finished
+# statement is listed as holding it
 query I
-SELECT count(*) FROM duckdb_operator_memory() WHERE operator_name = 'CREATE_TABLE_AS' AND memory_usage_bytes > 0;
-----
-1
-
-# dropping the table releases it
-statement ok con1
-DROP TABLE t2;
-
-statement ok con1
-SELECT 42;
-
-query I
-SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_operator_memory() WHERE operator_name = 'CREATE_TABLE_AS';
+SELECT count(*) FROM duckdb_operator_memory();
 ----
 0
+
+statement ok con1
+DROP TABLE t2;
 
 statement ok con1
 DROP TABLE t_empty;

@@ -372,7 +372,7 @@ vector<OperatorMemoryInformation> BufferPool::GetOperatorMemorySnapshot() const 
 	vector<OperatorMemoryInformation> result;
 	for (auto &weak : operator_counters) {
 		auto counter = weak.lock();
-		if (counter) {
+		if (counter && !counter->released.load(std::memory_order_relaxed)) {
 			result.push_back(counter->GetInformation());
 		}
 	}

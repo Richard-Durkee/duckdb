@@ -57,6 +57,9 @@ struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCoun
 	optional_ptr<const PhysicalOperator> op;
 	//! The query-wide total this counter rolls up into; its peak is the peak of the query's live memory
 	shared_ptr<OperatorMemoryCounter> parent;
+	//! Set when the owning query ends; memory still charged to a released counter belongs to the database and is no
+	//! longer reported for the operator
+	atomic<bool> released {false};
 
 	void Update(MemoryTag tag, int64_t delta);
 	OperatorMemoryInformation GetInformation() const;

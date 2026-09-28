@@ -1,0 +1,58 @@
+# name: test/sql/pragma/profiling/test_operator_memory_cached_blocks.test
+# description: blocks of the database file are cache memory, so a scan is attributed the same whether or not they are cached
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+load {TEST_DIR}/operator_memory_cached_blocks.db
+
+statement ok
+CREATE TABLE t AS SELECT md5(range::VARCHAR) || md5((range + 1)::VARCHAR) AS s FROM range(2000000);
+
+# drop the table's blocks from the buffer pool, so the first scan loads them from disk
+restart
+
+statement ok
+SET threads = 4;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['operator.peak_memory', 'operator.type', 'query.peak_memory'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_memory_cached_blocks_cold.json';
+
+statement ok
+SELECT sum(length(s)) FROM t;
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_memory_cached_blocks_warm.json';
+
+statement ok
+SELECT sum(length(s)) FROM t;
+
+statement ok
+PRAGMA disable_profiling;
+
+# the scan loaded the table into the buffer pool, but that memory is the database's cache
+query I
+SELECT sum(memory_usage_bytes) > 50 * 1024 * 1024 FROM duckdb_memory() WHERE tag = 'BASE_TABLE';
+----
+true
+
+# the cold and the warm scan are both attributed only their own working memory
+query II
+SELECT cold.query.peak_memory < 16 * 1024 * 1024, warm.query.peak_memory < 16 * 1024 * 1024
+FROM '{TEST_DIR}/operator_memory_cached_blocks_cold.json' cold, '{TEST_DIR}/operator_memory_cached_blocks_warm.json' warm;
+----
+true	true
+
+# the cached blocks keep no finished query's operators alive
+query I
+SELECT count(*) FROM duckdb_operator_memory();
+----
+0
