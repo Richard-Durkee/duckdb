@@ -1,5 +1,5 @@
 # name: test/sql/table_function/duckdb_operator_memory.test
-# description: duckdb_operator_memory() reports memory attributed to each operator instance of profiled queries
+# description: duckdb_operator_memory() reports memory attributed to each operator instance of running profiled queries
 # group: [table_function]
 
 require no_vector_verification
@@ -25,35 +25,10 @@ PRAGMA profiling_output = '{TEST_DIR}/duckdb_operator_memory.json';
 statement ok con1
 SELECT count(*) FROM range(1000000) a JOIN range(1000000) b ON a.range = b.range;
 
-# the finished query's counters stay visible until con1 starts its next query; operator ids are pre-order
-# positions in the profiled tree (RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN)
-query IIII
-SELECT operator_id, operator_name, peak_memory_usage_bytes > 0, memory_usage_bytes <= peak_memory_usage_bytes
-FROM duckdb_operator_memory()
-WHERE operator_name = 'HASH_JOIN';
-----
-2	HASH_JOIN	true	true
-
-# all counters of the query share its connection and query id, which differ from the inspecting connection
-query II
-SELECT count(DISTINCT query_id), bool_and(connection_id <> current_connection_id())
-FROM duckdb_operator_memory();
-----
-1	true
-
-# the per-tag breakdown sums to the operator's current usage
+# only running queries are listed: the operators of a finished query are gone
+# (test/api/test_operator_memory_attribution.cpp inspects a query while it runs)
 query I
-SELECT bool_and(coalesce(list_sum(map_values(memory_usage_bytes_by_tag)), 0) = memory_usage_bytes)
-FROM duckdb_operator_memory();
-----
-true
-
-# a new query on the profiled connection releases the previous query's counters
-statement ok con1
-SELECT 42;
-
-query I
-SELECT count(*) FROM duckdb_operator_memory() WHERE operator_name = 'HASH_JOIN';
+SELECT count(*) FROM duckdb_operator_memory();
 ----
 0
 

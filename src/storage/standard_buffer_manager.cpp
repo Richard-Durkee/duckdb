@@ -316,8 +316,8 @@ void StandardBufferManager::BatchRead(QueryContext context, PrefetchRun &run) {
 	if (!staging_result.success) {
 		return;
 	}
-	staging_result.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
-	// the reservation is held for the staging buffer's lifetime, released when this function returns
+	// the reservation is held for the staging buffer's lifetime, released when this function returns; like every
+	// load of database blocks it is cache memory, not charged to an operator
 	auto intermediate_buffer =
 	    ConstructManagedBuffer(total_block_size, 0, std::move(staging_reuse), FileBufferType::MANAGED_BUFFER);
 
@@ -340,7 +340,6 @@ void StandardBufferManager::BatchRead(QueryContext context, PrefetchRun &run) {
 			// the remaining blocks do not fit next to what the pool holds, the scan pins them on demand
 			return;
 		}
-		block_result.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
 		// load the block, the handle is not kept, the scan pins it again before it can be evicted
 		BufferHandle buf;
 		{
@@ -452,10 +451,13 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 	}
 
 	// evict blocks until we have space for the current block
+	// blocks of the database file are a cache shared by all queries, so loading one is not charged to an operator
 	unique_ptr<FileBuffer> reusable_buffer;
-	auto reservation = EvictBlocksOrThrow(context, block_memory.GetMemoryTag(), required_memory, &reusable_buffer,
-	                                      ReservationAttribution::CURRENT_OPERATOR, "failed to pin block of size %s%s",
-	                                      StringUtil::BytesToHumanReadableString(required_memory));
+	auto attribution =
+	    handle->BlockId() < MAXIMUM_BLOCK ? ReservationAttribution::NONE : ReservationAttribution::CURRENT_OPERATOR;
+	auto reservation =
+	    EvictBlocksOrThrow(context, block_memory.GetMemoryTag(), required_memory, &reusable_buffer, attribution,
+	                       "failed to pin block of size %s%s", StringUtil::BytesToHumanReadableString(required_memory));
 
 	// lock the handle again and repeat the check (in case anybody loaded in the meantime)
 	auto lock = block_memory.GetLock();

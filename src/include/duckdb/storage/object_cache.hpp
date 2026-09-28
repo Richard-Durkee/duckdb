@@ -116,8 +116,9 @@ public:
 			return value;
 		}
 
-		auto reservation =
-		    make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, estimated_memory.GetIndex());
+		// the object cache belongs to the database, so its entries are not charged to an operator
+		auto reservation = make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool,
+		                                                        estimated_memory.GetIndex(), nullptr);
 		lru_cache.Put(key, value, std::move(reservation));
 		return value;
 	}
@@ -135,8 +136,9 @@ public:
 			return;
 		}
 
-		auto reservation =
-		    make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool, estimated_memory.GetIndex());
+		// the object cache belongs to the database, so its entries are not charged to an operator
+		auto reservation = make_uniq<TempBufferPoolReservation>(MemoryTag::OBJECT_CACHE, buffer_pool,
+		                                                        estimated_memory.GetIndex(), nullptr);
 		lru_cache.Put(std::move(key), std::move(value), std::move(reservation));
 	}
 

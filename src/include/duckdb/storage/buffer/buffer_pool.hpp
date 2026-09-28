@@ -74,8 +74,7 @@ public:
 	//! alive). Only touched at sink setup, never on the allocation hot path.
 	shared_ptr<OperatorMemoryCounter> RegisterOperatorCounter(OperatorMemoryIdentity identity,
 	                                                          optional_ptr<const PhysicalOperator> op);
-	//! Point-in-time memory attributed to every live operator counter, across all connections. Counters live
-	//! until their connection starts its next query, so finished operators of the last query are included.
+	//! Point-in-time memory attributed to the operators of every running query, across all connections
 	DUCKDB_API vector<OperatorMemoryInformation> GetOperatorMemorySnapshot() const;
 
 	idx_t GetUsedMemory(bool flush = true) const;
