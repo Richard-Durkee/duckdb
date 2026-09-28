@@ -277,7 +277,7 @@ class ProcessRemainingBatchesTask : public ExecutorTask {
 public:
 	ProcessRemainingBatchesTask(Executor &executor, shared_ptr<Event> event_p, FixedBatchCopyGlobalState &state_p,
 	                            ClientContext &context, const PhysicalBatchCopyToFile &op)
-	    : ExecutorTask(executor, std::move(event_p)), op(op), gstate(state_p), context(context) {
+	    : ExecutorTask(context, std::move(event_p), op), op(op), gstate(state_p), context(context) {
 	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {

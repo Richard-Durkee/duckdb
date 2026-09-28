@@ -10,7 +10,7 @@ namespace duckdb {
 class PipelineFinishTask : public ExecutorTask {
 public:
 	explicit PipelineFinishTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
-	    : ExecutorTask(pipeline_p.executor, std::move(event_p)), pipeline(pipeline_p) {
+	    : ExecutorTask(pipeline_p.GetClientContext(), std::move(event_p), *pipeline_p.GetSink()), pipeline(pipeline_p) {
 	}
 
 	Pipeline &pipeline;

@@ -697,7 +697,9 @@ PipelineExecuteResult PipelineExecutor::PushFinalize() {
 		return PipelineExecuteResult::INTERRUPTED;
 	}
 #endif
+	context.thread.profiler.StartOperator(pipeline.sink.get());
 	auto result = pipeline.sink->Combine(context, combine_input);
+	context.thread.profiler.EndOperator(nullptr);
 
 	if (result == SinkCombineResultType::BLOCKED) {
 		return PipelineExecuteResult::INTERRUPTED;

@@ -1,0 +1,29 @@
+# name: test/sql/pragma/profiling/test_profiling_sink_combine_finalize_timing.test
+# description: Test that time spent in sink Combine and Finalize is attributed to the operator timings
+# group: [profiling]
+
+require json
+
+statement ok
+SET threads = 1;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/sink_combine_finalize_timing.json';
+
+# with a single thread the sort work happens in Combine and Finalize, not in Sink
+statement ok
+SELECT count(*) FROM (SELECT * FROM range(1000000) t(i) ORDER BY hash(i) LIMIT 900000);
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+CREATE TABLE metrics_output AS SELECT * FROM '{TEST_DIR}/sink_combine_finalize_timing.json';
+
+query I
+SELECT query.cpu_time > 0.5 * query.total_time FROM metrics_output;
+----
+true
