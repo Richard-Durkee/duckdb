@@ -1,4 +1,5 @@
 #include "duckdb/parallel/executor_task.hpp"
+#include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/task_notifier.hpp"
 #include "duckdb/execution/executor.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -36,22 +37,28 @@ void ExecutorTask::Reschedule() {
 	executor.RescheduleTask(this_ptr);
 }
 
+optional_ptr<const Pipeline> ExecutorTask::GetPipeline() const {
+	return event ? event->GetPipeline() : nullptr;
+}
+
 TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 	try {
 		if (thread_context) {
 			TaskExecutionResult result;
 			do {
-				TaskNotifier task_notifier {context};
+				TaskNotifier task_notifier {context, *this};
 				thread_context->profiler.StartOperator(op);
 				// to allow continuous profiling, always execute in small steps
 				result = ExecuteTask(TaskExecutionMode::PROCESS_PARTIAL);
 				thread_context->profiler.EndOperator(nullptr);
 				executor.Flush(*thread_context);
+				task_notifier.SetResult(result);
 			} while (mode == TaskExecutionMode::PROCESS_ALL && result == TaskExecutionResult::TASK_NOT_FINISHED);
 			return result;
 		} else {
-			TaskNotifier task_notifier {context};
+			TaskNotifier task_notifier {context, *this};
 			auto result = ExecuteTask(mode);
+			task_notifier.SetResult(result);
 			return result;
 		}
 	} catch (std::exception &ex) {

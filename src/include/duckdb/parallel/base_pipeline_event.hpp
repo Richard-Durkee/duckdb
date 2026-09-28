@@ -22,6 +22,9 @@ public:
 	void PrintPipeline() override {
 		pipeline->Print();
 	}
+	optional_ptr<const Pipeline> GetPipeline() const override {
+		return pipeline.get();
+	}
 
 	//! The pipeline that this event belongs to
 	shared_ptr<Pipeline> pipeline;

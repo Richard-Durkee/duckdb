@@ -15,6 +15,7 @@
 
 namespace duckdb {
 class Executor;
+class Pipeline;
 class Task;
 
 class Event : public enable_shared_from_this<Event> {
@@ -58,6 +59,10 @@ public:
 	}
 
 	virtual void PrintPipeline() {
+	}
+	//! The pipeline this event belongs to, if any
+	virtual optional_ptr<const Pipeline> GetPipeline() const {
+		return nullptr;
 	}
 
 	ClientContext &GetClientContext();

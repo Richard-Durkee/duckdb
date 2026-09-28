@@ -14,6 +14,7 @@
 namespace duckdb {
 class Event;
 class PhysicalOperator;
+class Pipeline;
 class ThreadContext;
 
 //! Execute a task within an executor, including exception handling
@@ -27,6 +28,8 @@ public:
 public:
 	void Deschedule() override;
 	void Reschedule() override;
+	//! The pipeline of the event this task belongs to, if any
+	optional_ptr<const Pipeline> GetPipeline() const;
 
 public:
 	Executor &executor;

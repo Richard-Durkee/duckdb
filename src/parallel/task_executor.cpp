@@ -109,8 +109,9 @@ TaskExecutionResult BaseExecutorTask::Execute(TaskExecutionMode mode) {
 	}
 	try {
 		{
-			TaskNotifier task_notifier {executor.context};
+			TaskNotifier task_notifier {executor.context, *this};
 			ExecuteTask();
+			task_notifier.SetResult(TaskExecutionResult::TASK_FINISHED);
 		}
 		executor.FinishTask();
 		return TaskExecutionResult::TASK_FINISHED;

@@ -13,6 +13,7 @@
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/main/valid_checker.hpp"
+#include "duckdb/parallel/task.hpp"
 #include "duckdb/planner/expression/bound_parameter_data.hpp"
 #include <mutex>
 
@@ -24,12 +25,29 @@ class PreparedStatementData;
 class SQLStatement;
 struct PendingQueryParameters;
 class RegisteredStateManager;
+class Pipeline;
+class PhysicalOperator;
 
 enum class RebindQueryInfo { DO_NOT_REBIND, ATTEMPT_TO_REBIND };
 
 struct BindPreparedStatementCallbackInfo {
 	PreparedStatementData &prepared_statement;
 	optional_ptr<identifier_map_t<BoundParameterData>> parameters;
+};
+
+//! Identifies the task passed to the task callbacks
+struct TaskInfo {
+	explicit TaskInfo(const Task &task_p) : task(task_p) {
+	}
+
+	//! The task being executed, Task::TaskType() returns its name
+	const Task &task;
+	//! The pipeline the task belongs to, if any
+	optional_ptr<const Pipeline> pipeline;
+	//! The operator the task executes on behalf of, if any
+	optional_ptr<const PhysicalOperator> op;
+	//! The result of the execution step - only set in OnTaskStop
+	TaskExecutionResult result = TaskExecutionResult::TASK_ERROR;
 };
 
 //! ClientContextState is virtual base class for ClientContext-local (or Query-Local, using QueryEnd callback) state
@@ -81,6 +99,12 @@ public:
 	virtual void OnTaskStart(ClientContext &context) {
 	}
 	virtual void OnTaskStop(ClientContext &context) {
+	}
+	virtual void OnTaskStart(ClientContext &context, const TaskInfo &info) {
+		OnTaskStart(context);
+	}
+	virtual void OnTaskStop(ClientContext &context, const TaskInfo &info) {
+		OnTaskStop(context);
 	}
 
 public:
