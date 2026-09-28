@@ -346,6 +346,10 @@ struct ConnectionSecretState : public ClientContextState {
 	//! The secrets of this connection: the last committed state, plus the changes of the active transaction
 	identifier_map_t<unique_ptr<SecretEntry>> secrets;
 
+	bool ReceivesTaskCallbacks() const override {
+		return false;
+	}
+
 	//! Records the pre-image of `name` before the active transaction modifies it, so that a rollback can restore it.
 	//! Only the first change per name is recorded, making the undo replay order-independent.
 	void StageChange(MetaTransaction &transaction, const Identifier &name) {

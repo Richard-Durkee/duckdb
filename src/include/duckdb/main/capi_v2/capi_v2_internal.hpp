@@ -487,6 +487,10 @@ struct ConnectionBusySlotV2 : public ClientContextState {
 	// The DuckDB's internal interrupt_state is not suitable for this, it is set to stop sibling tasks on any error.
 	// Reset when a new query claims the slot.
 	std::atomic<bool> cancel_requested {false};
+
+	bool ReceivesTaskCallbacks() const override {
+		return false;
+	}
 };
 
 inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {

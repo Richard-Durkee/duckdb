@@ -145,6 +145,10 @@ struct DebugClientContextState : public ClientContextState {
 	bool active_transaction = false;
 	bool active_query = false;
 
+	bool ReceivesTaskCallbacks() const override {
+		return false;
+	}
+
 	void QueryBegin(ClientContext &context) override {
 		if (active_query) {
 			throw InternalException("DebugClientContextState::QueryBegin called when a query is already active");

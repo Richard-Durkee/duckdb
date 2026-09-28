@@ -15,6 +15,10 @@ public:
 	optional_ptr<FileSystem> fs;
 	//! The context the file system was taken from, so reads and writes can be attributed to the query.
 	QueryContext query;
+
+	bool ReceivesTaskCallbacks() const override {
+		return false;
+	}
 };
 
 inline auto GetFileSystemSlot(ClientContext &context) -> shared_ptr<CV2FileSystem> {

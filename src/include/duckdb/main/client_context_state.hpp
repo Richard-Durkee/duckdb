@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/enums/prepared_statement_mode.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/optional_ptr.hpp"
@@ -72,6 +73,11 @@ public:
 	}
 	virtual void WriteProfilingInformation(std::ostream &ss) {
 	}
+	//! Whether OnTaskStart / OnTaskStop are invoked for this state - queried once when the state is registered
+	//! Task callbacks fire for every executed task, so states that do not use them should return false
+	virtual bool ReceivesTaskCallbacks() const {
+		return true;
+	}
 	virtual void OnTaskStart(ClientContext &context) {
 	}
 	virtual void OnTaskStop(ClientContext &context) {
@@ -101,6 +107,7 @@ public:
 		}
 		auto cache = make_shared_ptr<T>(std::forward<ARGS>(args)...);
 		registered_state[key] = cache;
+		UpdateTaskListeners();
 		return cache;
 	}
 
@@ -116,12 +123,16 @@ public:
 
 	void Insert(const string &key, shared_ptr<ClientContextState> state_p) {
 		lock_guard<mutex> l(lock);
-		registered_state.insert(make_pair(key, std::move(state_p)));
+		if (registered_state.insert(make_pair(key, std::move(state_p))).second) {
+			UpdateTaskListeners();
+		}
 	}
 
 	void Remove(const string &key) {
 		lock_guard<mutex> l(lock);
-		registered_state.erase(key);
+		if (registered_state.erase(key) > 0) {
+			UpdateTaskListeners();
+		}
 	}
 
 	vector<shared_ptr<ClientContextState>> States() {
@@ -133,9 +144,35 @@ public:
 		return states;
 	}
 
+	//! Whether any registered state receives task callbacks - cheap enough to check for every task
+	bool HasTaskListeners() const {
+		return has_task_listeners.load(std::memory_order_relaxed);
+	}
+
+	//! The registered states that receive task callbacks
+	vector<shared_ptr<ClientContextState>> TaskListeners() {
+		lock_guard<mutex> l(lock);
+		return task_listeners;
+	}
+
+private:
+	void UpdateTaskListeners() {
+		task_listeners.clear();
+		for (auto &entry : registered_state) {
+			if (entry.second->ReceivesTaskCallbacks()) {
+				task_listeners.push_back(entry.second);
+			}
+		}
+		has_task_listeners.store(!task_listeners.empty(), std::memory_order_relaxed);
+	}
+
 private:
 	mutex lock;
 	unordered_map<string, shared_ptr<ClientContextState>> registered_state;
+	//! The subset of registered_state that receives task callbacks
+	vector<shared_ptr<ClientContextState>> task_listeners;
+	//! Only written on registration, so reading it does not contend across threads
+	atomic<bool> has_task_listeners {false};
 };
 
 } // namespace duckdb
