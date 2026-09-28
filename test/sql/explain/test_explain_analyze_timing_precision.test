@@ -1,0 +1,12 @@
+# name: test/sql/explain/test_explain_analyze_timing_precision.test
+# description: Test that EXPLAIN ANALYZE renders operator timings below 10ms
+# group: [explain]
+
+statement ok
+SET threads = 1;
+
+# timings rounded to 10ms can only render as 0µs or a multiple of 10.0ms
+query II
+EXPLAIN ANALYZE SELECT sum(i) FROM range(1000000) t(i)
+----
+analyzed_plan	<REGEX>:(?s).*( [1-9][0-9]*µs | [0-9]*[1-9]\.[0-9]ms | [0-9]+\.[1-9]ms ).*
