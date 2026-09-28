@@ -396,7 +396,8 @@ TemporaryMemoryManager &BufferPool::GetTemporaryMemoryManager() {
 }
 
 BufferPool::EvictionResult BufferPool::EvictObjectCacheEntries(MemoryTag tag, idx_t extra_memory, idx_t memory_limit) {
-	TempBufferPoolReservation r(tag, *this, extra_memory);
+	// unowned: the caller charges an operator only once the memory is actually available
+	TempBufferPoolReservation r(tag, *this, extra_memory, nullptr);
 
 	if (memory_usage.GetUsedMemory(MemoryUsageCaches::NO_FLUSH) <= memory_limit) {
 		if (extra_memory > allocator_bulk_deallocation_flush_threshold) {
@@ -444,7 +445,9 @@ BufferPool::EvictionResult BufferPool::EvictBlocks(QueryContext context, MemoryT
 BufferPool::EvictionResult BufferPool::EvictBlocksInternal(QueryContext context, EvictionQueue &queue, MemoryTag tag,
                                                            idx_t extra_memory, idx_t memory_limit,
                                                            unique_ptr<FileBuffer> *buffer) {
-	TempBufferPoolReservation r(tag, *this, extra_memory);
+	// unowned: the caller charges an operator only once eviction succeeded, so operator peaks never include
+	// memory that is still held by the blocks being evicted, nor memory of an allocation that fails
+	TempBufferPoolReservation r(tag, *this, extra_memory, nullptr);
 	bool found = false;
 
 	if (memory_usage.GetUsedMemory(MemoryUsageCaches::NO_FLUSH) <= memory_limit) {

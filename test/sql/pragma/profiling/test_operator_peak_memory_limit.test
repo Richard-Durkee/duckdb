@@ -1,0 +1,54 @@
+# name: test/sql/pragma/profiling/test_operator_peak_memory_limit.test
+# description: operator and query peak memory of a spilling query stay within the memory limit
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET threads = 4;
+
+statement ok
+SET memory_limit = '100MB';
+
+statement ok
+SET temp_directory = '{TEST_DIR}/operator_peak_memory_limit';
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['operator.peak_memory', 'operator.type', 'query.peak_memory'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_peak_memory_limit_sort.json';
+
+statement ok
+SELECT * FROM (SELECT (range * 7919) % 5000000 AS x, range::VARCHAR AS s FROM range(5000000) ORDER BY x) LIMIT 5 OFFSET 4999990;
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_peak_memory_limit_joins.json';
+
+statement ok
+SELECT count(*) FROM range(3000000) a JOIN range(3000000) b ON a.range = b.range JOIN range(3000000) c ON a.range = c.range;
+
+statement ok
+PRAGMA disable_profiling;
+
+# eviction makes room before an operator is charged, so no peak counts memory that is being evicted; the 1%
+# allows for memory that grows without eviction (e.g. buffer allocator reallocations)
+foreach name sort joins
+
+query II
+WITH ops AS (
+	SELECT substring(content, strpos(content, '"operator"'), strpos(content, '"query"') - strpos(content, '"operator"')) AS s
+	FROM read_text('{TEST_DIR}/operator_peak_memory_limit_${name}.json')
+)
+SELECT (SELECT list_max(list_transform(regexp_extract_all(s, '"peak_memory": *([0-9]+)', 1), lambda x: x::BIGINT)) FROM ops) <= 1.01 * 100000000,
+       prof.query.peak_memory <= 1.01 * 100000000
+FROM '{TEST_DIR}/operator_peak_memory_limit_${name}.json' prof;
+----
+true	true
+
+endloop
