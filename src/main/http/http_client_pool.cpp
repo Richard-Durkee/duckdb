@@ -224,6 +224,10 @@ HTTPClientPool::DetachedBucket HTTPClientPool::FinishDestruction(BucketHandle ha
 	return result;
 }
 
+idx_t HTTPClientPool::Capacity() const {
+	return capacity;
+}
+
 idx_t HTTPClientPool::ReservedClients() const {
 	return reserved_clients;
 }

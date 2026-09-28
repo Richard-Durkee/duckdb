@@ -958,6 +958,17 @@
         ]
     },
     {
+        "name": "http_max_connections",
+        "description": "Maximum number of HTTP connections shared by all remote file reads. 0 derives the limit from the number of CPU cores and the open file limit. Can only be set at startup.",
+        "type": "UBIGINT",
+        "scope": "global",
+        "struct": "HTTPMaxConnectionsSetting",
+        "default_value": "0",
+        "on_callbacks": [
+            "set"
+        ]
+    },
+    {
         "name": "http_proxy",
         "description": "HTTP proxy host (defaults to the HTTP_PROXY environment variable when unset)",
         "type": "VARCHAR",

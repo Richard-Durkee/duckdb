@@ -1052,6 +1052,21 @@ void HomeDirectorySetting::OnSet(SettingCallbackInfo &info, Value &input) {
 }
 
 //===----------------------------------------------------------------------===//
+// HTTP Max Connections
+//===----------------------------------------------------------------------===//
+static constexpr idx_t HTTP_MAX_CONNECTIONS_LIMIT = 65536;
+
+void HTTPMaxConnectionsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	if (info.db) {
+		throw InvalidInputException("Cannot change %s while the database is running", string(Name));
+	}
+	if (input.GetValue<uint64_t>() > HTTP_MAX_CONNECTIONS_LIMIT) {
+		throw InvalidInputException("Invalid option for %s: value must be at most %llu", string(Name),
+		                            HTTP_MAX_CONNECTIONS_LIMIT);
+	}
+}
+
+//===----------------------------------------------------------------------===//
 // Enable Mbedtls
 //===----------------------------------------------------------------------===//
 

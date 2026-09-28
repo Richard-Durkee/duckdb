@@ -255,8 +255,9 @@ bool HTTPTransportManager::AdvanceConnectionEpoch(uint64_t &connection_epoch, bo
 	return false;
 }
 
-void HTTPTransportManager::Initialize(idx_t system_concurrency) {
-	auto new_capacity = CalculateCapacity(system_concurrency, GetFileDescriptorLimit());
+void HTTPTransportManager::Initialize(idx_t system_concurrency, idx_t max_connections) {
+	auto new_capacity =
+	    max_connections > 0 ? max_connections : CalculateCapacity(system_concurrency, GetFileDescriptorLimit());
 	HTTPClientPool new_clients(new_capacity);
 
 	annotated_lock_guard<annotated_mutex> guard(lock);

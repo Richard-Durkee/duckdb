@@ -47,6 +47,15 @@ struct HTTPTransportManagerTestHelper {
 		return HTTPTransportManager::AdvanceConnectionEpoch(connection_epoch, reuse_poisoned);
 	}
 
+	static idx_t Capacity(HTTPTransportManager &manager) {
+		annotated_lock_guard<annotated_mutex> guard(manager.lock);
+		return manager.clients.Capacity();
+	}
+
+	static optional_idx GetFileDescriptorLimit() {
+		return HTTPTransportManager::GetFileDescriptorLimit();
+	}
+
 	static idx_t OccupiedSlots(HTTPTransportManager &manager) {
 		annotated_lock_guard<annotated_mutex> guard(manager.lock);
 		return manager.clients.ReservedClients();
@@ -353,6 +362,20 @@ TEST_CASE("HTTP transport manager capacity and provider contracts", "[http_trans
 		CHECK(HTTPTransportManagerTestHelper::CalculateCapacity(64, optional_idx(7)) == 1);
 		CHECK(HTTPTransportManagerTestHelper::CalculateCapacity(64, optional_idx(80)) == 10);
 		CHECK(HTTPTransportManagerTestHelper::CalculateCapacity(64, optional_idx(4096)) == 128);
+	}
+
+	SECTION("http_max_connections overrides the derived capacity") {
+		DBConfig config;
+		config.SetOptionByName("http_max_connections", Value::UBIGINT(7));
+		DuckDB db(nullptr, &config);
+		CHECK(HTTPTransportManagerTestHelper::Capacity(db.instance->config.GetHTTPTransportManager()) == 7);
+
+		DuckDB default_db(nullptr);
+		auto &default_config = default_db.instance->config;
+		auto expected = HTTPTransportManagerTestHelper::CalculateCapacity(
+		    DBConfig::GetSystemMaxThreads(*default_config.file_system),
+		    HTTPTransportManagerTestHelper::GetFileDescriptorLimit());
+		CHECK(HTTPTransportManagerTestHelper::Capacity(default_config.GetHTTPTransportManager()) == expected);
 	}
 
 	SECTION("connection epoch exhaustion permanently poisons reuse") {

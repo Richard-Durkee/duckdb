@@ -515,7 +515,8 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	} else {
 		config.file_system = make_uniq<VirtualFileSystem>(FileSystem::CreateLocal());
 	}
-	config.http_transport_manager->Initialize(DBConfig::GetSystemMaxThreads(*config.file_system));
+	config.http_transport_manager->Initialize(DBConfig::GetSystemMaxThreads(*config.file_system),
+	                                          Settings::Get<HTTPMaxConnectionsSetting>(config));
 	if (database_path && !Settings::Get<EnableExternalAccessSetting>(*this)) {
 		config.AddAllowedPath(database_path);
 		config.AddAllowedPath(database_path + string(".wal"));

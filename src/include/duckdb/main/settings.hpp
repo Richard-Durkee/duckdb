@@ -1599,6 +1599,21 @@ struct HomeDirectorySetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct HTTPMaxConnectionsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "http_max_connections";
+	static constexpr const char *Description =
+	    "Maximum number of HTTP connections shared by all remote file reads. 0 derives the limit from the number of "
+	    "CPU cores and the open file limit. Can only be set at startup.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct HTTPProxySetting {
 	using RETURN_TYPE = string;
 	static constexpr const char *Name = "http_proxy";

@@ -184,6 +184,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(GeometryMinimumShreddingSize),
     DUCKDB_SETTING(HeapBasedParserSetting),
     DUCKDB_SETTING_CALLBACK(HomeDirectorySetting),
+    DUCKDB_SETTING_CALLBACK(HTTPMaxConnectionsSetting),
     DUCKDB_GLOBAL(HTTPProxySetting),
     DUCKDB_SETTING(HTTPProxyPasswordSetting),
     DUCKDB_SETTING(HTTPProxyUsernameSetting),

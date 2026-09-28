@@ -111,6 +111,7 @@ public:
 	Reservation TakeIdleForDisposal(IdleFilter filter, idx_t first = DConstants::INVALID_INDEX, uint64_t second = 0);
 	DetachedBucket FinishDestruction(BucketHandle bucket);
 
+	idx_t Capacity() const;
 	idx_t ReservedClients() const;
 	idx_t IdleClients() const;
 	idx_t BucketCount() const;
