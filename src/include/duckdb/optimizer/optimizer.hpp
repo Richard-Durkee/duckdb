@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/optimizer/expression_rewriter.hpp"
+#include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/common/enums/optimizer_type.hpp"
@@ -47,6 +48,7 @@ private:
 
 	void RunBuiltInOptimizers();
 	void RunOptimizer(OptimizerType type, const std::function<void()> &callback);
+	void NotifyOptimizerStep(OptimizerType type, OptimizerStepPhase phase);
 	void Verify(LogicalOperator &op);
 
 public:
@@ -59,6 +61,8 @@ public:
 
 private:
 	unique_ptr<LogicalOperator> plan;
+	//! The optimizer extensions that registered an optimizer step function
+	vector<OptimizerExtension> step_extensions;
 
 private:
 	unique_ptr<Expression> BindScalarFunction(const Identifier &name, vector<unique_ptr<Expression>> children);

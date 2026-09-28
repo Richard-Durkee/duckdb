@@ -140,6 +140,7 @@ void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &ca
 		// optimizer is marked as disabled: skip
 		return;
 	}
+	NotifyOptimizerStep(type, OptimizerStepPhase::BEFORE);
 	auto &profiler = QueryProfiler::Get(context);
 	{
 		auto optimizer_timer = profiler.StartTimerInternal("optimizer." + StringUtil::Lower(EnumUtil::ToString(type)));
@@ -147,6 +148,17 @@ void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &ca
 	}
 	if (plan) {
 		Verify(*plan);
+	}
+	NotifyOptimizerStep(type, OptimizerStepPhase::AFTER);
+}
+
+void Optimizer::NotifyOptimizerStep(OptimizerType type, OptimizerStepPhase phase) {
+	if (step_extensions.empty() || !plan) {
+		return;
+	}
+	for (auto &extension : step_extensions) {
+		OptimizerStepInput input {context, type, phase, *plan, extension.optimizer_info.get()};
+		extension.optimizer_step_function(input);
 	}
 }
 
@@ -565,6 +577,12 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 		// Optimizers can embed the current database state in the executable plan.
 		if (!prepared->properties.read_databases.empty() && ContainsDataSource(*plan)) {
 			prepared->properties.always_require_rebind = true;
+		}
+	}
+
+	for (auto &extension : OptimizerExtension::Iterate(context)) {
+		if (extension.optimizer_step_function) {
+			step_extensions.push_back(extension);
 		}
 	}
 
