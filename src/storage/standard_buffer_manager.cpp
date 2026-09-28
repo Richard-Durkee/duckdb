@@ -835,9 +835,10 @@ void StandardBufferManager::ReserveMemory(idx_t size) {
 	if (size == 0) {
 		return;
 	}
-	auto reservation = EvictBlocksOrThrow(
-	    QueryContext(), MemoryTag::EXTENSION, size, nullptr, ReservationAttribution::CURRENT_OPERATOR,
-	    "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
+	// not charged to an operator: FreeReservedMemory carries no owner, so it could never release the charge
+	auto reservation =
+	    EvictBlocksOrThrow(QueryContext(), MemoryTag::EXTENSION, size, nullptr, ReservationAttribution::NONE,
+	                       "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
 	reservation.size = 0;
 }
 
