@@ -584,7 +584,7 @@ BufferPool::MemoryUsage::MemoryUsage() {
 	}
 }
 
-int64_t BufferPool::MemoryUsage::UpdateUsedMemory(MemoryTag tag, int64_t size) {
+void BufferPool::MemoryUsage::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 	auto tag_idx = (idx_t)tag;
 	if ((idx_t)AbsValue(size) < MEMORY_USAGE_CACHE_THRESHOLD) {
 		// update cache and update global counter when cache exceeds threshold
@@ -603,13 +603,13 @@ int64_t BufferPool::MemoryUsage::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 		if ((idx_t)AbsValue(new_total_size) >= MEMORY_USAGE_CACHE_THRESHOLD) {
 			// cached total memory usage exceeds threshold
 			auto total_size = cache[TOTAL_MEMORY_USAGE_INDEX].exchange(0, std::memory_order_relaxed);
-			return memory_usage[TOTAL_MEMORY_USAGE_INDEX].fetch_add(total_size, std::memory_order_relaxed) + total_size;
+			memory_usage[TOTAL_MEMORY_USAGE_INDEX].fetch_add(total_size, std::memory_order_relaxed);
 		}
-		return NO_TOTAL_CHANGE;
+	} else {
+		// update global counter
+		memory_usage[tag_idx].fetch_add(size, std::memory_order_relaxed);
+		memory_usage[TOTAL_MEMORY_USAGE_INDEX].fetch_add(size, std::memory_order_relaxed);
 	}
-	// update global counter
-	memory_usage[tag_idx].fetch_add(size, std::memory_order_relaxed);
-	return memory_usage[TOTAL_MEMORY_USAGE_INDEX].fetch_add(size, std::memory_order_relaxed) + size;
 }
 
 } // namespace duckdb

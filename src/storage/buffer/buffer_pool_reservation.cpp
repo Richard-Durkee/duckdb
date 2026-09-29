@@ -17,7 +17,7 @@ BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexce
 BufferPoolReservation &BufferPoolReservation::operator=(BufferPoolReservation &&src) noexcept {
 	pool.UpdateUsedMemory(tag, -UnsafeNumericCast<int64_t>(size));
 	if (account) {
-		account->Update(tag, -UnsafeNumericCast<int64_t>(size));
+		account->Update(-UnsafeNumericCast<int64_t>(size));
 	}
 	tag = src.tag;
 	size = src.size;
@@ -34,7 +34,7 @@ void BufferPoolReservation::Resize(idx_t new_size) {
 	auto delta = UnsafeNumericCast<int64_t>(new_size) - UnsafeNumericCast<int64_t>(size);
 	pool.UpdateUsedMemory(tag, delta);
 	if (account) {
-		account->Update(tag, delta);
+		account->Update(delta);
 	}
 	size = new_size;
 }
@@ -54,10 +54,10 @@ void BufferPoolReservation::SetAccount(shared_ptr<MemoryAccount> new_account) {
 	}
 	auto bytes = UnsafeNumericCast<int64_t>(size);
 	if (account) {
-		account->Update(tag, -bytes);
+		account->Update(-bytes);
 	}
 	if (new_account) {
-		new_account->Update(tag, bytes);
+		new_account->Update(bytes);
 	}
 	account = std::move(new_account);
 }

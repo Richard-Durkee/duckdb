@@ -845,7 +845,7 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	auto base = Allocator::Get(data.manager.db).AllocateData(size + ACCOUNT_HEADER_SIZE);
 	auto &account = *new (base) shared_ptr<MemoryAccount>(data.GetAccount());
 	if (account) {
-		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
+		account->Update(UnsafeNumericCast<int64_t>(size));
 	}
 	return base + ACCOUNT_HEADER_SIZE;
 }
@@ -861,7 +861,7 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	auto base = pointer - ACCOUNT_HEADER_SIZE;
 	auto &account = AccountHeader(base);
 	if (account) {
-		account->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+		account->Update(-UnsafeNumericCast<int64_t>(size));
 	}
 	account.~shared_ptr<MemoryAccount>();
 	Allocator::Get(data.manager.db).FreeData(base, size + ACCOUNT_HEADER_SIZE);
@@ -888,7 +888,7 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	                .ReallocateData(old_base, old_size + ACCOUNT_HEADER_SIZE, size + ACCOUNT_HEADER_SIZE);
 	auto &account = *new (base) shared_ptr<MemoryAccount>(std::move(account_ref));
 	if (account) {
-		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
+		account->Update(UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
 	}
 	return base + ACCOUNT_HEADER_SIZE;
 }

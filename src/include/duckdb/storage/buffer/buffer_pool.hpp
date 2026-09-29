@@ -12,7 +12,6 @@
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_buffer.hpp"
-#include "duckdb/common/limits.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/typedefs.hpp"
@@ -122,7 +121,7 @@ protected:
 	//! Mapping and priority order for the eviction queues
 	const array<idx_t, EVICTION_QUEUE_TYPES> eviction_queue_sizes;
 
-public:
+protected:
 	enum class MemoryUsageCaches {
 		FLUSH,
 		NO_FLUSH,
@@ -163,12 +162,9 @@ public:
 			return used_memory > 0 ? static_cast<idx_t>(used_memory) : 0;
 		}
 
-		//! Returns the new global total if this update changed it, and NO_TOTAL_CHANGE otherwise
-		int64_t UpdateUsedMemory(MemoryTag tag, int64_t size);
-		static constexpr int64_t NO_TOTAL_CHANGE = NumericLimits<int64_t>::Minimum();
+		void UpdateUsedMemory(MemoryTag tag, int64_t size);
 	};
 
-protected:
 	//! The lock for changing the memory limit
 	mutex limit_lock;
 	//! The maximum amount of memory that the buffer manager can keep (in bytes)

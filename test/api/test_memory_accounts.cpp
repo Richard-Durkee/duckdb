@@ -112,21 +112,23 @@ TEST_CASE("Memory accounts: account-bound buffer allocator charges allocate, rea
 	auto account = make_shared_ptr<MemoryAccount>();
 	auto &allocator = *buffer_manager.AcquireBufferAllocator(account);
 
-	auto pointer = allocator.AllocateData(1000);
-	REQUIRE(account->GetMemoryUsage() == 1000);
-	pointer = allocator.ReallocateData(pointer, 1000, 5000);
-	REQUIRE(account->GetMemoryUsage() == 5000);
-	pointer = allocator.ReallocateData(pointer, 5000, 200);
-	REQUIRE(account->GetMemoryUsage() == 200);
+	// sizes above the per-CPU cache threshold reach the account's total (and peak) directly
+	const idx_t mib = 1024 * 1024;
+	auto pointer = allocator.AllocateData(mib);
+	REQUIRE(account->GetMemoryUsage() == mib);
+	pointer = allocator.ReallocateData(pointer, mib, 5 * mib);
+	REQUIRE(account->GetMemoryUsage() == 5 * mib);
+	pointer = allocator.ReallocateData(pointer, 5 * mib, 2 * mib);
+	REQUIRE(account->GetMemoryUsage() == 2 * mib);
 
 	// released allocators are reused right away, but the allocation still releases the account it was charged to
 	buffer_manager.ReleaseBufferAllocator(allocator);
 	auto other_account = make_shared_ptr<MemoryAccount>();
 	auto &reused = *buffer_manager.AcquireBufferAllocator(other_account);
 	REQUIRE(&reused == &allocator);
-	reused.FreeData(pointer, 200);
+	reused.FreeData(pointer, 2 * mib);
 	REQUIRE(account->GetMemoryUsage() == 0);
-	REQUIRE(account->GetPeakMemoryUsage() == 5000);
+	REQUIRE(account->GetPeakMemoryUsage() == 5 * mib);
 	REQUIRE(other_account->GetMemoryUsage() == 0);
 	buffer_manager.ReleaseBufferAllocator(reused);
 }
