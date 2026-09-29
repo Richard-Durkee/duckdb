@@ -270,6 +270,14 @@ struct MetricOperatorIntermediateSizeBytes {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricOperatorPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.peak_memory";
+	static constexpr const char *Description =
+	    "Peak buffer-managed memory allocated through the operator's buffer manager";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricOperatorRowGroupsScanned {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.row_groups_scanned";

@@ -1,0 +1,49 @@
+# name: test/sql/pragma/profiling/test_query_memory.test
+# description: The query's memory and each operator's memory are measured by their memory accounts
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+statement ok
+SET threads = 4;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/query_memory.json';
+
+statement ok
+SET tracked_metrics = ['query.peak_memory', 'query.memory_usage', 'query.unattributed_peak_memory',
+                       'system.peak_buffer_memory', 'operator.peak_memory', 'operator.type'];
+
+statement ok
+SELECT count(*) FROM range(2000000) a JOIN range(2000000) b ON a.range = b.range
+JOIN range(2000000) c ON a.range = c.range;
+
+statement ok
+PRAGMA disable_profiling;
+
+# the query's peak covers what the buffer pool saw, including each join's pointer table (buffer-allocator memory),
+# and almost nothing is allocated outside the joins' buffer managers
+query III
+SELECT prof.query.peak_memory >= 0.9 * prof.system.peak_buffer_memory,
+       prof.query.unattributed_peak_memory <= 0.05 * prof.query.peak_memory,
+       prof.query.memory_usage <= prof.query.peak_memory
+FROM '{TEST_DIR}/query_memory.json' prof;
+----
+true	true	true
+
+# plan shape: RESULT_COLLECTOR -> UNGROUPED_AGGREGATE -> HASH_JOIN -> HASH_JOIN; each join holds a large share
+query II
+SELECT j1.peak_memory >= 0.3 * prof.query.peak_memory, j2.peak_memory >= 0.3 * prof.query.peak_memory
+FROM '{TEST_DIR}/query_memory.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(j1),
+     LATERAL unnest(j1.children) t3(j2)
+WHERE j1.type = 'HASH_JOIN' AND j2.type = 'HASH_JOIN';
+----
+true	true

@@ -24,6 +24,10 @@ class PreparedStatementData;
 class RandomEngine;
 class BufferManager;
 
+class MemoryAccount;
+//! A buffer manager for one operator: the client's, charging everything allocated through it to `account`
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<MemoryAccount> account);
+
 struct ClientData {
 public:
 	explicit ClientData(ClientContext &context);
