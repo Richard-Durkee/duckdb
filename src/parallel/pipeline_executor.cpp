@@ -39,8 +39,7 @@ PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_
 	}
 	if (pipeline.sink) {
 		local_sink_state = pipeline.sink->GetLocalSinkState(context);
-		// PROTOTYPE: the sink's per-operator memory counter; nullptr when profiling is disabled, so the
-		// allocation hot path does no shared_ptr or atomic work. Shared by all of this operator's phases and threads.
+		// nullptr when profiling is disabled
 		sink_memory_counter = QueryProfiler::Get(context_p).GetOperatorMemoryCounter(*pipeline.sink);
 		required_partition_info = pipeline.sink->RequiredPartitionInfo();
 		if (required_partition_info.AnyRequired()) {
@@ -710,7 +709,7 @@ PipelineExecuteResult PipelineExecutor::PushFinalize() {
 #endif
 	SinkCombineResultType result;
 	{
-		OperatorMemoryScope mem_scope(sink_memory_counter); // PROTOTYPE: attribute reservations to the sink
+		OperatorMemoryScope mem_scope(sink_memory_counter);
 		result = pipeline.sink->Combine(context, combine_input);
 	}
 
@@ -843,7 +842,7 @@ SourceResultType PipelineExecutor::GetData(DataChunk &chunk, OperatorSourceInput
 	}
 #endif
 
-	OperatorMemoryScope mem_scope(source_memory_counter); // PROTOTYPE: attribute reservations to the source
+	OperatorMemoryScope mem_scope(source_memory_counter);
 	return pipeline.source->GetData(context, chunk, input);
 }
 
@@ -854,7 +853,7 @@ SinkResultType PipelineExecutor::Sink(DataChunk &chunk, OperatorSinkInput &input
 		return SinkResultType::BLOCKED;
 	}
 #endif
-	OperatorMemoryScope mem_scope(sink_memory_counter); // PROTOTYPE: attribute reservations to the sink operator
+	OperatorMemoryScope mem_scope(sink_memory_counter);
 	return pipeline.sink->Sink(context, chunk, input);
 }
 

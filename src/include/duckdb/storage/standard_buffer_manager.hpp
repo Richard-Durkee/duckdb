@@ -170,9 +170,7 @@ protected:
 	static data_ptr_t BufferAllocatorRealloc(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t old_size,
 	                                         idx_t size);
 
-	//! PROTOTYPE: buffer-allocator allocations keep no reservation for their lifetime, so their per-operator
-	//! owner is recorded here at allocate and released at free, whichever thread frees them. Costs a lock per
-	//! allocator alloc/free only while attributed allocations are outstanding (i.e. while a query is profiled).
+	//! Buffer-allocator allocations keep no reservation, so their owner is tracked from allocation to free
 	void TrackAllocatorOwner(data_ptr_t pointer, shared_ptr<OperatorMemoryCounter> owner);
 	shared_ptr<OperatorMemoryCounter> ReleaseAllocatorOwner(data_ptr_t pointer);
 
@@ -224,8 +222,7 @@ protected:
 	unique_ptr<BlockManager> temp_block_manager;
 	//! Temporary evicted memory data per tag
 	atomic<CheckedInteger<idx_t, InternalException>> evicted_data_per_tag[MEMORY_TAG_COUNT];
-	//! PROTOTYPE: owner of each outstanding buffer-allocator allocation made while an operator was current
-	//! Sharded by pointer so concurrent allocator calls rarely share a lock
+	//! Owners of outstanding buffer-allocator allocations, sharded by pointer so allocator calls rarely share a lock
 	struct AllocatorOwnerShard {
 		mutex lock;
 		unordered_map<data_ptr_t, shared_ptr<OperatorMemoryCounter>> owners;

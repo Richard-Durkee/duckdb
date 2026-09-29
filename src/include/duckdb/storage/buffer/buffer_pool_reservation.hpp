@@ -42,10 +42,7 @@ struct OperatorMemoryInformation {
 	array<idx_t, MEMORY_TAG_COUNT> memory_usage_bytes_per_tag;
 };
 
-//! PROTOTYPE: a lock-free per-operator memory counter. One is created per sink operator instance (shared by all
-//! of that operator's thread-executors, so threads aggregate); reservations made while that sink runs hold a
-//! shared_ptr to it and bump it directly (no map, no mutex on the hot path). shared_ptr ownership makes
-//! lifetime safe: the counter outlives every reservation pointing at it.
+//! Buffer-managed memory attributed to one operator instance (or to a query), shared by all of its threads
 struct OperatorMemoryCounter : public enable_shared_from_this<OperatorMemoryCounter> {
 	OperatorMemoryCounter(OperatorMemoryIdentity identity_p, optional_ptr<const PhysicalOperator> op_p);
 
@@ -82,9 +79,7 @@ struct BufferPoolReservation {
 	MemoryTag tag;
 	idx_t size {0};
 	BufferPool &pool;
-	//! PROTOTYPE: the operator counter this reservation's bytes are attributed to, captured at construction from
-	//! BufferPool::CurrentOperator(). shared_ptr so the counter can't dangle if the reservation outlives the
-	//! operator. Carried through moves so free decrements the same counter that alloc incremented.
+	//! The counter this reservation is charged to, captured from BufferPool::CurrentOperator() when created
 	shared_ptr<OperatorMemoryCounter> owner;
 
 	BufferPoolReservation(MemoryTag tag, BufferPool &pool);

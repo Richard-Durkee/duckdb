@@ -209,12 +209,11 @@ private:
 
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
-	//! PROTOTYPE: one memory counter per operator instance, held strongly so peaks survive until metrics are
-	//! finalized (the buffer pool only holds weak refs, and pipelines are torn down before finalize).
+	//! Memory counters of the profiled operators, kept until the metrics are finalized
 	reference_map_t<const PhysicalOperator, shared_ptr<OperatorMemoryCounter>> operator_memory_counters;
-	//! PROTOTYPE: live memory of the whole query (every operator counter and the unattributed bucket roll up here)
+	//! Memory of the whole query: every operator counter and the unattributed counter roll up into it
 	shared_ptr<OperatorMemoryCounter> query_memory_total;
-	//! PROTOTYPE: memory allocated while running this query but outside any operator scope
+	//! Memory allocated by the query outside any operator scope
 	shared_ptr<OperatorMemoryCounter> query_memory_unattributed;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
@@ -222,11 +221,9 @@ private:
 	bool metrics_finalized;
 
 public:
-	//! PROTOTYPE: the memory counter for `op`, created on first use; every phase of the operator (sink, combine,
-	//! finalize, its scheduled tasks) shares it. Returns nullptr when profiling is disabled.
+	//! The memory counter of `op`, shared by all of its phases; nullptr when profiling is disabled
 	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetOperatorMemoryCounter(const PhysicalOperator &op);
-	//! PROTOTYPE: the counter for memory this query allocates outside any operator scope; current for the duration
-	//! of every task the query runs. Returns nullptr when the query is not being profiled.
+	//! The counter for memory allocated outside any operator scope; nullptr when the query is not profiled
 	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetQueryMemoryCounter();
 
 private:

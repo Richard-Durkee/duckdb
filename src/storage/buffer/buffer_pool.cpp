@@ -330,9 +330,7 @@ void BufferPool::UpdateUsedMemory(MemoryTag tag, int64_t size) {
 	memory_usage.UpdateUsedMemory(tag, size);
 }
 
-// PROTOTYPE: thread-local "current operator" stack, holding shared_ptrs to the counters. A sink pushes its
-// counter while executing; any BufferPoolReservation constructed on that thread copies the top shared_ptr, so
-// alloc/free later bump that counter's atomic directly — no map, no lock on the hot path.
+// the counters of the operators executing on this thread, innermost last
 static thread_local vector<reference<OperatorMemoryCounter>> tl_operator_stack;
 
 void BufferPool::PushCurrentOperator(OperatorMemoryCounter &counter) {

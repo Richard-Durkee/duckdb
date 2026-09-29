@@ -43,10 +43,10 @@ void ExecutorTask::Reschedule() {
 
 TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 	try {
-		// PROTOTYPE: memory this task allocates outside an operator scope belongs to its query
+		// memory allocated outside an operator scope is charged to the query
 		OperatorMemoryScope query_scope(query_memory_counter);
 		if (thread_context) {
-			// PROTOTYPE: attribute memory allocated by an operator's own tasks (e.g. hash join finalize) to it
+			// tasks scheduled by an operator (e.g. hash join finalize) charge that operator
 			OperatorMemoryScope mem_scope(memory_counter);
 			TaskExecutionResult result;
 			do {

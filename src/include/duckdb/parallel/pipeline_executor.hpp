@@ -128,14 +128,9 @@ private:
 	unique_ptr<LocalSourceState> local_source_state;
 	//! The local sink state (if any)
 	unique_ptr<LocalSinkState> local_sink_state;
-	//! PROTOTYPE: per-operator real-memory counter for this pipeline's sink (created once, registered with the
-	//! buffer pool). Pushed onto the thread-local current-operator while sinking so reservations attribute here.
+	//! Memory counters of the pipeline's operators, nullptr when profiling is disabled
 	shared_ptr<OperatorMemoryCounter> sink_memory_counter;
-	//! PROTOTYPE: the source's memory counter, current while producing data (e.g. an external hash join building and
-	//! probing its partitions while acting as the source of a later pipeline)
 	shared_ptr<OperatorMemoryCounter> source_memory_counter;
-	//! PROTOTYPE: memory counters of the intermediate operators, current while each executes (e.g. a hash join probe
-	//! partitioning probe-side rows for an external join)
 	vector<shared_ptr<OperatorMemoryCounter>> intermediate_memory_counters;
 	//! The interrupt state, holding required information for sink/source operators to block
 	InterruptState interrupt_state;

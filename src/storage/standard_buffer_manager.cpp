@@ -144,10 +144,7 @@ string StandardBufferManager::MemoryBreakdownForError() {
 	if (!operator_text.empty()) {
 		result += " (by operator: " + operator_text + ")";
 	}
-	// PROTOTYPE: real bytes attributed per operator via thread-local interception of buffer reservations made
-	// during sink execution. Unlike the TMM reservations above, this reflects the operator's actual buffer-
-	// managed memory (e.g. the real hash-table size), not a reservation. Only sink allocations are attributed;
-	// intermediate operators and off-thread allocations show as unattributed (absent here).
+	// buffer-managed memory attributed to each operator, unlike the reservations above
 	string real_text;
 	for (auto &info : GetBufferPool().GetOperatorMemorySnapshot()) {
 		if (info.memory_usage_bytes == 0) {
@@ -860,8 +857,7 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	    QueryContext(), MemoryTag::ALLOCATOR, size, nullptr, ReservationAttribution::CURRENT_OPERATOR,
 	    "failed to allocate data of size %s%s", StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
-	// PROTOTYPE: the reservation already attributed `size` to the current operator; keep that owner so the free
-	// releases it from the same operator.
+	// keep the owner so the free releases the allocation from the operator that made it
 	auto owner = std::move(reservation.owner);
 	reservation.size = 0;
 	auto pointer = Allocator::Get(data.manager.db).AllocateData(size);
@@ -874,7 +870,7 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
 	auto &data = private_data->Cast<BufferAllocatorData>();
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
-	// PROTOTYPE: release from the allocating operator (or none), never from whatever operator is current here
+	// release from the allocating operator, not the one that is current here
 	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = size;
 	r.Resize(0);
@@ -888,7 +884,7 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	}
 	auto &data = private_data->Cast<BufferAllocatorData>();
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
-	// PROTOTYPE: the size change belongs to the allocation's owner, which moves with it to the new pointer
+	// the size change belongs to the allocation's owner, which moves with it to the new pointer
 	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = old_size;
 	r.Resize(size);

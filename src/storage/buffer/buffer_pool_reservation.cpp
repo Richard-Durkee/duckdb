@@ -91,7 +91,6 @@ BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexce
 
 BufferPoolReservation &BufferPoolReservation::operator=(BufferPoolReservation &&src) noexcept {
 	pool.UpdateUsedMemory(tag, -UnsafeNumericCast<int64_t>(size));
-	// PROTOTYPE: lock-free — release these bytes from the owning operator's counter before taking src's.
 	if (owner) {
 		owner->Update(tag, -UnsafeNumericCast<int64_t>(size));
 	}
@@ -109,7 +108,6 @@ BufferPoolReservation::~BufferPoolReservation() {
 void BufferPoolReservation::Resize(idx_t new_size) {
 	auto delta = UnsafeNumericCast<int64_t>(new_size) - UnsafeNumericCast<int64_t>(size);
 	pool.UpdateUsedMemory(tag, delta);
-	// PROTOTYPE: lock-free per-operator attribution — bump this reservation's owner counter directly.
 	if (owner) {
 		owner->Update(tag, delta);
 	}
@@ -117,9 +115,7 @@ void BufferPoolReservation::Resize(idx_t new_size) {
 }
 
 void BufferPoolReservation::Merge(BufferPoolReservation src) {
-	// PROTOTYPE: the pool total already counts both reservations; per-operator, src's bytes were added to
-	// src.owner at its own Resize. Re-attribute them to this owner (lock-free) so a later free decrements the
-	// right counter (and tag). This closes the cross-owner Merge gap the string-label version had.
+	// move src's bytes to this reservation's owner and tag, so the free releases them from the right counter
 	if (src.owner != owner || src.tag != tag) {
 		if (src.owner) {
 			src.owner->Update(src.tag, -UnsafeNumericCast<int64_t>(src.size));

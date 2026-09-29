@@ -63,10 +63,7 @@ public:
 
 	void UpdateUsedMemory(MemoryTag tag, int64_t size);
 
-	//! PROTOTYPE: real per-operator memory attribution, lock-free on the hot path. Create one counter per sink
-	//! operator (RegisterOperatorCounter); push it onto the thread-local "current operator" while the sink runs;
-	//! BufferPoolReservations constructed on that thread capture a shared_ptr to it and bump its atomic on
-	//! alloc/free. No map lookup and no lock on the reservation path.
+	//! The counter that buffer reservations created on this thread are charged to
 	static void PushCurrentOperator(OperatorMemoryCounter &counter);
 	static void PopCurrentOperator();
 	static optional_ptr<OperatorMemoryCounter> CurrentOperator();
@@ -200,9 +197,7 @@ protected:
 	//! and only updates the global counter when the cache value exceeds a threshold.
 	//! Therefore, the statistics may have slight differences from the actual memory usage.
 	mutable MemoryUsage memory_usage;
-	//! PROTOTYPE: registry of live per-operator counters (weak_ptr so it never keeps dead counters alive). Only
-	//! mutated at sink setup (RegisterOperatorCounter) and read at OOM — NOT on the allocation hot path, which
-	//! bumps each counter's atomic directly via the shared_ptr the reservation holds.
+	//! Live counters, for GetOperatorMemorySnapshot; weak so the registry never keeps a counter alive
 	mutable mutex counter_registry_lock;
 	mutable vector<weak_ptr<OperatorMemoryCounter>> operator_counters;
 	//! Registry size at which RegisterOperatorCounter next prunes expired counters
@@ -213,8 +208,7 @@ protected:
 	optional_ptr<ObjectCache> object_cache = nullptr;
 };
 
-//! PROTOTYPE: makes `counter` the current operator on this thread for the scope's lifetime, so buffer
-//! reservations made meanwhile are attributed to it. A null counter (profiling off) makes this a no-op.
+//! Makes `counter` the current operator on this thread for the scope's lifetime; a nullptr counter is a no-op
 struct OperatorMemoryScope {
 	//! The caller keeps `counter` alive for the scope's lifetime; the stack holds only a reference, so
 	//! entering and leaving a scope does no reference counting.
