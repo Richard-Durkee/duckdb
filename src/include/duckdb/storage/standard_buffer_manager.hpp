@@ -109,9 +109,11 @@ public:
 	DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) final;
 	DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) final;
 	DUCKDB_API idx_t GetBufferAllocatorPoolSize() final;
-	//! Buffer allocators bound to a memory account, kept for the database's lifetime and recycled once drained
+	//! Buffer allocators bound to a memory account; every allocation keeps a pointer to its allocator, so they are kept
+	//! for the database's lifetime and reused
 	mutex account_allocator_lock;
 	vector<unique_ptr<Allocator>> account_allocators;
+	vector<reference<Allocator>> free_account_allocators;
 
 	const DatabaseInstance &GetDatabase() const override {
 		return db;

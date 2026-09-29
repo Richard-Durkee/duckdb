@@ -38,37 +38,30 @@ static void WriteGarbageIntoBuffer(BlockHandle &block) {
 #endif
 
 struct BufferAllocatorData : PrivateAllocatorData {
-	explicit BufferAllocatorData(StandardBufferManager &manager) : manager(manager) {
+	explicit BufferAllocatorData(StandardBufferManager &manager, bool account_bound = false)
+	    : manager(manager), account_bound(account_bound) {
 	}
 
 	StandardBufferManager &manager;
-	//! For account-bound allocators: the account charged for every allocation made through this allocator. Such
-	//! allocations can outlive their account's query (e.g. zero-copy dictionary vectors), so these allocators live in
-	//! a database-level pool and are only recycled once all of their allocations have been freed.
+	//! Account-bound allocators charge allocations to `account`, and store that account in a header in front of each
+	//! allocation, so it can be released correctly whenever it is freed, even long after the account's query ended
+	const bool account_bound;
+	mutex account_lock;
 	shared_ptr<MemoryAccount> account;
-	atomic<idx_t> outstanding {0};
-	atomic<bool> released {false};
-	//! Whether the allocator can be handed out again (protected by the pool lock)
-	bool idle = false;
 
 	shared_ptr<MemoryAccount> GetAccount() {
-		if (!released.load(std::memory_order_acquire)) {
-			return account;
-		}
-		lock_guard<mutex> guard(manager.account_allocator_lock);
+		lock_guard<mutex> guard(account_lock);
 		return account;
 	}
-	void RecycleIfDrained() {
-		if (!released.load(std::memory_order_acquire) || outstanding.load(std::memory_order_acquire) != 0) {
-			return;
-		}
-		lock_guard<mutex> guard(manager.account_allocator_lock);
-		if (released && outstanding == 0 && !idle) {
-			account.reset();
-			idle = true;
-		}
-	}
 };
+
+//! The header in front of each allocation made by an account-bound allocator
+static constexpr idx_t ACCOUNT_HEADER_SIZE = 16;
+static_assert(sizeof(shared_ptr<MemoryAccount>) <= ACCOUNT_HEADER_SIZE, "the account header must hold a shared_ptr");
+
+static shared_ptr<MemoryAccount> &AccountHeader(data_ptr_t base) {
+	return *reinterpret_cast<shared_ptr<MemoryAccount> *>(base);
+}
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
                                                                      unique_ptr<FileBuffer> &&source,
@@ -846,12 +839,15 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	                                                   StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
 	reservation.size = 0;
-	auto pointer = Allocator::Get(data.manager.db).AllocateData(size);
-	if (auto account = data.GetAccount()) {
-		data.outstanding++;
+	if (!data.account_bound) {
+		return Allocator::Get(data.manager.db).AllocateData(size);
+	}
+	auto base = Allocator::Get(data.manager.db).AllocateData(size + ACCOUNT_HEADER_SIZE);
+	auto &account = *new (base) shared_ptr<MemoryAccount>(data.GetAccount());
+	if (account) {
 		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
 	}
-	return pointer;
+	return base + ACCOUNT_HEADER_SIZE;
 }
 
 void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
@@ -859,13 +855,16 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
 	r.size = size;
 	r.Resize(0);
-	if (auto account = data.GetAccount()) {
-		account->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
-		account.reset();
-		data.outstanding--;
-		data.RecycleIfDrained();
+	if (!data.account_bound) {
+		return Allocator::Get(data.manager.db).FreeData(pointer, size);
 	}
-	return Allocator::Get(data.manager.db).FreeData(pointer, size);
+	auto base = pointer - ACCOUNT_HEADER_SIZE;
+	auto &account = AccountHeader(base);
+	if (account) {
+		account->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+	}
+	account.~shared_ptr<MemoryAccount>();
+	Allocator::Get(data.manager.db).FreeData(base, size + ACCOUNT_HEADER_SIZE);
 }
 
 data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *private_data, data_ptr_t pointer,
@@ -878,34 +877,45 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
-	if (auto account = data.GetAccount()) {
+	if (!data.account_bound) {
+		return Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	}
+	// the header moves with the data
+	auto base =
+	    Allocator::Get(data.manager.db)
+	        .ReallocateData(pointer - ACCOUNT_HEADER_SIZE, old_size + ACCOUNT_HEADER_SIZE, size + ACCOUNT_HEADER_SIZE);
+	auto &account = AccountHeader(base);
+	if (account) {
 		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
 	}
-	return Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	return base + ACCOUNT_HEADER_SIZE;
 }
 
 optional_ptr<Allocator> StandardBufferManager::AcquireBufferAllocator(shared_ptr<MemoryAccount> account) {
 	lock_guard<mutex> guard(account_allocator_lock);
-	for (auto &allocator : account_allocators) {
-		auto &data = allocator->GetPrivateData()->Cast<BufferAllocatorData>();
-		if (data.idle) {
-			data.account = std::move(account);
-			data.released = false;
-			data.idle = false;
-			return allocator.get();
-		}
+	if (free_account_allocators.empty()) {
+		account_allocators.push_back(make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree,
+		                                                  BufferAllocatorRealloc,
+		                                                  make_uniq<BufferAllocatorData>(*this, true)));
+		free_account_allocators.push_back(*account_allocators.back());
 	}
-	account_allocators.push_back(make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree,
-	                                                  BufferAllocatorRealloc, make_uniq<BufferAllocatorData>(*this)));
-	auto &allocator = *account_allocators.back();
-	allocator.GetPrivateData()->Cast<BufferAllocatorData>().account = std::move(account);
+	auto &allocator = free_account_allocators.back().get();
+	free_account_allocators.pop_back();
+	auto &data = allocator.GetPrivateData()->Cast<BufferAllocatorData>();
+	lock_guard<mutex> account_guard(data.account_lock);
+	data.account = std::move(account);
 	return allocator;
 }
 
 void StandardBufferManager::ReleaseBufferAllocator(Allocator &allocator) {
 	auto &data = allocator.GetPrivateData()->Cast<BufferAllocatorData>();
-	data.released = true;
-	data.RecycleIfDrained();
+	{
+		lock_guard<mutex> account_guard(data.account_lock);
+		data.account.reset();
+	}
+	// allocations still outstanding carry their account in their header, so the allocator can be reused right away
+	lock_guard<mutex> guard(account_allocator_lock);
+	free_account_allocators.push_back(allocator);
 }
 
 idx_t StandardBufferManager::GetBufferAllocatorPoolSize() {
