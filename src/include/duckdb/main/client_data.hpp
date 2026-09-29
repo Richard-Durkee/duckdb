@@ -24,6 +24,10 @@ class PreparedStatementData;
 class RandomEngine;
 class BufferManager;
 
+struct OperatorMemoryCounter;
+//! POC: a buffer manager whose blocks and allocations are owned by `owner`
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<OperatorMemoryCounter> owner);
+
 struct ClientData {
 public:
 	explicit ClientData(ClientContext &context);

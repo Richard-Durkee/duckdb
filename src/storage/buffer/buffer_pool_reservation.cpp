@@ -86,6 +86,7 @@ BufferPoolReservation::BufferPoolReservation(MemoryTag tag, BufferPool &pool, sh
 BufferPoolReservation::BufferPoolReservation(BufferPoolReservation &&src) noexcept : tag(src.tag), pool(src.pool) {
 	size = src.size;
 	owner = std::move(src.owner);
+	facade_owner = std::move(src.facade_owner);
 	src.size = 0;
 }
 
@@ -94,9 +95,13 @@ BufferPoolReservation &BufferPoolReservation::operator=(BufferPoolReservation &&
 	if (owner) {
 		owner->Update(tag, -UnsafeNumericCast<int64_t>(size));
 	}
+	if (facade_owner) {
+		facade_owner->Update(tag, -UnsafeNumericCast<int64_t>(size));
+	}
 	tag = src.tag;
 	size = src.size;
 	owner = std::move(src.owner);
+	facade_owner = std::move(src.facade_owner);
 	src.size = 0;
 	return *this;
 }
@@ -111,6 +116,9 @@ void BufferPoolReservation::Resize(idx_t new_size) {
 	if (owner) {
 		owner->Update(tag, delta);
 	}
+	if (facade_owner) {
+		facade_owner->Update(tag, delta);
+	}
 	size = new_size;
 }
 
@@ -124,8 +132,30 @@ void BufferPoolReservation::Merge(BufferPoolReservation src) {
 			owner->Update(tag, UnsafeNumericCast<int64_t>(src.size));
 		}
 	}
+	if (src.facade_owner != facade_owner || src.tag != tag) {
+		if (src.facade_owner) {
+			src.facade_owner->Update(src.tag, -UnsafeNumericCast<int64_t>(src.size));
+		}
+		if (facade_owner) {
+			facade_owner->Update(tag, UnsafeNumericCast<int64_t>(src.size));
+		}
+	}
 	size += src.size;
 	src.size = 0;
+}
+
+void BufferPoolReservation::SetFacadeOwner(shared_ptr<OperatorMemoryCounter> new_owner) {
+	if (new_owner == facade_owner) {
+		return;
+	}
+	auto bytes = UnsafeNumericCast<int64_t>(size);
+	if (facade_owner) {
+		facade_owner->Update(tag, -bytes);
+	}
+	if (new_owner) {
+		new_owner->Update(tag, bytes);
+	}
+	facade_owner = std::move(new_owner);
 }
 
 void BufferPoolReservation::SetOwner(shared_ptr<OperatorMemoryCounter> new_owner) {

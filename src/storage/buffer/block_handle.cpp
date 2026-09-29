@@ -89,6 +89,7 @@ void BlockMemory::ConvertToPersistent(BlockLock &l, BlockHandle &new_block, uniq
 	new_block_memory.GetBuffer() = std::move(new_buffer);
 	new_block_memory.memory_usage = memory_usage.load();
 	new_block_memory.memory_charge = std::move(memory_charge);
+	new_block_memory.facade_owner = std::move(facade_owner);
 
 	// Clear the buffered data of this block.
 	buffer.reset();

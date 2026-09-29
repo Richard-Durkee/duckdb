@@ -101,6 +101,7 @@ public:
 	void SetTemporaryDirectory(const string &new_dir) final;
 
 	DUCKDB_API Allocator &GetBufferAllocator() final;
+	DUCKDB_API unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) final;
 
 	const DatabaseInstance &GetDatabase() const override {
 		return db;

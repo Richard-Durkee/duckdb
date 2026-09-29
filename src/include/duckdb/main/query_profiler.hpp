@@ -217,6 +217,10 @@ private:
 	shared_ptr<OperatorMemoryCounter> query_memory_total;
 	//! Memory allocated by the query outside any operator scope
 	shared_ptr<OperatorMemoryCounter> query_memory_unattributed;
+	//! POC: counters charged through the buffer managers memory was allocated through
+	reference_map_t<const PhysicalOperator, shared_ptr<OperatorMemoryCounter>> facade_memory_counters;
+	shared_ptr<OperatorMemoryCounter> facade_query_total;
+	shared_ptr<OperatorMemoryCounter> facade_query_unattributed;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
 	//! Whether root metrics have been finalized for output
@@ -227,10 +231,13 @@ public:
 	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetOperatorMemoryCounter(const PhysicalOperator &op);
 	//! The counter for memory allocated outside any operator scope; nullptr when the query is not profiled
 	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetQueryMemoryCounter();
+	//! POC: the owner for memory allocated through `op`'s buffer manager; nullptr when the query is not profiled
+	DUCKDB_API shared_ptr<OperatorMemoryCounter> GetFacadeMemoryCounter(const PhysicalOperator &op);
 
 private:
 	//! Create the query-wide memory counters on first use. Requires the profiler lock.
 	void InitializeQueryMemoryCounters();
+	void InitializeFacadeQueryMemoryCounters();
 
 public:
 	const TreeMap &GetTreeMap() const {

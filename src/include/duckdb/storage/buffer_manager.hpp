@@ -15,6 +15,7 @@
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 
 namespace duckdb {
+struct OperatorMemoryCounter;
 class BlockMemory;
 class Allocator;
 class AsyncTask;
@@ -97,6 +98,13 @@ public:
 
 	//! Get the buffer allocator.
 	virtual DUCKDB_API Allocator &GetBufferAllocator();
+	//! POC: a buffer allocator whose allocations are all owned by `owner`
+	virtual DUCKDB_API unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
+		return nullptr;
+	}
+	//! POC: the owner charged for blocks and allocations made through this buffer manager from now on
+	virtual void SetMemoryOwner(shared_ptr<OperatorMemoryCounter> owner) {
+	}
 	//! Reserve memory.
 	virtual DUCKDB_API void ReserveMemory(idx_t size);
 	//! Free reserved memory.

@@ -39,6 +39,14 @@ struct MetricQueryPeakMemory {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricQueryPeakMemoryByFacade {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.peak_memory_by_facade";
+	static constexpr const char *Description =
+	    "POC: peak memory of the query, attributed through the buffer managers it allocated through";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQuerySQL {
 	using METRIC_TYPE = string;
 	static constexpr const char *Name = "query.sql";
@@ -94,6 +102,14 @@ struct MetricQueryUnattributedPeakMemory {
 	static constexpr const char *Name = "query.unattributed_peak_memory";
 	static constexpr const char *Description =
 	    "Peak buffer-managed memory the query allocated outside any operator scope";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricQueryUnattributedPeakMemoryByFacade {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.unattributed_peak_memory_by_facade";
+	static constexpr const char *Description =
+	    "POC: peak memory allocated through the client's buffer manager rather than an operator's";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -277,6 +293,14 @@ struct MetricOperatorPeakMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.peak_memory";
 	static constexpr const char *Description = "Peak buffer-managed memory attributed to this operator instance";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorPeakMemoryByFacade {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.peak_memory_by_facade";
+	static constexpr const char *Description =
+	    "POC: peak memory of blocks and allocations created through the operator's buffer manager";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };

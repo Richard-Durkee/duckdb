@@ -146,6 +146,10 @@ void QueryProfiler::Reset() {
 	operator_memory_counters.clear();
 	query_memory_total = nullptr;
 	query_memory_unattributed = nullptr;
+	BufferManager::GetBufferManager(context).SetMemoryOwner(nullptr);
+	facade_memory_counters.clear();
+	facade_query_total = nullptr;
+	facade_query_unattributed = nullptr;
 	root = nullptr;
 	metrics.reset();
 	running = false;
@@ -805,6 +809,9 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorPeakMemory>() && peak_memory > 0) {
 		result["peak_memory"] = Value::UBIGINT(peak_memory);
 	}
+	if (info.MetricIsTracked<MetricOperatorPeakMemoryByFacade>() && peak_memory_by_facade > 0) {
+		result["peak_memory_by_facade"] = Value::UBIGINT(peak_memory_by_facade);
+	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
 	}
@@ -1118,6 +1125,10 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 	    context.transaction.HasActiveTransaction() ? context.transaction.GetActiveQuery() : DConstants::INVALID_INDEX;
 	idx_t next_operator_id = 0;
 	root = CreateTree(root_op, next_operator_id, 0);
+	if (running) {
+		InitializeFacadeQueryMemoryCounters();
+		BufferManager::GetBufferManager(context).SetMemoryOwner(facade_query_unattributed);
+	}
 	if (!query_requires_profiling) {
 		// query does not require profiling: disable profiling for this query
 		running = false;
@@ -1220,6 +1231,43 @@ void QueryProfiler::InitializeQueryMemoryCounters() {
 	query_memory_unattributed->parent = query_memory_total;
 }
 
+void QueryProfiler::InitializeFacadeQueryMemoryCounters() {
+	if (facade_query_total) {
+		return;
+	}
+	OperatorMemoryIdentity identity;
+	identity.connection_id = context.GetConnectionId();
+	identity.query_id = profiled_query_id;
+	identity.operator_name = "QUERY_BY_FACADE";
+	facade_query_total = make_shared_ptr<OperatorMemoryCounter>(identity, nullptr);
+	identity.operator_name = "UNATTRIBUTED_BY_FACADE";
+	facade_query_unattributed = make_shared_ptr<OperatorMemoryCounter>(identity, nullptr);
+	facade_query_unattributed->parent = facade_query_total;
+}
+
+shared_ptr<OperatorMemoryCounter> QueryProfiler::GetFacadeMemoryCounter(const PhysicalOperator &op) {
+	if (!IsEnabled()) {
+		return nullptr;
+	}
+	lock_guard<std::mutex> guard(lock);
+	if (!running) {
+		return nullptr;
+	}
+	auto entry = facade_memory_counters.find(op);
+	if (entry != facade_memory_counters.end()) {
+		return entry->second;
+	}
+	OperatorMemoryIdentity identity;
+	identity.connection_id = context.GetConnectionId();
+	identity.query_id = profiled_query_id;
+	identity.operator_name = op.GetName();
+	auto counter = make_shared_ptr<OperatorMemoryCounter>(std::move(identity), &op);
+	InitializeFacadeQueryMemoryCounters();
+	counter->parent = facade_query_total;
+	facade_memory_counters.insert(make_pair(reference<const PhysicalOperator>(op), counter));
+	return counter;
+}
+
 shared_ptr<OperatorMemoryCounter> QueryProfiler::GetQueryMemoryCounter() {
 	if (!IsEnabled()) {
 		return nullptr;
@@ -1276,6 +1324,16 @@ void QueryProfiler::FinalizeMetricsInternal() {
 			metrics->SetMetric<MetricQueryMemoryUsage>(query_memory_total->GetInformation().memory_usage_bytes);
 		}
 		metrics->SetMetric<MetricQueryUnattributedPeakMemory>(peak_of(query_memory_unattributed));
+		for (auto &entry : facade_memory_counters) {
+			auto node_entry = tree_map.find(entry.first.get());
+			if (node_entry != tree_map.end()) {
+				auto &node_metrics = node_entry->second.get().GetOperatorMetrics();
+				node_metrics.peak_memory_by_facade =
+				    MaxValue(node_metrics.peak_memory_by_facade, peak_of(entry.second));
+			}
+		}
+		metrics->SetMetric<MetricQueryPeakMemoryByFacade>(peak_of(facade_query_total));
+		metrics->SetMetric<MetricQueryUnattributedPeakMemoryByFacade>(peak_of(facade_query_unattributed));
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

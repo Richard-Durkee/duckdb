@@ -172,6 +172,14 @@ public:
 		VerifyMutex(l);
 		memory_charge.Resize(alloc_size);
 	}
+	//! POC: record the owner of this block; it is charged whenever the block is loaded
+	void SetFacadeOwner(shared_ptr<OperatorMemoryCounter> owner) {
+		facade_owner = owner;
+		memory_charge.SetFacadeOwner(std::move(owner));
+	}
+	const shared_ptr<OperatorMemoryCounter> &GetFacadeOwner() const {
+		return facade_owner;
+	}
 	//! Merge two memory charges.
 	void MergeMemoryReservation(BlockLock &l, BufferPoolReservation reservation) {
 		VerifyMutex(l);
@@ -242,6 +250,8 @@ private:
 	atomic<idx_t> memory_usage;
 	//! The current memory reservation/usage.
 	BufferPoolReservation memory_charge;
+	//! POC: the owner charged for this block's memory whenever it is loaded
+	shared_ptr<OperatorMemoryCounter> facade_owner;
 	//! Swizzled memory pointers.
 	const char *unswizzled;
 	//! The eviction queue index, currently only FileBufferType::MANAGED_BUFFER.

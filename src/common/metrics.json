@@ -44,6 +44,16 @@
 			"description": "Buffer-managed memory the query currently holds; at the end of the query, the memory it still holds (e.g. a materialized result)",
 			"unit": "bytes"
 		},
+		"peak_memory_by_facade": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory of the query, attributed through the buffer managers it allocated through",
+			"unit": "bytes"
+		},
+		"unattributed_peak_memory_by_facade": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory allocated through the client's buffer manager rather than an operator's",
+			"unit": "bytes"
+		},
 		"peak_memory": {
 			"metric_type": "uint64",
 			"description": "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time",
@@ -179,6 +189,11 @@
 		"intermediate_size_bytes": {
 			"metric_type": "uint64",
 			"description": "Intermediate size in bytes produced by the operator",
+			"unit": "bytes"
+		},
+		"peak_memory_by_facade": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory of blocks and allocations created through the operator's buffer manager",
 			"unit": "bytes"
 		},
 		"peak_memory": {

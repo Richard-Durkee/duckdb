@@ -1,4 +1,6 @@
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/function/table_function.hpp"
 
@@ -203,6 +205,21 @@ SinkNextBatchType PhysicalOperator::UpdateMinBatchIndex(ExecutionContext &contex
 
 unique_ptr<LocalSinkState> PhysicalOperator::GetLocalSinkState(ExecutionContext &context) const {
 	return make_uniq<LocalSinkState>();
+}
+
+BufferManager &PhysicalOperator::GetOperatorBufferManager(ClientContext &context) const {
+	static mutex facade_lock;
+	auto owner = QueryProfiler::Get(context).GetFacadeMemoryCounter(*this);
+	if (!owner) {
+		return BufferManager::GetBufferManager(context);
+	}
+	lock_guard<mutex> guard(facade_lock);
+	if (!memory_facade) {
+		memory_facade = shared_ptr<BufferManager>(CreateOperatorBufferManager(context, std::move(owner)));
+	} else {
+		memory_facade->SetMemoryOwner(std::move(owner));
+	}
+	return *memory_facade;
 }
 
 unique_ptr<GlobalSinkState> PhysicalOperator::GetGlobalSinkState(ClientContext &context) const {

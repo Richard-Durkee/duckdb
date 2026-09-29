@@ -39,8 +39,25 @@ private:
 //! ClientBufferManager wraps the buffer manager to optionally forward the client context.
 class ClientBufferManager : public BufferManager {
 public:
-	explicit ClientBufferManager(ClientContext &context_p, BufferManager &buffer_manager_p)
+	explicit ClientBufferManager(ClientContext &context_p, BufferManager &buffer_manager_p,
+	                             shared_ptr<OperatorMemoryCounter> owner_p = nullptr)
 	    : context(context_p), buffer_manager(buffer_manager_p) {
+		SetMemoryOwner(std::move(owner_p));
+	}
+
+	void SetMemoryOwner(shared_ptr<OperatorMemoryCounter> owner_p) override {
+		lock_guard<mutex> guard(owner_lock);
+		if (owner_p == owner) {
+			return;
+		}
+		// allocations made before keep the allocator (and owner) they were made with
+		if (owned_allocator) {
+			retired_allocators.push_back(std::move(owned_allocator));
+		}
+		owner = std::move(owner_p);
+		if (owner) {
+			owned_allocator = buffer_manager.CreateBufferAllocator(owner);
+		}
 	}
 
 public:
@@ -49,6 +66,7 @@ public:
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
 			TrackMemoryAllocation(result->GetMemory().GetMemoryUsage());
+			Charge(result);
 		}
 		return result;
 	}
@@ -58,6 +76,7 @@ public:
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
 			TrackMemoryAllocation(result->GetMemory().GetMemoryUsage());
+			Charge(result);
 		}
 		return result;
 	}
@@ -66,6 +85,7 @@ public:
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
+			Charge(result.GetBlockHandle());
 		}
 		return result;
 	}
@@ -74,6 +94,7 @@ public:
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
+			Charge(result.GetBlockHandle());
 		}
 		return result;
 	}
@@ -81,6 +102,7 @@ public:
 		auto result = buffer_manager.Allocate(context, tag, block_size, can_destroy);
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
+			Charge(result.GetBlockHandle());
 		}
 		return result;
 	}
@@ -89,6 +111,7 @@ public:
 		auto result = buffer_manager.Allocate(context, tag, block_manager, can_destroy);
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
+			Charge(result.GetBlockHandle());
 		}
 		return result;
 	}
@@ -135,21 +158,28 @@ public:
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) override {
 		auto result = buffer_manager.RegisterTransientMemory(size, block_manager);
 		TrackMemoryAllocation(size);
+		Charge(result);
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(const idx_t size) override {
 		auto result = buffer_manager.RegisterSmallMemory(size);
 		TrackMemoryAllocation(size);
+		Charge(result);
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) override {
 		auto result = buffer_manager.RegisterSmallMemory(tag, size);
 		TrackMemoryAllocation(size);
+		Charge(result);
 		return result;
 	}
 
 	Allocator &GetBufferAllocator() override {
-		return buffer_manager.GetBufferAllocator();
+		lock_guard<mutex> guard(owner_lock);
+		return owned_allocator ? *owned_allocator : buffer_manager.GetBufferAllocator();
+	}
+	unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner_p) override {
+		return buffer_manager.CreateBufferAllocator(std::move(owner_p));
 	}
 	void ReserveMemory(idx_t size) override {
 		return buffer_manager.ReserveMemory(size);
@@ -221,6 +251,21 @@ public:
 	}
 
 private:
+	void Charge(const shared_ptr<BlockHandle> &handle) {
+		shared_ptr<OperatorMemoryCounter> current;
+		{
+			lock_guard<mutex> guard(owner_lock);
+			current = owner;
+		}
+		if (current && handle) {
+			handle->GetMemory().SetFacadeOwner(std::move(current));
+		}
+	}
+	mutable mutex owner_lock;
+	shared_ptr<OperatorMemoryCounter> owner;
+	unique_ptr<Allocator> owned_allocator;
+	vector<unique_ptr<Allocator>> retired_allocators;
+
 	void TrackMemoryAllocation(idx_t size) const {
 		if (size > 0) {
 			QueryProfiler::Get(context).TrackTotalMemoryAllocated(size);
@@ -261,6 +306,11 @@ const ClientData &ClientData::Get(const ClientContext &context) {
 
 RandomEngine &RandomEngine::Get(ClientContext &context) {
 	return *ClientData::Get(context).random_engine;
+}
+
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<OperatorMemoryCounter> owner) {
+	return make_uniq<ClientBufferManager>(context, DatabaseInstance::GetDatabase(context).GetBufferManager(),
+	                                      std::move(owner));
 }
 
 } // namespace duckdb

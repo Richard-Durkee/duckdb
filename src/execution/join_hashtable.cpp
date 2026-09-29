@@ -51,7 +51,7 @@ JoinHashTable::JoinHashTable(ClientContext &context_p, const PhysicalOperator &o
                              const idx_t initial_radix_bits, const vector<idx_t> &output_columns_p,
                              unique_ptr<ResidualPredicateInfo> residual_p, optional_ptr<Expression> predicate_ptr,
                              const vector<idx_t> &output_in_probe)
-    : context(context_p), op(op_p), buffer_manager(BufferManager::GetBufferManager(context)), conditions(conditions_p),
+    : context(context_p), op(op_p), buffer_manager(op_p.GetOperatorBufferManager(context)), conditions(conditions_p),
       build_types(std::move(btypes)), output_columns(output_columns_p), entry_size(0), tuple_size(0),
       vfound(Value::BOOLEAN(false), count_t(STANDARD_VECTOR_SIZE)), join_type(type_p), finalized(false),
       has_null(false), residual_predicate(predicate_ptr), radix_bits(initial_radix_bits) {
