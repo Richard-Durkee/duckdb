@@ -39,6 +39,11 @@
 			"description": "Cumulative size in bytes of all intermediate results produced by the query",
 			"unit": "bytes"
 		},
+		"memory_usage": {
+			"metric_type": "uint64",
+			"description": "Buffer-managed memory the query currently holds; at the end of the query, the memory it still holds (e.g. a materialized result)",
+			"unit": "bytes"
+		},
 		"peak_memory": {
 			"metric_type": "uint64",
 			"description": "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time",

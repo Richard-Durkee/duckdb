@@ -288,7 +288,25 @@ void QueryProfiler::FinalizeMetrics() {
 }
 
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
-	return query_metrics.GetLiveMetrics();
+	auto result = query_metrics.GetLiveMetrics();
+	shared_ptr<OperatorMemoryCounter> query_total;
+	shared_ptr<OperatorMemoryCounter> query_unattributed;
+	{
+		lock_guard<std::mutex> guard(lock);
+		query_total = query_memory_total;
+		query_unattributed = query_memory_unattributed;
+	}
+	// the memory counters only exist while the query is profiled
+	if (query_total) {
+		auto info = query_total->GetInformation();
+		result[MetricQueryMemoryUsage::Name] = Value::UBIGINT(info.memory_usage_bytes);
+		result[MetricQueryPeakMemory::Name] = Value::UBIGINT(info.peak_memory_usage_bytes);
+	}
+	if (query_unattributed) {
+		auto info = query_unattributed->GetInformation();
+		result[MetricQueryUnattributedPeakMemory::Name] = Value::UBIGINT(info.peak_memory_usage_bytes);
+	}
+	return result;
 }
 
 void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
@@ -1254,6 +1272,9 @@ void QueryProfiler::FinalizeMetricsInternal() {
 			return peak > 0 ? static_cast<idx_t>(peak) : idx_t(0);
 		};
 		metrics->SetMetric<MetricQueryPeakMemory>(peak_of(query_memory_total));
+		if (query_memory_total) {
+			metrics->SetMetric<MetricQueryMemoryUsage>(query_memory_total->GetInformation().memory_usage_bytes);
+		}
 		metrics->SetMetric<MetricQueryUnattributedPeakMemory>(peak_of(query_memory_unattributed));
 	}
 	query_metrics.FinalizeMetrics(*metrics);

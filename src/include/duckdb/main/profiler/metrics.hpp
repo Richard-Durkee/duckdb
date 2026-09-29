@@ -22,10 +22,20 @@ struct MetricQueryCPUTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricQueryMemoryUsage {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.memory_usage";
+	static constexpr const char *Description = "Buffer-managed memory the query currently holds; at the end of the "
+	                                           "query, the memory it still holds (e.g. a materialized result)";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQueryPeakMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.peak_memory";
-	static constexpr const char *Description = "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time";
+	static constexpr const char *Description =
+	    "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its "
+	    "operators plus its unattributed memory, measured over time";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -46,7 +56,8 @@ struct MetricQueryTotalIntermediateRows {
 struct MetricQueryTotalIntermediateSizeBytes {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.total_intermediate_size_bytes";
-	static constexpr const char *Description = "Cumulative size in bytes of all intermediate results produced by the query";
+	static constexpr const char *Description =
+	    "Cumulative size in bytes of all intermediate results produced by the query";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -81,7 +92,8 @@ struct MetricQueryTotalTime {
 struct MetricQueryUnattributedPeakMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.unattributed_peak_memory";
-	static constexpr const char *Description = "Peak buffer-managed memory the query allocated outside any operator scope";
+	static constexpr const char *Description =
+	    "Peak buffer-managed memory the query allocated outside any operator scope";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };

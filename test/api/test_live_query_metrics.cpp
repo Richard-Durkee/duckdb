@@ -42,3 +42,30 @@ TEST_CASE("Test live query metrics are readable while a query runs", "[api]") {
 
 	DeleteDatabase(path);
 }
+
+TEST_CASE("Test live query metrics report the memory of a running profiled query", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	const string query = "SELECT a.range FROM range(1000000) a JOIN range(1000000) b ON a.range = b.range";
+
+	// without profiling there are no memory counters to report
+	{
+		auto streaming = con.SendQuery(query);
+		REQUIRE_NO_FAIL(*streaming);
+		REQUIRE(streaming->Fetch());
+		auto metrics = con.context->GetLiveQueryMetrics();
+		REQUIRE(metrics.count(MetricQueryMemoryUsage::Name) == 0);
+		REQUIRE(metrics.count(MetricQueryPeakMemory::Name) == 0);
+	}
+
+	// pause a streaming join mid-probe: its hash table is built and still held by the query
+	REQUIRE_NO_FAIL(con.Query("PRAGMA enable_profiling = 'no_output'"));
+	auto streaming = con.SendQuery(query);
+	REQUIRE_NO_FAIL(*streaming);
+	REQUIRE(streaming->Fetch());
+	auto memory_usage = LiveMetric(con, MetricQueryMemoryUsage::Name);
+	auto peak_memory = LiveMetric(con, MetricQueryPeakMemory::Name);
+	REQUIRE(memory_usage > 0);
+	REQUIRE(peak_memory >= memory_usage);
+	REQUIRE(LiveMetric(con, MetricQueryUnattributedPeakMemory::Name) <= peak_memory);
+}
