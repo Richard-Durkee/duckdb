@@ -81,6 +81,8 @@ struct BufferPoolReservation {
 	BufferPool &pool;
 	//! The counter this reservation is charged to, captured from BufferPool::CurrentOperator() when created
 	shared_ptr<OperatorMemoryCounter> owner;
+	//! POC: the counter named by the QueryContext this reservation was created with
+	shared_ptr<OperatorMemoryCounter> context_owner;
 
 	BufferPoolReservation(MemoryTag tag, BufferPool &pool);
 	//! A reservation attributed to `owner` (nullptr: to no operator) instead of the thread's current operator
@@ -97,6 +99,7 @@ struct BufferPoolReservation {
 	void Merge(BufferPoolReservation src);
 	//! Moves this reservation's bytes from its current owner to `new_owner`
 	void SetOwner(shared_ptr<OperatorMemoryCounter> new_owner);
+	void SetContextOwner(shared_ptr<OperatorMemoryCounter> new_owner);
 
 	//! The counter of the operator running on this thread, or nullptr outside any operator scope
 	static shared_ptr<OperatorMemoryCounter> CurrentOwner();

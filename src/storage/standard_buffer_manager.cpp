@@ -39,10 +39,13 @@ static void WriteGarbageIntoBuffer(BlockHandle &block) {
 #endif
 
 struct BufferAllocatorData : PrivateAllocatorData {
-	explicit BufferAllocatorData(StandardBufferManager &manager) : manager(manager) {
+	explicit BufferAllocatorData(StandardBufferManager &manager, shared_ptr<OperatorMemoryCounter> owner = nullptr)
+	    : manager(manager), owner(std::move(owner)) {
 	}
 
 	StandardBufferManager &manager;
+	//! POC: the operator that owns every allocation made through this allocator
+	shared_ptr<OperatorMemoryCounter> owner;
 };
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
@@ -179,6 +182,15 @@ string StandardBufferManager::MemoryBreakdownForError() {
 	return result;
 }
 
+//! POC: the owner named by the QueryContext, else the query's context-only counter
+static shared_ptr<OperatorMemoryCounter> ContextOwner(QueryContext context) {
+	if (context.GetMemoryOwner()) {
+		return context.GetMemoryOwner()->shared_from_this();
+	}
+	auto client = context.GetClientContext();
+	return client ? QueryProfiler::Get(*client).GetContextQueryMemoryCounter() : nullptr;
+}
+
 template <typename... ARGS>
 TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext context, MemoryTag tag,
                                                                     idx_t memory_delta, unique_ptr<FileBuffer> *buffer,
@@ -193,6 +205,7 @@ TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext
 	}
 	if (attribution == ReservationAttribution::CURRENT_OPERATOR) {
 		r.reservation.SetOwner(BufferPoolReservation::CurrentOwner());
+		r.reservation.SetContextOwner(ContextOwner(context));
 	}
 	return std::move(r.reservation);
 }
@@ -864,6 +877,9 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	if (owner) {
 		data.manager.TrackAllocatorOwner(pointer, std::move(owner));
 	}
+	if (data.owner) {
+		data.owner->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
+	}
 	return pointer;
 }
 
@@ -874,6 +890,9 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = size;
 	r.Resize(0);
+	if (data.owner) {
+		data.owner->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+	}
 	return Allocator::Get(data.manager.db).FreeData(pointer, size);
 }
 
@@ -889,6 +908,10 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
+	if (data.owner) {
+		data.owner->Update(MemoryTag::ALLOCATOR,
+		                   UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
+	}
 	auto owner = std::move(r.owner);
 	auto new_pointer = Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
 	if (owner) {
@@ -924,6 +947,11 @@ shared_ptr<OperatorMemoryCounter> StandardBufferManager::ReleaseAllocatorOwner(d
 	shard.owners.erase(entry);
 	shard.count.store(shard.owners.size(), std::memory_order_relaxed);
 	return owner;
+}
+
+unique_ptr<Allocator> StandardBufferManager::CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
+	return make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree, BufferAllocatorRealloc,
+	                            make_uniq<BufferAllocatorData>(*this, std::move(owner)));
 }
 
 Allocator &BufferAllocator::Get(ClientContext &context) {

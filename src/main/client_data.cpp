@@ -151,6 +151,9 @@ public:
 	Allocator &GetBufferAllocator() override {
 		return buffer_manager.GetBufferAllocator();
 	}
+	unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) override {
+		return buffer_manager.CreateBufferAllocator(std::move(owner));
+	}
 	void ReserveMemory(idx_t size) override {
 		return buffer_manager.ReserveMemory(size);
 	}

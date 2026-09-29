@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/query_context.hpp"
+
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types/column/column_data_consumer.hpp"
@@ -24,6 +26,8 @@
 #include "duckdb/planner/joinside.hpp"
 
 namespace duckdb {
+
+struct OperatorMemoryCounter;
 
 class BufferManager;
 class BufferHandle;
@@ -336,6 +340,14 @@ public:
 
 	ClientContext &context;
 	const PhysicalOperator &op;
+	//! POC: the context the hash table's data is allocated with, naming this operator as its owner
+	shared_ptr<OperatorMemoryCounter> memory_context_owner;
+	QueryContext memory_context;
+	//! POC: allocates the pointer table on behalf of this operator; declared before the data it allocates
+	unique_ptr<Allocator> memory_allocator;
+	Allocator &HashTableAllocator() {
+		return memory_allocator ? *memory_allocator : buffer_manager.GetBufferAllocator();
+	}
 	//! BufferManager
 	BufferManager &buffer_manager;
 	//! The join conditions

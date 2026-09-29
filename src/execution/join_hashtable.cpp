@@ -1,4 +1,5 @@
 #include "duckdb/execution/join_hashtable.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
@@ -133,10 +134,15 @@ void JoinHashTable::FinishInitWithLayout(shared_ptr<TupleDataLayout> published_l
 	pointer_offset = offsets.back();
 	entry_size = layout_ptr->GetRowWidth();
 
+	memory_context_owner = QueryProfiler::Get(context).GetContextMemoryCounter(op);
+	memory_context = QueryContext(context, memory_context_owner.get());
+	if (memory_context_owner) {
+		memory_allocator = buffer_manager.CreateBufferAllocator(memory_context_owner);
+	}
 	data_collection =
-	    make_uniq<TupleDataCollection>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE, nullptr, context);
+	    make_uniq<TupleDataCollection>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE, nullptr, memory_context);
 	sink_collection = make_uniq<RadixPartitionedTupleData>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE,
-	                                                       radix_bits, layout_ptr->ColumnCount() - 1, context);
+	                                                       radix_bits, layout_ptr->ColumnCount() - 1, memory_context);
 
 	dead_end = make_unsafe_uniq_array_uninitialized<data_t>(layout_ptr->GetRowWidth());
 	memset(dead_end.get(), 0, layout_ptr->GetRowWidth());
@@ -1064,14 +1070,14 @@ void JoinHashTable::AllocatePointerTable() {
 		auto current_capacity = hash_map.GetSize() / sizeof(ht_entry_t);
 		if (capacity > current_capacity) {
 			// Need more space
-			hash_map = buffer_manager.GetBufferAllocator().Allocate(capacity * sizeof(ht_entry_t));
+			hash_map = HashTableAllocator().Allocate(capacity * sizeof(ht_entry_t));
 		} else {
 			// Just use the current hash map
 			capacity = current_capacity;
 		}
 	} else {
 		// Allocate a hash map
-		hash_map = buffer_manager.GetBufferAllocator().Allocate(capacity * sizeof(ht_entry_t));
+		hash_map = HashTableAllocator().Allocate(capacity * sizeof(ht_entry_t));
 	}
 	D_ASSERT(hash_map.GetSize() == capacity * sizeof(ht_entry_t));
 
@@ -2483,7 +2489,7 @@ void JoinHashTable::SetRepartitionRadixBits(const idx_t max_ht_size, const idx_t
 	}
 	radix_bits += added_bits;
 	sink_collection = make_uniq<RadixPartitionedTupleData>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE,
-	                                                       radix_bits, layout_ptr->ColumnCount() - 1, context);
+	                                                       radix_bits, layout_ptr->ColumnCount() - 1, memory_context);
 
 	// Need to initialize again after changing the number of bits
 	InitializePartitionMasks();
@@ -2519,7 +2525,7 @@ idx_t JoinHashTable::FinishedPartitionCount() const {
 void JoinHashTable::Repartition(JoinHashTable &global_ht) {
 	auto new_sink_collection =
 	    make_uniq<RadixPartitionedTupleData>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE, global_ht.radix_bits,
-	                                         layout_ptr->ColumnCount() - 1, context);
+	                                         layout_ptr->ColumnCount() - 1, memory_context);
 	sink_collection->Repartition(context, *new_sink_collection);
 	sink_collection = std::move(new_sink_collection);
 	global_ht.Merge(*this);
@@ -2568,7 +2574,7 @@ void JoinHashTable::ResetForNewIterationSinglePartition() {
 	if (radix_bits != 0) {
 		radix_bits = 0;
 		sink_collection = make_uniq<RadixPartitionedTupleData>(buffer_manager, layout_ptr, MemoryTag::HASH_TABLE,
-		                                                       idx_t(0), layout_ptr->ColumnCount() - 1, context);
+		                                                       idx_t(0), layout_ptr->ColumnCount() - 1, memory_context);
 	} else {
 		sink_collection->Reset();
 	}
@@ -2884,7 +2890,7 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	// index 0, which belongs to a real row, and following it walks an unrelated chain.
 	const auto has_chains = chains_longer_than_one.load(std::memory_order_relaxed);
 	if (has_chains) {
-		aux_next_ptrs = buffer_manager.GetBufferAllocator().Allocate((build_count + 1) * sizeof(data_ptr_t));
+		aux_next_ptrs = HashTableAllocator().Allocate((build_count + 1) * sizeof(data_ptr_t));
 		aux_next_ptrs_data = reinterpret_cast<data_ptr_t *>(aux_next_ptrs.get());
 		aux_next_ptrs_data[build_count] = nullptr;
 		Store<uint32_t>(static_cast<uint32_t>(build_count), dead_end.get() + pointer_offset);

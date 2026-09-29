@@ -39,6 +39,14 @@ struct MetricQueryPeakMemory {
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
+struct MetricQueryPeakMemoryByContext {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.peak_memory_by_context";
+	static constexpr const char *Description =
+	    "POC: peak memory of the query, attributed only through the QueryContext passed at allocation";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQuerySQL {
 	using METRIC_TYPE = string;
 	static constexpr const char *Name = "query.sql";
@@ -94,6 +102,13 @@ struct MetricQueryUnattributedPeakMemory {
 	static constexpr const char *Name = "query.unattributed_peak_memory";
 	static constexpr const char *Description =
 	    "Peak buffer-managed memory the query allocated outside any operator scope";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricQueryUnattributedPeakMemoryByContext {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.unattributed_peak_memory_by_context";
+	static constexpr const char *Description = "POC: peak memory with a QueryContext but no operator in it";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -277,6 +292,14 @@ struct MetricOperatorPeakMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.peak_memory";
 	static constexpr const char *Description = "Peak buffer-managed memory attributed to this operator instance";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorPeakMemoryByContext {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.peak_memory_by_context";
+	static constexpr const char *Description =
+	    "POC: peak memory attributed to the operator through the QueryContext its data structures were created with";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };

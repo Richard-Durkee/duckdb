@@ -44,6 +44,16 @@
 			"description": "Buffer-managed memory the query currently holds; at the end of the query, the memory it still holds (e.g. a materialized result)",
 			"unit": "bytes"
 		},
+		"peak_memory_by_context": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory of the query, attributed only through the QueryContext passed at allocation",
+			"unit": "bytes"
+		},
+		"unattributed_peak_memory_by_context": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory with a QueryContext but no operator in it",
+			"unit": "bytes"
+		},
 		"peak_memory": {
 			"metric_type": "uint64",
 			"description": "Peak buffer-managed memory allocated by the query itself: the peak of the live sum across all of its operators plus its unattributed memory, measured over time",
@@ -179,6 +189,11 @@
 		"intermediate_size_bytes": {
 			"metric_type": "uint64",
 			"description": "Intermediate size in bytes produced by the operator",
+			"unit": "bytes"
+		},
+		"peak_memory_by_context": {
+			"metric_type": "uint64",
+			"description": "POC: peak memory attributed to the operator through the QueryContext its data structures were created with",
 			"unit": "bytes"
 		},
 		"peak_memory": {
