@@ -67,6 +67,7 @@ public:
 
 public:
 	shared_ptr<BlockHandle> AllocateTemporaryMemory(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.AllocateTemporaryMemory(tag, block_size, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
@@ -77,6 +78,7 @@ public:
 	}
 	shared_ptr<BlockHandle> AllocateMemory(MemoryTag tag, BlockManager *block_manager,
 	                                       bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.AllocateMemory(tag, block_manager, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
@@ -86,6 +88,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.Allocate(tag, block_size, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
@@ -95,6 +98,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.Allocate(tag, block_manager, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
@@ -104,6 +108,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(QueryContext context, MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.Allocate(context, tag, block_size, can_destroy);
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -113,6 +118,7 @@ public:
 	}
 	BufferHandle Allocate(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                      bool can_destroy = true) override {
+		CheckAlive();
 		auto result = buffer_manager.Allocate(context, tag, block_manager, can_destroy);
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -121,37 +127,48 @@ public:
 		return result;
 	}
 	BufferHandle Pin(shared_ptr<BlockHandle> &handle) override {
+		CheckAlive();
 		return Pin(QueryContext(), handle);
 	}
 	BufferHandle Pin(const QueryContext &context, shared_ptr<BlockHandle> &handle) override {
+		CheckAlive();
 		return buffer_manager.Pin(context, handle);
 	}
 	void Prefetch(QueryContext context, vector<shared_ptr<BlockHandle>> &handles) override {
+		CheckAlive();
 		return buffer_manager.Prefetch(context, handles);
 	}
 	void Unpin(shared_ptr<BlockHandle> &handle) override {
+		CheckAlive();
 		return buffer_manager.Unpin(handle);
 	}
 
 	idx_t GetUsedMemory() const override {
+		CheckAlive();
 		return buffer_manager.GetUsedMemory();
 	}
 	idx_t GetMaxMemory() const override {
+		CheckAlive();
 		return buffer_manager.GetMaxMemory();
 	}
 	idx_t GetUsedSwap() const override {
+		CheckAlive();
 		return buffer_manager.GetUsedSwap();
 	}
 	optional_idx GetMaxSwap() const override {
+		CheckAlive();
 		return buffer_manager.GetMaxSwap();
 	}
 	idx_t GetBlockAllocSize() const override {
+		CheckAlive();
 		return buffer_manager.GetBlockAllocSize();
 	}
 	idx_t GetBlockSize() const override {
+		CheckAlive();
 		return buffer_manager.GetBlockSize();
 	}
 	idx_t GetOperatorMemoryLimit() const override {
+		CheckAlive();
 		idx_t global_budget = buffer_manager.GetOperatorMemoryLimit();
 		const auto &config = ClientConfig::GetConfig(context);
 		if (!config.operator_memory_limit.IsValid()) {
@@ -161,18 +178,21 @@ public:
 	}
 
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) override {
+		CheckAlive();
 		auto result = buffer_manager.RegisterTransientMemory(size, block_manager);
 		TrackMemoryAllocation(size);
 		Charge(result);
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(const idx_t size) override {
+		CheckAlive();
 		auto result = buffer_manager.RegisterSmallMemory(size);
 		TrackMemoryAllocation(size);
 		Charge(result);
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) override {
+		CheckAlive();
 		auto result = buffer_manager.RegisterSmallMemory(tag, size);
 		TrackMemoryAllocation(size);
 		Charge(result);
@@ -180,88 +200,124 @@ public:
 	}
 
 	Allocator &GetBufferAllocator() override {
+		CheckAlive();
 		lock_guard<mutex> guard(owner_lock);
 		return owned_allocator ? *owned_allocator : buffer_manager.GetBufferAllocator();
 	}
 	optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<OperatorMemoryCounter> owner_p) override {
+		CheckAlive();
 		return buffer_manager.AcquireBufferAllocator(std::move(owner_p));
 	}
 	void ReleaseBufferAllocator(Allocator &allocator) override {
+		CheckAlive();
 		buffer_manager.ReleaseBufferAllocator(allocator);
 	}
 	idx_t OwnedBufferAllocatorCount() override {
+		CheckAlive();
 		return buffer_manager.OwnedBufferAllocatorCount();
 	}
 	void ReserveMemory(idx_t size) override {
+		CheckAlive();
 		return buffer_manager.ReserveMemory(size);
 	}
 	void FreeReservedMemory(idx_t size) override {
+		CheckAlive();
 		return buffer_manager.FreeReservedMemory(size);
 	}
 	vector<MemoryInformation> GetMemoryUsageInfo() const override {
+		CheckAlive();
 		return buffer_manager.GetMemoryUsageInfo();
 	}
 	void SetMemoryLimit(idx_t limit = (idx_t)-1) override {
+		CheckAlive();
 		return buffer_manager.SetMemoryLimit(limit);
 	}
 	void SetSwapLimit(optional_idx limit = optional_idx()) override {
+		CheckAlive();
 		return buffer_manager.SetSwapLimit(limit);
 	}
 
 	BlockManager &GetTemporaryBlockManager() override {
+		CheckAlive();
 		return buffer_manager.GetTemporaryBlockManager();
 	}
 	vector<TemporaryFileInformation> GetTemporaryFiles() override {
+		CheckAlive();
 		return buffer_manager.GetTemporaryFiles();
 	}
 	const string &GetTemporaryDirectory() const override {
+		CheckAlive();
 		return buffer_manager.GetTemporaryDirectory();
 	}
 	void SetTemporaryDirectory(const string &new_dir) override {
+		CheckAlive();
 		return buffer_manager.SetTemporaryDirectory(new_dir);
 	}
 	bool HasTemporaryDirectory() const override {
+		CheckAlive();
 		return buffer_manager.HasTemporaryDirectory();
 	}
 	bool HasFilesInTemporaryDirectory() const override {
+		CheckAlive();
 		return buffer_manager.HasFilesInTemporaryDirectory();
 	}
 
 	unique_ptr<FileBuffer> ConstructManagedBuffer(idx_t size, idx_t block_header_size, unique_ptr<FileBuffer> &&source,
 	                                              FileBufferType type = FileBufferType::MANAGED_BUFFER) override {
+		CheckAlive();
 		return buffer_manager.ConstructManagedBuffer(size, block_header_size, std::move(source), type);
 	}
 	BufferPool &GetBufferPool() const override {
+		CheckAlive();
 		return buffer_manager.GetBufferPool();
 	}
 	const DatabaseInstance &GetDatabase() const override {
+		CheckAlive();
 		return buffer_manager.GetDatabase();
 	}
 	DatabaseInstance &GetDatabase() override {
+		CheckAlive();
 		return buffer_manager.GetDatabase();
 	}
 	TemporaryMemoryManager &GetTemporaryMemoryManager() override {
+		CheckAlive();
 		return buffer_manager.GetTemporaryMemoryManager();
 	}
 
 	void PurgeQueue(const BlockHandle &handle) override {
+		CheckAlive();
 		return buffer_manager.PurgeQueue(handle);
 	}
 	void AddToEvictionQueue(shared_ptr<BlockHandle> &handle) override {
+		CheckAlive();
 		return buffer_manager.AddToEvictionQueue(handle);
 	}
 	void WriteTemporaryBuffer(QueryContext context, MemoryTag tag, block_id_t block_id, FileBuffer &buffer) override {
+		CheckAlive();
 		return buffer_manager.WriteTemporaryBuffer(context, tag, block_id, buffer);
 	}
 	unique_ptr<FileBuffer> ReadTemporaryBuffer(QueryContext context, MemoryTag tag, BlockHandle &block,
 	                                           unique_ptr<FileBuffer> buffer) override {
+		CheckAlive();
 		return buffer_manager.ReadTemporaryBuffer(context, tag, block, std::move(buffer));
 	}
 	void DeleteTemporaryFile(BlockMemory &memory) override {
+		CheckAlive();
 		return buffer_manager.DeleteTemporaryFile(memory);
 	}
 
+	void MarkDead() override {
+		SetMemoryOwner(nullptr);
+		dead = true;
+	}
+
 private:
+	void CheckAlive() const {
+		if (dead) {
+			throw InternalException("POC: a released operator buffer manager was used after its executor reset");
+		}
+	}
+	atomic<bool> dead {false};
 	void Charge(const shared_ptr<BlockHandle> &handle) {
 		shared_ptr<OperatorMemoryCounter> current;
 		{

@@ -1,4 +1,5 @@
 #include "duckdb/execution/executor.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/time_point.hpp"
@@ -9,6 +10,7 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline_complete_event.hpp"
@@ -30,6 +32,7 @@ Executor::Executor(ClientContext &context) : context(context), executor_tasks(0)
 }
 
 Executor::~Executor() {
+	ReleaseMemoryFacades();
 	D_ASSERT(Exception::UncaughtException() || executor_tasks == 0);
 }
 
@@ -525,18 +528,37 @@ void Executor::Reset() {
 	events.clear();
 	to_be_rescheduled_tasks.clear();
 	execution_result = PendingExecutionResult::RESULT_NOT_READY;
+	ReleaseMemoryFacades();
+}
+
+//! POC check: released facades are kept, marked dead, so any use after the executor resets fails loudly
+static mutex dead_facades_lock;
+static vector<unique_ptr<BufferManager>> dead_facades;
+
+void Executor::ReleaseMemoryFacades() {
 	lock_guard<mutex> guard(memory_facades_lock);
+	lock_guard<mutex> dead_guard(dead_facades_lock);
+	for (auto &entry : memory_facades) {
+		entry.second->MarkDead();
+		dead_facades.push_back(std::move(entry.second));
+	}
 	memory_facades.clear();
 }
 
-void Executor::KeepMemoryFacadeAlive(const shared_ptr<BufferManager> &facade) {
-	lock_guard<mutex> guard(memory_facades_lock);
-	for (auto &existing : memory_facades) {
-		if (existing == facade) {
-			return;
-		}
+BufferManager &Executor::GetOperatorBufferManager(const PhysicalOperator &op) {
+	auto owner = QueryProfiler::Get(context).GetFacadeMemoryCounter(op);
+	if (!owner) {
+		return BufferManager::GetBufferManager(context);
 	}
-	memory_facades.push_back(facade);
+	lock_guard<mutex> guard(memory_facades_lock);
+	auto entry = memory_facades.find(op);
+	if (entry != memory_facades.end()) {
+		return *entry->second;
+	}
+	auto facade = CreateOperatorBufferManager(context, std::move(owner));
+	auto &result = *facade;
+	memory_facades.insert(make_pair(reference<const PhysicalOperator>(op), std::move(facade)));
+	return result;
 }
 
 shared_ptr<Pipeline> Executor::CreateChildPipeline(Pipeline &current, PhysicalOperator &op) {

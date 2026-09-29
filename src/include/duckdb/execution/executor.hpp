@@ -51,8 +51,8 @@ public:
 
 public:
 	static Executor &Get(ClientContext &context);
-	//! POC: keep `facade` alive until the executor is reset
-	void KeepMemoryFacadeAlive(const shared_ptr<BufferManager> &facade);
+	//! POC: the buffer manager `op`'s data structures allocate through during this execution
+	BufferManager &GetOperatorBufferManager(const PhysicalOperator &op);
 
 	void Initialize(PhysicalOperator &physical_plan);
 	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
@@ -156,7 +156,8 @@ private:
 	//! POC: memory facades of this executor's operators; declared first so they are destroyed last, and released in
 	//! Reset only after everything that allocated through them
 	mutex memory_facades_lock;
-	vector<shared_ptr<BufferManager>> memory_facades;
+	reference_map_t<const PhysicalOperator, unique_ptr<BufferManager>> memory_facades;
+	void ReleaseMemoryFacades();
 	unique_ptr<PhysicalOperator> owned_plan;
 
 	mutex executor_lock;

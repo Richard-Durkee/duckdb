@@ -66,9 +66,6 @@ public:
 
 	//! The global sink state. Published under `lock` by Pipeline::ResetSink on a worker;
 	//! a reader racing pipeline initialization must hold `lock` to observe it safely
-	//! POC: the buffer manager this operator's data structures allocate through; declared before the states so it
-	//! outlives everything allocated through it
-	mutable shared_ptr<BufferManager> memory_facade;
 	unique_ptr<GlobalSinkState> sink_state;
 	//! The global operator state.
 	unique_ptr<GlobalOperatorState> op_state;

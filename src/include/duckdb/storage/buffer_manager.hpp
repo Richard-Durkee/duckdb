@@ -110,6 +110,9 @@ public:
 	//! POC: the owner charged for blocks and allocations made through this buffer manager from now on
 	virtual void SetMemoryOwner(shared_ptr<OperatorMemoryCounter> owner) {
 	}
+	//! POC check: mark a facade as released; any later call on it throws
+	virtual void MarkDead() {
+	}
 	//! Reserve memory.
 	virtual DUCKDB_API void ReserveMemory(idx_t size);
 	//! Free reserved memory.

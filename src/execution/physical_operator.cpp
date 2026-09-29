@@ -209,19 +209,7 @@ unique_ptr<LocalSinkState> PhysicalOperator::GetLocalSinkState(ExecutionContext 
 }
 
 BufferManager &PhysicalOperator::GetOperatorBufferManager(ClientContext &context) const {
-	static mutex facade_lock;
-	auto owner = QueryProfiler::Get(context).GetFacadeMemoryCounter(*this);
-	if (!owner) {
-		return BufferManager::GetBufferManager(context);
-	}
-	lock_guard<mutex> guard(facade_lock);
-	if (!memory_facade) {
-		memory_facade = shared_ptr<BufferManager>(CreateOperatorBufferManager(context, std::move(owner)));
-	} else {
-		memory_facade->SetMemoryOwner(std::move(owner));
-	}
-	Executor::Get(context).KeepMemoryFacadeAlive(memory_facade);
-	return *memory_facade;
+	return Executor::Get(context).GetOperatorBufferManager(*this);
 }
 
 unique_ptr<GlobalSinkState> PhysicalOperator::GetGlobalSinkState(ClientContext &context) const {
