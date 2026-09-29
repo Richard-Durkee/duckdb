@@ -54,17 +54,17 @@ public:
 		lock_guard<mutex> guard(allocator_lock);
 		memory_account = account.get();
 		// allocations made before keep the allocator (and account) they were made with
-		if (account_allocator) {
-			buffer_manager.ReleaseBufferAllocator(*account_allocator);
-			account_allocator = nullptr;
+		auto previous = account_allocator.exchange(nullptr);
+		if (previous) {
+			buffer_manager.ReleaseBufferAllocator(*previous);
 		}
 		if (account) {
-			account_allocator = buffer_manager.AcquireBufferAllocator(account->shared_from_this());
+			account_allocator = buffer_manager.AcquireBufferAllocator(account->shared_from_this()).get();
 		}
 	}
 
 	shared_ptr<BlockHandle> AllocateTemporaryMemory(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		return AllocateTemporaryMemory(QueryContext(), tag, block_size, can_destroy);
+		return ClientBufferManager::AllocateTemporaryMemory(QueryContext(), tag, block_size, can_destroy);
 	}
 	shared_ptr<BlockHandle> AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
 	                                                bool can_destroy = true) override {
@@ -77,7 +77,7 @@ public:
 	}
 	shared_ptr<BlockHandle> AllocateMemory(MemoryTag tag, BlockManager *block_manager,
 	                                       bool can_destroy = true) override {
-		return AllocateMemory(QueryContext(), tag, block_manager, can_destroy);
+		return ClientBufferManager::AllocateMemory(QueryContext(), tag, block_manager, can_destroy);
 	}
 	shared_ptr<BlockHandle> AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                                       bool can_destroy = true) override {
@@ -89,10 +89,10 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		return Allocate(QueryContext(), tag, block_size, can_destroy);
+		return ClientBufferManager::Allocate(QueryContext(), tag, block_size, can_destroy);
 	}
 	BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) override {
-		return Allocate(QueryContext(), tag, block_manager, can_destroy);
+		return ClientBufferManager::Allocate(QueryContext(), tag, block_manager, can_destroy);
 	}
 	BufferHandle Allocate(QueryContext context, MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
 		auto result = buffer_manager.Allocate(WithAccount(context), tag, block_size, can_destroy);
@@ -151,7 +151,7 @@ public:
 	}
 
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) override {
-		return RegisterTransientMemory(QueryContext(), size, block_manager);
+		return ClientBufferManager::RegisterTransientMemory(QueryContext(), size, block_manager);
 	}
 	shared_ptr<BlockHandle> RegisterTransientMemory(QueryContext context, const idx_t size,
 	                                                BlockManager &block_manager) override {
@@ -160,10 +160,10 @@ public:
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(const idx_t size) override {
-		return RegisterSmallMemory(QueryContext(), MemoryTag::BASE_TABLE, size);
+		return ClientBufferManager::RegisterSmallMemory(QueryContext(), MemoryTag::BASE_TABLE, size);
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) override {
-		return RegisterSmallMemory(QueryContext(), tag, size);
+		return ClientBufferManager::RegisterSmallMemory(QueryContext(), tag, size);
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size) override {
 		auto result = buffer_manager.RegisterSmallMemory(WithAccount(context), tag, size);
@@ -172,8 +172,8 @@ public:
 	}
 
 	Allocator &GetBufferAllocator() override {
-		lock_guard<mutex> guard(allocator_lock);
-		return account_allocator ? *account_allocator : buffer_manager.GetBufferAllocator();
+		auto allocator = account_allocator.load(std::memory_order_acquire);
+		return allocator ? *allocator : buffer_manager.GetBufferAllocator();
 	}
 	optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) override {
 		return buffer_manager.AcquireBufferAllocator(std::move(account));
@@ -263,7 +263,7 @@ private:
 	}
 	atomic<MemoryAccount *> memory_account {nullptr};
 	mutex allocator_lock;
-	optional_ptr<Allocator> account_allocator;
+	atomic<Allocator *> account_allocator {nullptr};
 
 	void TrackMemoryAllocation(idx_t size) const {
 		if (size > 0) {

@@ -41,7 +41,9 @@ void BufferPoolReservation::Resize(idx_t new_size) {
 
 void BufferPoolReservation::Merge(BufferPoolReservation src) {
 	// src's bytes now belong to this reservation's account
-	src.SetAccount(account);
+	if (src.account != account) {
+		src.SetAccount(account);
+	}
 	size += src.size;
 	src.size = 0;
 }
