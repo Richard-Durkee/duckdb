@@ -108,7 +108,8 @@ public:
 	DUCKDB_API Allocator &GetBufferAllocator() final;
 	DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) final;
 	DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) final;
-	DUCKDB_API idx_t GetBufferAllocatorPoolSize() final;
+	//! The number of account-bound buffer allocators ever created (they are reused)
+	DUCKDB_API idx_t GetAccountAllocatorCount();
 	//! Buffer allocators bound to a memory account; every allocation keeps a pointer to its allocator, so they are kept
 	//! for the database's lifetime and reused
 	mutex account_allocator_lock;

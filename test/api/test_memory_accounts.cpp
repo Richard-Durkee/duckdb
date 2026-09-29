@@ -1,7 +1,9 @@
 #include "catch.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/profiler/metrics.hpp"
-#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/database.hpp"
+#include "duckdb/storage/standard_buffer_manager.hpp"
+#include "duckdb/storage/buffer/memory_account.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb; // NOLINT
@@ -45,7 +47,9 @@ TEST_CASE("Memory accounts: prepared statement re-executed many times", "[api][m
 		REQUIRE(CHECK_COLUMN(result, 0, {300000}));
 	}
 	// drained account-bound allocators are recycled, so the pool stays bounded
-	REQUIRE(BufferManager::GetBufferManager(*con.context).GetBufferAllocatorPoolSize() < 10);
+	auto &buffer_manager =
+	    dynamic_cast<StandardBufferManager &>(DatabaseInstance::GetDatabase(*con.context).GetBufferManager());
+	REQUIRE(buffer_manager.GetAccountAllocatorCount() < 10);
 }
 
 TEST_CASE("Memory accounts: results outlive the prepared statement and later queries", "[api][memory_accounts]") {
@@ -99,4 +103,30 @@ TEST_CASE("Memory accounts: profiling toggled between executions of one plan", "
 		auto result = prepared->Execute();
 		REQUIRE(CHECK_COLUMN(result, 0, {300000}));
 	}
+}
+
+TEST_CASE("Memory accounts: account-bound buffer allocator charges allocate, reallocate and free",
+          "[api][memory_accounts]") {
+	DuckDB db(nullptr);
+	auto &buffer_manager = dynamic_cast<StandardBufferManager &>(db.instance->GetBufferManager());
+	auto account = make_shared_ptr<MemoryAccount>();
+	auto &allocator = *buffer_manager.AcquireBufferAllocator(account);
+
+	auto pointer = allocator.AllocateData(1000);
+	REQUIRE(account->GetMemoryUsage() == 1000);
+	pointer = allocator.ReallocateData(pointer, 1000, 5000);
+	REQUIRE(account->GetMemoryUsage() == 5000);
+	pointer = allocator.ReallocateData(pointer, 5000, 200);
+	REQUIRE(account->GetMemoryUsage() == 200);
+
+	// released allocators are reused right away, but the allocation still releases the account it was charged to
+	buffer_manager.ReleaseBufferAllocator(allocator);
+	auto other_account = make_shared_ptr<MemoryAccount>();
+	auto &reused = *buffer_manager.AcquireBufferAllocator(other_account);
+	REQUIRE(&reused == &allocator);
+	reused.FreeData(pointer, 200);
+	REQUIRE(account->GetMemoryUsage() == 0);
+	REQUIRE(account->GetPeakMemoryUsage() == 5000);
+	REQUIRE(other_account->GetMemoryUsage() == 0);
+	buffer_manager.ReleaseBufferAllocator(reused);
 }

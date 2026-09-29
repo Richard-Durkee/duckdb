@@ -880,11 +880,13 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	if (!data.account_bound) {
 		return Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
 	}
-	// the header moves with the data
-	auto base =
-	    Allocator::Get(data.manager.db)
-	        .ReallocateData(pointer - ACCOUNT_HEADER_SIZE, old_size + ACCOUNT_HEADER_SIZE, size + ACCOUNT_HEADER_SIZE);
-	auto &account = AccountHeader(base);
+	// take the account out of the header, so no shared_ptr is moved by the reallocation
+	auto old_base = pointer - ACCOUNT_HEADER_SIZE;
+	auto account_ref = std::move(AccountHeader(old_base));
+	AccountHeader(old_base).~shared_ptr<MemoryAccount>();
+	auto base = Allocator::Get(data.manager.db)
+	                .ReallocateData(old_base, old_size + ACCOUNT_HEADER_SIZE, size + ACCOUNT_HEADER_SIZE);
+	auto &account = *new (base) shared_ptr<MemoryAccount>(std::move(account_ref));
 	if (account) {
 		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
 	}
@@ -918,7 +920,7 @@ void StandardBufferManager::ReleaseBufferAllocator(Allocator &allocator) {
 	free_account_allocators.push_back(allocator);
 }
 
-idx_t StandardBufferManager::GetBufferAllocatorPoolSize() {
+idx_t StandardBufferManager::GetAccountAllocatorCount() {
 	lock_guard<mutex> guard(account_allocator_lock);
 	return account_allocators.size();
 }

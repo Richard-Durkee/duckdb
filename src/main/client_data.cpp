@@ -52,6 +52,10 @@ public:
 
 	void SetMemoryAccount(optional_ptr<MemoryAccount> account) override {
 		lock_guard<mutex> guard(allocator_lock);
+		// keep the previous account alive until the next one is set, so a late allocation never sees a freed account
+		if (account) {
+			memory_account_ref = account->shared_from_this();
+		}
 		memory_account = account.get();
 		// allocations made before keep the allocator (and account) they were made with
 		auto previous = account_allocator.exchange(nullptr);
@@ -181,9 +185,6 @@ public:
 	void ReleaseBufferAllocator(Allocator &allocator) override {
 		buffer_manager.ReleaseBufferAllocator(allocator);
 	}
-	idx_t GetBufferAllocatorPoolSize() override {
-		return buffer_manager.GetBufferAllocatorPoolSize();
-	}
 	void ReserveMemory(idx_t size) override {
 		return buffer_manager.ReserveMemory(size);
 	}
@@ -263,6 +264,7 @@ private:
 	}
 	atomic<MemoryAccount *> memory_account {nullptr};
 	mutex allocator_lock;
+	shared_ptr<MemoryAccount> memory_account_ref;
 	atomic<Allocator *> account_allocator {nullptr};
 
 	void TrackMemoryAllocation(idx_t size) const {

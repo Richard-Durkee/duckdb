@@ -113,10 +113,6 @@ public:
 	}
 	virtual void ReleaseBufferAllocator(Allocator &allocator) {
 	}
-	//! The number of account-bound buffer allocators ever created (they are recycled)
-	virtual DUCKDB_API idx_t GetBufferAllocatorPoolSize() {
-		return 0;
-	}
 	//! Get the buffer allocator.
 	virtual DUCKDB_API Allocator &GetBufferAllocator();
 	//! Reserve memory.
