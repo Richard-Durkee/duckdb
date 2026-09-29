@@ -39,13 +39,36 @@ static void WriteGarbageIntoBuffer(BlockHandle &block) {
 #endif
 
 struct BufferAllocatorData : PrivateAllocatorData {
-	explicit BufferAllocatorData(StandardBufferManager &manager, shared_ptr<OperatorMemoryCounter> owner = nullptr)
-	    : manager(manager), owner(std::move(owner)) {
+	explicit BufferAllocatorData(StandardBufferManager &manager) : manager(manager) {
 	}
 
 	StandardBufferManager &manager;
-	//! POC: owns every allocation made through this allocator
+	//! POC (owner-bound allocators only): the owner of every allocation made through this allocator. Allocations can
+	//! escape their owner (e.g. zero-copy dictionary vectors), so the allocator lives in a database-level pool and is
+	//! recycled only once all of its allocations are freed.
 	shared_ptr<OperatorMemoryCounter> owner;
+	atomic<idx_t> outstanding {0};
+	atomic<bool> retired {false};
+	//! In the pool, reusable for a new owner (protected by the pool lock)
+	bool idle = false;
+
+	shared_ptr<OperatorMemoryCounter> GetOwner() {
+		if (!retired.load(std::memory_order_acquire)) {
+			return owner;
+		}
+		lock_guard<mutex> guard(manager.owned_allocator_lock);
+		return owner;
+	}
+	void ReleaseIfDrained() {
+		if (!retired.load(std::memory_order_acquire) || outstanding.load(std::memory_order_acquire) != 0) {
+			return;
+		}
+		lock_guard<mutex> guard(manager.owned_allocator_lock);
+		if (retired && outstanding == 0 && !idle) {
+			owner.reset();
+			idle = true;
+		}
+	}
 };
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
@@ -868,8 +891,9 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	if (owner) {
 		data.manager.TrackAllocatorOwner(pointer, std::move(owner));
 	}
-	if (data.owner) {
-		data.owner->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
+	if (auto data_owner = data.GetOwner()) {
+		data.outstanding++;
+		data_owner->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
 	}
 	return pointer;
 }
@@ -881,8 +905,11 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	r.owner = data.manager.ReleaseAllocatorOwner(pointer);
 	r.size = size;
 	r.Resize(0);
-	if (data.owner) {
-		data.owner->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+	if (auto data_owner = data.GetOwner()) {
+		data_owner->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+		data_owner.reset();
+		data.outstanding--;
+		data.ReleaseIfDrained();
 	}
 	return Allocator::Get(data.manager.db).FreeData(pointer, size);
 }
@@ -899,8 +926,8 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
-	if (data.owner) {
-		data.owner->Update(MemoryTag::ALLOCATOR,
+	if (auto data_owner = data.GetOwner()) {
+		data_owner->Update(MemoryTag::ALLOCATOR,
 		                   UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
 	}
 	auto owner = std::move(r.owner);
@@ -940,9 +967,33 @@ shared_ptr<OperatorMemoryCounter> StandardBufferManager::ReleaseAllocatorOwner(d
 	return owner;
 }
 
-unique_ptr<Allocator> StandardBufferManager::CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
-	return make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree, BufferAllocatorRealloc,
-	                            make_uniq<BufferAllocatorData>(*this, std::move(owner)));
+optional_ptr<Allocator> StandardBufferManager::AcquireBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
+	lock_guard<mutex> guard(owned_allocator_lock);
+	for (auto &allocator : owned_allocators) {
+		auto &data = allocator->GetPrivateData()->Cast<BufferAllocatorData>();
+		if (data.idle) {
+			data.owner = std::move(owner);
+			data.retired = false;
+			data.idle = false;
+			return allocator.get();
+		}
+	}
+	owned_allocators.push_back(make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree,
+	                                                BufferAllocatorRealloc, make_uniq<BufferAllocatorData>(*this)));
+	auto &data = owned_allocators.back()->GetPrivateData()->Cast<BufferAllocatorData>();
+	data.owner = std::move(owner);
+	return owned_allocators.back().get();
+}
+
+void StandardBufferManager::ReleaseBufferAllocator(Allocator &allocator) {
+	auto &data = allocator.GetPrivateData()->Cast<BufferAllocatorData>();
+	data.retired = true;
+	data.ReleaseIfDrained();
+}
+
+idx_t StandardBufferManager::OwnedBufferAllocatorCount() {
+	lock_guard<mutex> guard(owned_allocator_lock);
+	return owned_allocators.size();
 }
 
 Allocator &BufferAllocator::Get(ClientContext &context) {

@@ -101,7 +101,12 @@ public:
 	void SetTemporaryDirectory(const string &new_dir) final;
 
 	DUCKDB_API Allocator &GetBufferAllocator() final;
-	DUCKDB_API unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) final;
+	DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) final;
+	DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) final;
+	DUCKDB_API idx_t OwnedBufferAllocatorCount() final;
+	//! POC: owner-bound buffer allocators, kept for the database's lifetime and recycled once drained
+	mutex owned_allocator_lock;
+	vector<unique_ptr<Allocator>> owned_allocators;
 
 	const DatabaseInstance &GetDatabase() const override {
 		return db;

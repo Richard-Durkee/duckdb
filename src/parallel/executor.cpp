@@ -525,6 +525,18 @@ void Executor::Reset() {
 	events.clear();
 	to_be_rescheduled_tasks.clear();
 	execution_result = PendingExecutionResult::RESULT_NOT_READY;
+	lock_guard<mutex> guard(memory_facades_lock);
+	memory_facades.clear();
+}
+
+void Executor::KeepMemoryFacadeAlive(const shared_ptr<BufferManager> &facade) {
+	lock_guard<mutex> guard(memory_facades_lock);
+	for (auto &existing : memory_facades) {
+		if (existing == facade) {
+			return;
+		}
+	}
+	memory_facades.push_back(facade);
 }
 
 shared_ptr<Pipeline> Executor::CreateChildPipeline(Pipeline &current, PhysicalOperator &op) {

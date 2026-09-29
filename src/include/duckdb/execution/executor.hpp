@@ -21,6 +21,7 @@
 #include <condition_variable>
 
 namespace duckdb {
+class BufferManager;
 class ClientContext;
 class DataChunk;
 class PhysicalOperator;
@@ -50,6 +51,8 @@ public:
 
 public:
 	static Executor &Get(ClientContext &context);
+	//! POC: keep `facade` alive until the executor is reset
+	void KeepMemoryFacadeAlive(const shared_ptr<BufferManager> &facade);
 
 	void Initialize(PhysicalOperator &physical_plan);
 	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
@@ -150,6 +153,10 @@ private:
 
 private:
 	optional_ptr<PhysicalOperator> physical_plan;
+	//! POC: memory facades of this executor's operators; declared first so they are destroyed last, and released in
+	//! Reset only after everything that allocated through them
+	mutex memory_facades_lock;
+	vector<shared_ptr<BufferManager>> memory_facades;
 	unique_ptr<PhysicalOperator> owned_plan;
 
 	mutex executor_lock;

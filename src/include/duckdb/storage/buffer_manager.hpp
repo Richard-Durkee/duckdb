@@ -98,9 +98,14 @@ public:
 
 	//! Get the buffer allocator.
 	virtual DUCKDB_API Allocator &GetBufferAllocator();
-	//! POC: a buffer allocator whose allocations are all owned by `owner`
-	virtual DUCKDB_API unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
+	//! POC: a pooled buffer allocator whose allocations are all owned by `owner`; release it when done
+	virtual DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<OperatorMemoryCounter> owner) {
 		return nullptr;
+	}
+	virtual DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) {
+	}
+	virtual DUCKDB_API idx_t OwnedBufferAllocatorCount() {
+		return 0;
 	}
 	//! POC: the owner charged for blocks and allocations made through this buffer manager from now on
 	virtual void SetMemoryOwner(shared_ptr<OperatorMemoryCounter> owner) {

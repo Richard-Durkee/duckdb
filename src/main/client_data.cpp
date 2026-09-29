@@ -45,6 +45,10 @@ public:
 		SetMemoryOwner(std::move(owner_p));
 	}
 
+	~ClientBufferManager() override {
+		SetMemoryOwner(nullptr);
+	}
+
 	void SetMemoryOwner(shared_ptr<OperatorMemoryCounter> owner_p) override {
 		lock_guard<mutex> guard(owner_lock);
 		if (owner_p == owner) {
@@ -52,11 +56,12 @@ public:
 		}
 		// allocations made before keep the allocator (and owner) they were made with
 		if (owned_allocator) {
-			retired_allocators.push_back(std::move(owned_allocator));
+			buffer_manager.ReleaseBufferAllocator(*owned_allocator);
+			owned_allocator = nullptr;
 		}
 		owner = std::move(owner_p);
 		if (owner) {
-			owned_allocator = buffer_manager.CreateBufferAllocator(owner);
+			owned_allocator = buffer_manager.AcquireBufferAllocator(owner);
 		}
 	}
 
@@ -178,8 +183,14 @@ public:
 		lock_guard<mutex> guard(owner_lock);
 		return owned_allocator ? *owned_allocator : buffer_manager.GetBufferAllocator();
 	}
-	unique_ptr<Allocator> CreateBufferAllocator(shared_ptr<OperatorMemoryCounter> owner_p) override {
-		return buffer_manager.CreateBufferAllocator(std::move(owner_p));
+	optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<OperatorMemoryCounter> owner_p) override {
+		return buffer_manager.AcquireBufferAllocator(std::move(owner_p));
+	}
+	void ReleaseBufferAllocator(Allocator &allocator) override {
+		buffer_manager.ReleaseBufferAllocator(allocator);
+	}
+	idx_t OwnedBufferAllocatorCount() override {
+		return buffer_manager.OwnedBufferAllocatorCount();
 	}
 	void ReserveMemory(idx_t size) override {
 		return buffer_manager.ReserveMemory(size);
@@ -263,8 +274,7 @@ private:
 	}
 	mutable mutex owner_lock;
 	shared_ptr<OperatorMemoryCounter> owner;
-	unique_ptr<Allocator> owned_allocator;
-	vector<unique_ptr<Allocator>> retired_allocators;
+	optional_ptr<Allocator> owned_allocator;
 
 	void TrackMemoryAllocation(idx_t size) const {
 		if (size > 0) {

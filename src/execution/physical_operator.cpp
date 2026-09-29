@@ -1,4 +1,5 @@
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
@@ -219,6 +220,7 @@ BufferManager &PhysicalOperator::GetOperatorBufferManager(ClientContext &context
 	} else {
 		memory_facade->SetMemoryOwner(std::move(owner));
 	}
+	Executor::Get(context).KeepMemoryFacadeAlive(memory_facade);
 	return *memory_facade;
 }
 
