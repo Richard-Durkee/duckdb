@@ -16,6 +16,8 @@ class ClientContext;
 
 //! The QueryContext wraps an optional client context.
 //! It makes query-related information available to operations.
+class MemoryAccount;
+
 class QueryContext {
 public:
 	QueryContext() : context(nullptr) {
@@ -23,6 +25,9 @@ public:
 	QueryContext(optional_ptr<ClientContext> context) : context(context) { // NOLINT: allow implicit construction
 	}
 	QueryContext(ClientContext &context) : context(&context) { // NOLINT: allow implicit construction
+	}
+	QueryContext(optional_ptr<ClientContext> context, optional_ptr<MemoryAccount> memory_account)
+	    : context(context), memory_account(memory_account) {
 	}
 
 public:
@@ -32,9 +37,14 @@ public:
 	optional_ptr<ClientContext> GetClientContext() const {
 		return context;
 	}
+	//! The account buffer-managed memory allocated with this context is charged to, if any
+	optional_ptr<MemoryAccount> GetMemoryAccount() const {
+		return memory_account;
+	}
 
 private:
 	optional_ptr<ClientContext> context;
+	optional_ptr<MemoryAccount> memory_account;
 };
 
 } // namespace duckdb

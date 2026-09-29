@@ -5,6 +5,7 @@
 #include "duckdb/common/enums/storage_block_prefetch.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/set.hpp"
+#include "duckdb/storage/buffer/memory_account.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -41,6 +42,32 @@ struct BufferAllocatorData : PrivateAllocatorData {
 	}
 
 	StandardBufferManager &manager;
+	//! For account-bound allocators: the account charged for every allocation made through this allocator. Such
+	//! allocations can outlive their account's query (e.g. zero-copy dictionary vectors), so these allocators live in
+	//! a database-level pool and are only recycled once all of their allocations have been freed.
+	shared_ptr<MemoryAccount> account;
+	atomic<idx_t> outstanding {0};
+	atomic<bool> released {false};
+	//! Whether the allocator can be handed out again (protected by the pool lock)
+	bool idle = false;
+
+	shared_ptr<MemoryAccount> GetAccount() {
+		if (!released.load(std::memory_order_acquire)) {
+			return account;
+		}
+		lock_guard<mutex> guard(manager.account_allocator_lock);
+		return account;
+	}
+	void RecycleIfDrained() {
+		if (!released.load(std::memory_order_acquire) || outstanding.load(std::memory_order_acquire) != 0) {
+			return;
+		}
+		lock_guard<mutex> guard(manager.account_allocator_lock);
+		if (released && outstanding == 0 && !idle) {
+			account.reset();
+			idle = true;
+		}
+	}
 };
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
@@ -135,26 +162,39 @@ TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext
 		extra_text += InMemoryWarning();
 		throw OutOfMemoryException(args..., extra_text);
 	}
+	if (context.GetMemoryAccount()) {
+		r.reservation.SetAccount(context.GetMemoryAccount()->shared_from_this());
+	}
 	return std::move(r.reservation);
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::RegisterTransientMemory(const idx_t size, BlockManager &block_manager) {
+	return RegisterTransientMemory(QueryContext(), size, block_manager);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::RegisterTransientMemory(QueryContext context, const idx_t size,
+                                                                       BlockManager &block_manager) {
 	D_ASSERT(size <= block_manager.GetBlockSize());
 
 	// This comparison is the reason behind passing block_size through transient memory creation.
 	// Otherwise, any non-default block size would register as small memory, causing problems when
 	// trying to convert that memory to consistent blocks later on.
 	if (size < block_manager.GetBlockSize()) {
-		return RegisterSmallMemory(MemoryTag::IN_MEMORY_TABLE, size);
+		return RegisterSmallMemory(context, MemoryTag::IN_MEMORY_TABLE, size);
 	}
 
-	auto buffer_handle = Allocate(MemoryTag::IN_MEMORY_TABLE, &block_manager, false);
+	auto buffer_handle = Allocate(context, MemoryTag::IN_MEMORY_TABLE, &block_manager, false);
 	return buffer_handle.GetBlockHandle();
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::RegisterSmallMemory(MemoryTag tag, const idx_t size) {
+	return RegisterSmallMemory(QueryContext(), tag, size);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::RegisterSmallMemory(QueryContext context, MemoryTag tag,
+                                                                   const idx_t size) {
 	D_ASSERT(size < GetBlockSize());
-	auto reservation = EvictBlocksOrThrow(QueryContext(), tag, size, nullptr, "could not allocate block of size %s%s",
+	auto reservation = EvictBlocksOrThrow(context, tag, size, nullptr, "could not allocate block of size %s%s",
 	                                      StringUtil::BytesToHumanReadableString(size));
 
 	auto buffer = ConstructManagedBuffer(size, DEFAULT_BLOCK_HEADER_STORAGE_SIZE, nullptr, FileBufferType::TINY_BUFFER);
@@ -189,12 +229,23 @@ shared_ptr<BlockHandle> StandardBufferManager::RegisterMemory(MemoryTag tag, idx
 
 shared_ptr<BlockHandle> StandardBufferManager::AllocateTemporaryMemory(MemoryTag tag, idx_t block_size,
                                                                        bool can_destroy) {
-	return RegisterMemory(tag, block_size, Storage::DEFAULT_BLOCK_HEADER_SIZE, can_destroy);
+	return AllocateTemporaryMemory(QueryContext(), tag, block_size, can_destroy);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::AllocateTemporaryMemory(QueryContext context, MemoryTag tag,
+                                                                       idx_t block_size, bool can_destroy) {
+	return RegisterMemory(tag, block_size, Storage::DEFAULT_BLOCK_HEADER_SIZE, can_destroy, context);
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::AllocateMemory(MemoryTag tag, BlockManager *block_manager,
                                                               bool can_destroy) {
-	return RegisterMemory(tag, block_manager->GetBlockSize(), block_manager->GetBlockHeaderSize(), can_destroy);
+	return AllocateMemory(QueryContext(), tag, block_manager, can_destroy);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::AllocateMemory(QueryContext context, MemoryTag tag,
+                                                              BlockManager *block_manager, bool can_destroy) {
+	return RegisterMemory(tag, block_manager->GetBlockSize(), block_manager->GetBlockHeaderSize(), can_destroy,
+	                      context);
 }
 
 BufferHandle StandardBufferManager::Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy) {
@@ -407,7 +458,10 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 			return buf; // Buffer was destroyed (e.g., due to DestroyBufferUpon::Eviction)
 		}
 		auto &memory_charge = block_memory.GetMemoryCharge(lock);
+		// the block stays charged to the account it was created for, not to whoever reloads it
+		auto account = std::move(memory_charge.account);
 		memory_charge = std::move(reservation);
+		memory_charge.SetAccount(std::move(account));
 		// in the case of a variable sized block, the buffer may be smaller than a full block.
 		int64_t delta = NumericCast<int64_t>(block_memory.GetBuffer(lock)->AllocSize()) -
 		                NumericCast<int64_t>(block_memory.GetMemoryUsage());
@@ -792,7 +846,12 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	                                                   StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
 	reservation.size = 0;
-	return Allocator::Get(data.manager.db).AllocateData(size);
+	auto pointer = Allocator::Get(data.manager.db).AllocateData(size);
+	if (auto account = data.GetAccount()) {
+		data.outstanding++;
+		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size));
+	}
+	return pointer;
 }
 
 void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
@@ -800,6 +859,12 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
 	r.size = size;
 	r.Resize(0);
+	if (auto account = data.GetAccount()) {
+		account->Update(MemoryTag::ALLOCATOR, -UnsafeNumericCast<int64_t>(size));
+		account.reset();
+		data.outstanding--;
+		data.RecycleIfDrained();
+	}
 	return Allocator::Get(data.manager.db).FreeData(pointer, size);
 }
 
@@ -813,7 +878,39 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
+	if (auto account = data.GetAccount()) {
+		account->Update(MemoryTag::ALLOCATOR, UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size));
+	}
 	return Allocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+}
+
+optional_ptr<Allocator> StandardBufferManager::AcquireBufferAllocator(shared_ptr<MemoryAccount> account) {
+	lock_guard<mutex> guard(account_allocator_lock);
+	for (auto &allocator : account_allocators) {
+		auto &data = allocator->GetPrivateData()->Cast<BufferAllocatorData>();
+		if (data.idle) {
+			data.account = std::move(account);
+			data.released = false;
+			data.idle = false;
+			return allocator.get();
+		}
+	}
+	account_allocators.push_back(make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree,
+	                                                  BufferAllocatorRealloc, make_uniq<BufferAllocatorData>(*this)));
+	auto &allocator = *account_allocators.back();
+	allocator.GetPrivateData()->Cast<BufferAllocatorData>().account = std::move(account);
+	return allocator;
+}
+
+void StandardBufferManager::ReleaseBufferAllocator(Allocator &allocator) {
+	auto &data = allocator.GetPrivateData()->Cast<BufferAllocatorData>();
+	data.released = true;
+	data.RecycleIfDrained();
+}
+
+idx_t StandardBufferManager::GetBufferAllocatorPoolSize() {
+	lock_guard<mutex> guard(account_allocator_lock);
+	return account_allocators.size();
 }
 
 Allocator &BufferAllocator::Get(ClientContext &context) {
