@@ -1,5 +1,20 @@
 {
 	"query": {
+		"memory_usage": {
+			"metric_type": "uint64",
+			"description": "Buffer-managed memory the query currently holds",
+			"unit": "bytes"
+		},
+		"peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory held by the query, including its operators",
+			"unit": "bytes"
+		},
+		"unattributed_peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory the query allocated outside any operator's buffer manager",
+			"unit": "bytes"
+		},
 		"sql": {
 			"metric_type": "string",
 			"description": "The SQL string of the query"

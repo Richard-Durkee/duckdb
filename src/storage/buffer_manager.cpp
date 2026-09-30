@@ -120,6 +120,25 @@ BufferHandle BufferManager::Allocate(QueryContext context, MemoryTag tag, BlockM
 	return Allocate(tag, block_manager, can_destroy);
 }
 
+shared_ptr<BlockHandle> BufferManager::AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
+                                                               bool can_destroy) {
+	return AllocateTemporaryMemory(tag, block_size, can_destroy);
+}
+
+shared_ptr<BlockHandle> BufferManager::AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
+                                                      bool can_destroy) {
+	return AllocateMemory(tag, block_manager, can_destroy);
+}
+
+shared_ptr<BlockHandle> BufferManager::RegisterTransientMemory(QueryContext context, const idx_t size,
+                                                               BlockManager &block_manager) {
+	return RegisterTransientMemory(size, block_manager);
+}
+
+shared_ptr<BlockHandle> BufferManager::RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size) {
+	return RegisterSmallMemory(tag, size);
+}
+
 vector<unique_ptr<AsyncTask>> BufferManager::CreatePrefetchTasks(QueryContext context,
                                                                  vector<shared_ptr<BlockHandle>> &handles) {
 	Prefetch(context, handles);
