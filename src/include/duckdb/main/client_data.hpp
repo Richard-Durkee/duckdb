@@ -24,6 +24,10 @@ class PreparedStatementData;
 class RandomEngine;
 class BufferManager;
 
+class MemoryTracker;
+//! A buffer manager for one operator: the client's, charging everything allocated through it to `tracker`
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<MemoryTracker> tracker);
+
 struct ClientData {
 public:
 	explicit ClientData(ClientContext &context);

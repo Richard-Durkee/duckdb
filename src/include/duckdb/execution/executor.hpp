@@ -21,6 +21,7 @@
 #include <condition_variable>
 
 namespace duckdb {
+class BufferManager;
 class ClientContext;
 class DataChunk;
 class PhysicalOperator;
@@ -50,6 +51,9 @@ public:
 
 public:
 	static Executor &Get(ClientContext &context);
+	//! The buffer manager `op`'s data structures should allocate through: while the query is profiled, one that
+	//! charges `op`'s memory tracker; otherwise the client's
+	BufferManager &GetOperatorBufferManager(const PhysicalOperator &op);
 
 	void Initialize(PhysicalOperator &physical_plan);
 	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
@@ -150,6 +154,10 @@ private:
 
 private:
 	optional_ptr<PhysicalOperator> physical_plan;
+	//! Operator buffer managers of this execution; declared first so they are destroyed last, and released in Reset
+	//! only after everything that allocated through them
+	mutex operator_buffer_managers_lock;
+	reference_map_t<const PhysicalOperator, unique_ptr<BufferManager>> operator_buffer_managers;
 	unique_ptr<PhysicalOperator> owned_plan;
 
 	mutex executor_lock;

@@ -309,4 +309,21 @@ RandomEngine &RandomEngine::Get(ClientContext &context) {
 	return *ClientData::Get(context).random_engine;
 }
 
+//! The buffer manager an operator's data structures allocate through: the client's, charging the operator's tracker
+class OperatorBufferManager : public ClientBufferManager {
+public:
+	OperatorBufferManager(ClientContext &context, BufferManager &buffer_manager, shared_ptr<MemoryTracker> tracker_p)
+	    : ClientBufferManager(context, buffer_manager), tracker(std::move(tracker_p)) {
+		SetMemoryTracker(tracker.get());
+	}
+
+private:
+	shared_ptr<MemoryTracker> tracker;
+};
+
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<MemoryTracker> tracker) {
+	return make_uniq<OperatorBufferManager>(context, DatabaseInstance::GetDatabase(context).GetBufferManager(),
+	                                        std::move(tracker));
+}
+
 } // namespace duckdb
