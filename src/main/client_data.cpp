@@ -15,6 +15,7 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
+#include "duckdb/storage/buffer/memory_account.hpp"
 
 namespace duckdb {
 
@@ -44,8 +45,34 @@ public:
 	}
 
 public:
+	//! Charge memory allocated from now on to `account` (nullptr: to no account)
+	~ClientBufferManager() override {
+		SetMemoryAccount(nullptr);
+	}
+
+	void SetMemoryAccount(optional_ptr<MemoryAccount> account) override {
+		lock_guard<mutex> guard(allocator_lock);
+		// keep the previous account alive until the next one is set, so a late allocation never sees a freed account
+		if (account) {
+			memory_account_ref = account->shared_from_this();
+		}
+		memory_account = account.get();
+		// allocations made before keep the allocator (and account) they were made with
+		auto previous = account_allocator.exchange(nullptr);
+		if (previous) {
+			buffer_manager.ReleaseBufferAllocator(*previous);
+		}
+		if (account) {
+			account_allocator = buffer_manager.AcquireBufferAllocator(account->shared_from_this()).get();
+		}
+	}
+
 	shared_ptr<BlockHandle> AllocateTemporaryMemory(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		auto result = buffer_manager.AllocateTemporaryMemory(tag, block_size, can_destroy);
+		return ClientBufferManager::AllocateTemporaryMemory(QueryContext(), tag, block_size, can_destroy);
+	}
+	shared_ptr<BlockHandle> AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
+	                                                bool can_destroy = true) override {
+		auto result = buffer_manager.AllocateTemporaryMemory(WithAccount(context), tag, block_size, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
 			TrackMemoryAllocation(result->GetMemory().GetMemoryUsage());
@@ -54,7 +81,11 @@ public:
 	}
 	shared_ptr<BlockHandle> AllocateMemory(MemoryTag tag, BlockManager *block_manager,
 	                                       bool can_destroy = true) override {
-		auto result = buffer_manager.AllocateMemory(tag, block_manager, can_destroy);
+		return ClientBufferManager::AllocateMemory(QueryContext(), tag, block_manager, can_destroy);
+	}
+	shared_ptr<BlockHandle> AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
+	                                       bool can_destroy = true) override {
+		auto result = buffer_manager.AllocateMemory(WithAccount(context), tag, block_manager, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result) {
 			TrackMemoryAllocation(result->GetMemory().GetMemoryUsage());
@@ -62,23 +93,14 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_size, can_destroy);
-		// Track allocation based on actual allocated size from the handle
-		if (result.GetBlockHandle()) {
-			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
-		}
-		return result;
+		return ClientBufferManager::Allocate(QueryContext(), tag, block_size, can_destroy);
 	}
 	BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_manager, can_destroy);
-		// Track allocation based on actual allocated size from the handle
-		if (result.GetBlockHandle()) {
-			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
-		}
-		return result;
+		return ClientBufferManager::Allocate(QueryContext(), tag, block_manager, can_destroy);
 	}
 	BufferHandle Allocate(QueryContext context, MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(context, tag, block_size, can_destroy);
+		auto result = buffer_manager.Allocate(WithAccount(context), tag, block_size, can_destroy);
+		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
 		}
@@ -86,7 +108,7 @@ public:
 	}
 	BufferHandle Allocate(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                      bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(context, tag, block_manager, can_destroy);
+		auto result = buffer_manager.Allocate(WithAccount(context), tag, block_manager, can_destroy);
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
 		}
@@ -133,23 +155,35 @@ public:
 	}
 
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) override {
-		auto result = buffer_manager.RegisterTransientMemory(size, block_manager);
+		return ClientBufferManager::RegisterTransientMemory(QueryContext(), size, block_manager);
+	}
+	shared_ptr<BlockHandle> RegisterTransientMemory(QueryContext context, const idx_t size,
+	                                                BlockManager &block_manager) override {
+		auto result = buffer_manager.RegisterTransientMemory(WithAccount(context), size, block_manager);
 		TrackMemoryAllocation(size);
 		return result;
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(const idx_t size) override {
-		auto result = buffer_manager.RegisterSmallMemory(size);
-		TrackMemoryAllocation(size);
-		return result;
+		return ClientBufferManager::RegisterSmallMemory(QueryContext(), MemoryTag::BASE_TABLE, size);
 	}
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) override {
-		auto result = buffer_manager.RegisterSmallMemory(tag, size);
+		return ClientBufferManager::RegisterSmallMemory(QueryContext(), tag, size);
+	}
+	shared_ptr<BlockHandle> RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size) override {
+		auto result = buffer_manager.RegisterSmallMemory(WithAccount(context), tag, size);
 		TrackMemoryAllocation(size);
 		return result;
 	}
 
 	Allocator &GetBufferAllocator() override {
-		return buffer_manager.GetBufferAllocator();
+		auto allocator = account_allocator.load(std::memory_order_acquire);
+		return allocator ? *allocator : buffer_manager.GetBufferAllocator();
+	}
+	optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) override {
+		return buffer_manager.AcquireBufferAllocator(std::move(account));
+	}
+	void ReleaseBufferAllocator(Allocator &allocator) override {
+		buffer_manager.ReleaseBufferAllocator(allocator);
 	}
 	void ReserveMemory(idx_t size) override {
 		return buffer_manager.ReserveMemory(size);
@@ -221,6 +255,18 @@ public:
 	}
 
 private:
+	//! The caller's context, charged to this client's account unless the caller already names one
+	QueryContext WithAccount(QueryContext caller) const {
+		if (caller.GetMemoryAccount()) {
+			return caller;
+		}
+		return QueryContext(caller.GetClientContext(), memory_account.load(std::memory_order_relaxed));
+	}
+	atomic<MemoryAccount *> memory_account {nullptr};
+	mutex allocator_lock;
+	shared_ptr<MemoryAccount> memory_account_ref;
+	atomic<Allocator *> account_allocator {nullptr};
+
 	void TrackMemoryAllocation(idx_t size) const {
 		if (size > 0) {
 			QueryProfiler::Get(context).TrackTotalMemoryAllocated(size);

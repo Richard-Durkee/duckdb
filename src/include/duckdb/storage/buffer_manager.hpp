@@ -15,6 +15,7 @@
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 
 namespace duckdb {
+class MemoryAccount;
 class BlockMemory;
 class Allocator;
 class AsyncTask;
@@ -61,6 +62,10 @@ public:
 	virtual BufferHandle Allocate(QueryContext context, MemoryTag tag, idx_t block_size, bool can_destroy = true);
 	virtual BufferHandle Allocate(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                              bool can_destroy = true);
+	virtual shared_ptr<BlockHandle> AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
+	                                                        bool can_destroy = true);
+	virtual shared_ptr<BlockHandle> AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
+	                                               bool can_destroy = true);
 	//! Pin a block handle.
 	virtual BufferHandle Pin(shared_ptr<BlockHandle> &handle) = 0;
 	virtual BufferHandle Pin(const QueryContext &context, shared_ptr<BlockHandle> &handle) = 0;
@@ -94,7 +99,20 @@ public:
 	virtual shared_ptr<BlockHandle> RegisterSmallMemory(const idx_t size);
 	//! Returns a newly registered block of memory that is smaller than the block size setting and has a memory tag.
 	virtual shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size);
+	//! Register variants that charge the memory to the context's account; the base implementations ignore the context
+	virtual shared_ptr<BlockHandle> RegisterTransientMemory(QueryContext context, const idx_t size,
+	                                                        BlockManager &block_manager);
+	virtual shared_ptr<BlockHandle> RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size);
 
+	//! Charge memory allocated through this buffer manager from now on to `account` (a no-op unless supported)
+	virtual void SetMemoryAccount(optional_ptr<MemoryAccount> account) {
+	}
+	//! A buffer allocator charging every allocation to `account`; release it when no longer handing it out
+	virtual optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) {
+		return nullptr;
+	}
+	virtual void ReleaseBufferAllocator(Allocator &allocator) {
+	}
 	//! Get the buffer allocator.
 	virtual DUCKDB_API Allocator &GetBufferAllocator();
 	//! Reserve memory.

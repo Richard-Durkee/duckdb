@@ -1,4 +1,6 @@
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/storage/buffer/memory_account.hpp"
 
 #include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/common/fstream.hpp"
@@ -126,6 +128,9 @@ void QueryProfiler::Start(const string &query) {
 }
 
 void QueryProfiler::Reset() {
+	BufferManager::GetBufferManager(context).SetMemoryAccount(nullptr);
+	query_memory_account = nullptr;
+	unattributed_memory_account = nullptr;
 	tree_map.clear();
 	root = nullptr;
 	metrics.reset();
@@ -232,6 +237,7 @@ void QueryProfiler::EndQuery() {
 	}
 
 	FinalizeMetricsInternal();
+	BufferManager::GetBufferManager(context).SetMemoryAccount(nullptr);
 	running = false;
 	bool emit_output = false;
 
@@ -268,7 +274,18 @@ void QueryProfiler::FinalizeMetrics() {
 }
 
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
-	return query_metrics.GetLiveMetrics();
+	auto result = query_metrics.GetLiveMetrics();
+	shared_ptr<MemoryAccount> query_account;
+	{
+		lock_guard<std::mutex> guard(lock);
+		query_account = query_memory_account;
+	}
+	// the memory accounts only exist while the query is profiled
+	if (query_account) {
+		result[MetricQueryMemoryUsage::Name] = Value::UBIGINT(query_account->GetMemoryUsage());
+		result[MetricQueryPeakMemory::Name] = Value::UBIGINT(query_account->GetPeakMemoryUsage());
+	}
+	return result;
 }
 
 void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
@@ -1080,6 +1097,9 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 	} else {
 		auto &client_config = ClientConfig::GetConfig(context);
 		metrics = make_uniq<GatheredMetrics>(client_config.tracked_metrics);
+		query_memory_account = make_shared_ptr<MemoryAccount>();
+		unattributed_memory_account = make_shared_ptr<MemoryAccount>(query_memory_account);
+		BufferManager::GetBufferManager(context).SetMemoryAccount(unattributed_memory_account.get());
 	}
 }
 
@@ -1150,6 +1170,11 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
+	}
+	if (query_memory_account) {
+		metrics->SetMetric<MetricQueryMemoryUsage>(query_memory_account->GetMemoryUsage());
+		metrics->SetMetric<MetricQueryPeakMemory>(query_memory_account->GetPeakMemoryUsage());
+		metrics->SetMetric<MetricQueryUnattributedPeakMemory>(unattributed_memory_account->GetPeakMemoryUsage());
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

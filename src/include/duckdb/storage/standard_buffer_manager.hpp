@@ -43,10 +43,13 @@ public:
 
 	//! Registers a transient memory buffer.
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) final;
+	shared_ptr<BlockHandle> RegisterTransientMemory(QueryContext context, const idx_t size,
+	                                                BlockManager &block_manager) final;
 	//! Registers an in-memory buffer that cannot be unloaded until it is destroyed.
 	//! This buffer can be small (smaller than the block size of the temporary block manager).
 	//! Unpin and Pin are NOPs on this block of memory.
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) final;
+	shared_ptr<BlockHandle> RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size) final;
 
 	idx_t GetUsedMemory() const final;
 	idx_t GetMaxMemory() const final;
@@ -63,6 +66,10 @@ public:
 	DUCKDB_API shared_ptr<BlockHandle> AllocateTemporaryMemory(MemoryTag tag, idx_t block_size,
 	                                                           bool can_destroy = true) final;
 	DUCKDB_API shared_ptr<BlockHandle> AllocateMemory(MemoryTag tag, BlockManager *block_manager,
+	                                                  bool can_destroy = true) final;
+	DUCKDB_API shared_ptr<BlockHandle> AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
+	                                                           bool can_destroy = true) final;
+	DUCKDB_API shared_ptr<BlockHandle> AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                                                  bool can_destroy = true) final;
 	DUCKDB_API BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) final;
 	DUCKDB_API BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) final;
@@ -99,6 +106,15 @@ public:
 	void SetTemporaryDirectory(const string &new_dir) final;
 
 	DUCKDB_API Allocator &GetBufferAllocator() final;
+	DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryAccount> account) final;
+	DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) final;
+	//! The number of account-bound buffer allocators ever created (they are reused)
+	DUCKDB_API idx_t GetAccountAllocatorCount();
+	//! Buffer allocators bound to a memory account; every allocation keeps a pointer to its allocator, so they are kept
+	//! for the database's lifetime and reused
+	mutex account_allocator_lock;
+	vector<unique_ptr<Allocator>> account_allocators;
+	vector<reference<Allocator>> free_account_allocators;
 
 	const DatabaseInstance &GetDatabase() const override {
 		return db;
