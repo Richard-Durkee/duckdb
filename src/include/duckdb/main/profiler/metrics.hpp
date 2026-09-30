@@ -53,7 +53,8 @@ struct MetricQueryTotalIntermediateRows {
 struct MetricQueryTotalIntermediateSizeBytes {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.total_intermediate_size_bytes";
-	static constexpr const char *Description = "Cumulative size in bytes of all intermediate results produced by the query";
+	static constexpr const char *Description =
+	    "Cumulative size in bytes of all intermediate results produced by the query";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -88,7 +89,8 @@ struct MetricQueryTotalTime {
 struct MetricQueryUnattributedPeakMemory {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "query.unattributed_peak_memory";
-	static constexpr const char *Description = "Peak buffer-managed memory the query allocated outside any operator's buffer manager";
+	static constexpr const char *Description =
+	    "Peak buffer-managed memory the query allocated outside any operator's buffer manager";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };
@@ -265,6 +267,14 @@ struct MetricOperatorIntermediateSizeBytes {
 	using METRIC_TYPE = uint64_t;
 	static constexpr const char *Name = "operator.intermediate_size_bytes";
 	static constexpr const char *Description = "Intermediate size in bytes produced by the operator";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricOperatorPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "operator.peak_memory";
+	static constexpr const char *Description =
+	    "Peak buffer-managed memory allocated through the operator's buffer manager";
 	static constexpr const char *Unit = "bytes";
 	static constexpr const char *TypeStr = "uint64";
 };

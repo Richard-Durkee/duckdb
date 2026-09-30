@@ -309,4 +309,21 @@ RandomEngine &RandomEngine::Get(ClientContext &context) {
 	return *ClientData::Get(context).random_engine;
 }
 
+//! The buffer manager an operator's data structures allocate through: the client's, charging the operator's account
+class OperatorBufferManager : public ClientBufferManager {
+public:
+	OperatorBufferManager(ClientContext &context, BufferManager &buffer_manager, shared_ptr<MemoryAccount> account_p)
+	    : ClientBufferManager(context, buffer_manager), account(std::move(account_p)) {
+		SetMemoryAccount(account.get());
+	}
+
+private:
+	shared_ptr<MemoryAccount> account;
+};
+
+unique_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, shared_ptr<MemoryAccount> account) {
+	return make_uniq<OperatorBufferManager>(context, DatabaseInstance::GetDatabase(context).GetBufferManager(),
+	                                        std::move(account));
+}
+
 } // namespace duckdb

@@ -129,6 +129,7 @@ void QueryProfiler::Start(const string &query) {
 
 void QueryProfiler::Reset() {
 	BufferManager::GetBufferManager(context).SetMemoryAccount(nullptr);
+	operator_memory_accounts.clear();
 	query_memory_account = nullptr;
 	unattributed_memory_account = nullptr;
 	tree_map.clear();
@@ -271,6 +272,20 @@ void QueryProfiler::EndQuery() {
 void QueryProfiler::FinalizeMetrics() {
 	lock_guard<std::mutex> guard(lock);
 	FinalizeMetricsInternal();
+}
+
+shared_ptr<MemoryAccount> QueryProfiler::GetOperatorMemoryAccount(const PhysicalOperator &op) {
+	lock_guard<std::mutex> guard(lock);
+	if (!query_memory_account) {
+		return nullptr;
+	}
+	auto entry = operator_memory_accounts.find(op);
+	if (entry != operator_memory_accounts.end()) {
+		return entry->second;
+	}
+	auto account = make_shared_ptr<MemoryAccount>(query_memory_account);
+	operator_memory_accounts.insert(make_pair(reference<const PhysicalOperator>(op), account));
+	return account;
 }
 
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
@@ -781,6 +796,9 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
 	}
+	if (info.MetricIsTracked<MetricOperatorPeakMemory>() && peak_memory > 0) {
+		result["peak_memory"] = Value::UBIGINT(peak_memory);
+	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
 	}
@@ -1170,6 +1188,13 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
+	}
+	for (auto &entry : operator_memory_accounts) {
+		auto node = tree_map.find(entry.first.get());
+		if (node != tree_map.end()) {
+			auto &node_metrics = node->second.get().GetOperatorMetrics();
+			node_metrics.peak_memory = MaxValue(node_metrics.peak_memory, entry.second->GetPeakMemoryUsage());
+		}
 	}
 	if (query_memory_account) {
 		metrics->SetMetric<MetricQueryMemoryUsage>(query_memory_account->GetMemoryUsage());
