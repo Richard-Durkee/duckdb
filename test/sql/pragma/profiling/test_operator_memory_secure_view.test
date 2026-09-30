@@ -1,0 +1,20 @@
+# name: test/sql/pragma/profiling/test_operator_memory_secure_view.test
+# description: Profiling a query whose tracked operators are inside a secure view
+# group: [profiling]
+
+statement ok
+CREATE TABLE hidden AS SELECT range AS i FROM range(100000);
+
+statement ok
+CREATE SECURE VIEW joined AS SELECT a.i FROM hidden a JOIN hidden b ON a.i = b.i;
+
+statement ok
+PRAGMA enable_profiling = 'no_output';
+
+query I
+SELECT count(*) FROM joined;
+----
+100000
+
+statement ok
+EXPLAIN ANALYZE SELECT count(*) FROM joined;

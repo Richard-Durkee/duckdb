@@ -338,6 +338,8 @@ public:
 
 	ClientContext &context;
 	const PhysicalOperator &op;
+	//! While the query is profiled, the buffer manager charging this operator's memory tracker
+	shared_ptr<BufferManager> operator_buffer_manager;
 	//! BufferManager
 	BufferManager &buffer_manager;
 	//! The join conditions

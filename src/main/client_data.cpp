@@ -310,4 +310,11 @@ RandomEngine &RandomEngine::Get(ClientContext &context) {
 	return *ClientData::Get(context).random_engine;
 }
 
+shared_ptr<BufferManager> CreateOperatorBufferManager(ClientContext &context, MemoryTracker &tracker) {
+	auto result =
+	    make_shared_ptr<ClientBufferManager>(context, DatabaseInstance::GetDatabase(context).GetBufferManager());
+	result->SetMemoryTracker(tracker);
+	return result;
+}
+
 } // namespace duckdb

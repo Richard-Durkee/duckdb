@@ -137,6 +137,11 @@
 		}
 	},
 	"operator": {
+		"peak_memory": {
+			"metric_type": "uint64",
+			"description": "Peak buffer-managed memory allocated through the operator's buffer manager",
+			"unit": "bytes"
+		},
 		"cpu_time": {
 			"metric_type": "double",
 			"description": "CPU time spent in the operator",

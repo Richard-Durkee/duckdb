@@ -105,6 +105,8 @@ public:
 	DUCKDB_API void FinalizeMetrics();
 	//! Snapshot the query-level metrics that are kept up to date while the query runs, keyed by metric name.
 	DUCKDB_API profiler_metrics_t GetLiveMetrics() const;
+	//! The tracker for memory allocated through `op`'s buffer manager; nullptr when the query is not profiled
+	DUCKDB_API shared_ptr<MemoryTracker> GetOperatorMemoryTracker(const PhysicalOperator &op);
 
 	//! Track bytes read (always tracked, even when profiling disabled).
 	DUCKDB_API void TrackBytesRead(idx_t amount);
@@ -205,6 +207,8 @@ private:
 	//! The memory the query holds, and the part of it allocated outside any operator's buffer manager
 	shared_ptr<MemoryTracker> query_memory_tracker;
 	shared_ptr<MemoryTracker> unattributed_memory_tracker;
+	//! The memory of each operator that allocates through its own buffer manager
+	reference_map_t<const PhysicalOperator, shared_ptr<MemoryTracker>> operator_memory_trackers;
 
 	//! The root of the query tree
 	unique_ptr<ProfilingNode> root;

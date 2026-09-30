@@ -129,6 +129,7 @@ void QueryProfiler::Start(const string &query) {
 
 void QueryProfiler::Reset() {
 	BufferManager::GetBufferManager(context).SetMemoryTracker(nullptr);
+	operator_memory_trackers.clear();
 	query_memory_tracker = nullptr;
 	unattributed_memory_tracker = nullptr;
 	tree_map.clear();
@@ -146,6 +147,7 @@ void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, b
 	query_metrics.bytes_read = 0;
 	query_metrics.bytes_written = 0;
 	query_metrics.total_memory_allocated = 0;
+	operator_memory_trackers.clear();
 	query_memory_tracker = nullptr;
 	unattributed_memory_tracker = nullptr;
 	if (is_explain_analyze_p) {
@@ -274,6 +276,20 @@ void QueryProfiler::EndQuery() {
 void QueryProfiler::FinalizeMetrics() {
 	lock_guard<std::mutex> guard(lock);
 	FinalizeMetricsInternal();
+}
+
+shared_ptr<MemoryTracker> QueryProfiler::GetOperatorMemoryTracker(const PhysicalOperator &op) {
+	lock_guard<std::mutex> guard(lock);
+	if (!query_memory_tracker) {
+		return nullptr;
+	}
+	auto entry = operator_memory_trackers.find(op);
+	if (entry != operator_memory_trackers.end()) {
+		return entry->second;
+	}
+	auto tracker = make_shared_ptr<MemoryTracker>(query_memory_tracker);
+	operator_memory_trackers.insert(make_pair(reference<const PhysicalOperator>(op), tracker));
+	return tracker;
 }
 
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
@@ -780,6 +796,9 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	    operator_type == PhysicalOperatorType::TABLE_SCAN) {
 		result["total_row_groups_to_scan"] = Value::UBIGINT(total_row_groups_to_scan);
 	}
+	if (info.MetricIsTracked<MetricOperatorPeakMemory>() && peak_memory > 0) {
+		result["peak_memory"] = Value::UBIGINT(peak_memory);
+	}
 	if (info.MetricIsTracked<MetricOperatorExtraInfo>()) {
 		result["extra_info"] = QueryProfiler::JSONSanitize(Value::MAP(extra_info));
 	}
@@ -1150,6 +1169,14 @@ void QueryProfiler::FinalizeMetricsInternal() {
 	}
 	if (query_metrics.latency_timer) {
 		query_metrics.latency_timer->EndTimer();
+	}
+	// while every operator's node still exists: collapsing secure views below destroys the nodes of their operators
+	for (auto &entry : operator_memory_trackers) {
+		auto node = tree_map.find(entry.first.get());
+		if (node != tree_map.end()) {
+			auto &node_metrics = node->second.get().GetOperatorMetrics();
+			node_metrics.peak_memory = MaxValue(node_metrics.peak_memory, entry.second->GetPeakMemoryUsage());
+		}
 	}
 	if (root) {
 		// collapse secure views first - the query-wide totals are sums over the operator tree, so leaving the

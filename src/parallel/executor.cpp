@@ -1,4 +1,6 @@
 #include "duckdb/execution/executor.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/time_point.hpp"
@@ -554,6 +556,27 @@ void Executor::Reset() {
 	events.clear();
 	to_be_rescheduled_tasks.clear();
 	execution_result = QueryResultState::NOT_READY;
+	lock_guard<mutex> guard(operator_buffer_managers_lock);
+	operator_buffer_managers.clear();
+}
+
+shared_ptr<BufferManager> Executor::GetOperatorBufferManager(const PhysicalOperator &op) {
+	// without profiling there are no memory trackers, and no lock is taken
+	if (!QueryProfiler::Get(context).IsEnabled()) {
+		return nullptr;
+	}
+	lock_guard<mutex> guard(operator_buffer_managers_lock);
+	auto entry = operator_buffer_managers.find(op);
+	if (entry != operator_buffer_managers.end()) {
+		return entry->second;
+	}
+	auto tracker = QueryProfiler::Get(context).GetOperatorMemoryTracker(op);
+	if (!tracker) {
+		return nullptr;
+	}
+	auto buffer_manager = CreateOperatorBufferManager(context, *tracker);
+	operator_buffer_managers.insert(make_pair(reference<const PhysicalOperator>(op), buffer_manager));
+	return buffer_manager;
 }
 
 shared_ptr<Pipeline> Executor::CreateChildPipeline(Pipeline &current, PhysicalOperator &op) {

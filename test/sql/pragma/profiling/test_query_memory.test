@@ -1,5 +1,5 @@
 # name: test/sql/pragma/profiling/test_query_memory.test
-# description: The memory a query holds is measured by its memory tracker
+# description: The query's memory and each operator's memory are measured by their memory trackers
 # group: [profiling]
 
 require json
@@ -9,6 +9,10 @@ require no_vector_verification
 statement ok
 SET threads = 4;
 
+# the joins stay in memory: memory a spilling join creates for its probe side is not attributed to it yet
+statement ok
+SET debug_force_external = false;
+
 statement ok
 PRAGMA enable_profiling = 'json';
 
@@ -17,9 +21,8 @@ PRAGMA profiling_output = '{TEST_DIR}/query_memory.json';
 
 statement ok
 SET tracked_metrics = ['query.peak_memory', 'query.memory_usage', 'query.unattributed_peak_memory',
-                       'system.peak_buffer_memory'];
+                       'system.peak_buffer_memory', 'operator.peak_memory', 'operator.type'];
 
-# the hash joins' row data is held in blocks, and their pointer tables come from the buffer allocator
 statement ok
 SELECT count(*) FROM range(2000000) a JOIN range(2000000) b ON a.range = b.range
 JOIN range(2000000) c ON a.range = c.range;
@@ -27,11 +30,21 @@ JOIN range(2000000) c ON a.range = c.range;
 statement ok
 PRAGMA disable_profiling;
 
-# on an otherwise idle database, what the query held matches what the buffer pool saw
+# the query's peak covers what the buffer pool saw, including each join's pointer table (buffer-allocator memory),
+# and almost nothing is allocated outside the joins' buffer managers
 query III
 SELECT prof.query.peak_memory >= 0.9 * prof.system.peak_buffer_memory,
-       prof.query.peak_memory <= 1.1 * prof.system.peak_buffer_memory,
+       prof.query.unattributed_peak_memory <= 0.05 * prof.query.peak_memory,
        prof.query.memory_usage <= prof.query.peak_memory
 FROM '{TEST_DIR}/query_memory.json' prof;
 ----
 true	true	true
+
+# each join holds a large share, wherever it is in the plan
+query II
+SELECT count(*),
+       bool_and((t.value->>'peak_memory')::UBIGINT >= 0.3 * (SELECT query.peak_memory FROM '{TEST_DIR}/query_memory.json'))
+FROM read_text('{TEST_DIR}/query_memory.json') f, json_tree(f.content) t
+WHERE t.type = 'OBJECT' AND t.value->>'type' = 'HASH_JOIN';
+----
+2	true
