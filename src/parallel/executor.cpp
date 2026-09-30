@@ -605,6 +605,13 @@ vector<LogicalType> Executor::GetTypes() {
 }
 
 void Executor::PushError(ErrorData exception) {
+	// say where the memory went while it is still held; the message is rebuilt, so only without extra info to lose
+	if (exception.Type() == ExceptionType::OUT_OF_MEMORY && exception.ExtraInfo().empty()) {
+		auto summary = QueryProfiler::Get(context).GetMemoryUsageSummary();
+		if (!summary.empty()) {
+			exception = ErrorData(ExceptionType::OUT_OF_MEMORY, exception.RawMessage() + "\n\n" + summary);
+		}
+	}
 	// push the exception onto the stack
 	error_manager.PushError(std::move(exception));
 	// interrupt execution of any other pipelines that belong to this executor

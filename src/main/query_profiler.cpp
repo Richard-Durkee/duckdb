@@ -292,6 +292,47 @@ shared_ptr<MemoryTracker> QueryProfiler::GetOperatorMemoryTracker(const Physical
 	return tracker;
 }
 
+static bool ContainsSecureView(const ProfilingNode &node) {
+	if (node.GetOperatorMetrics().operator_type == PhysicalOperatorType::SECURE_VIEW) {
+		return true;
+	}
+	for (auto &child : node.children) {
+		if (ContainsSecureView(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+string QueryProfiler::GetMemoryUsageSummary() const {
+	lock_guard<std::mutex> guard(lock);
+	if (!query_memory_tracker) {
+		return string();
+	}
+	auto summary = "This query held " + StringUtil::BytesToHumanReadableString(query_memory_tracker->GetMemoryUsage());
+	// as in EXPLAIN ANALYZE, the operators of a secure view are not shown
+	if (root && ContainsSecureView(*root)) {
+		return summary;
+	}
+	vector<pair<idx_t, string>> operators;
+	for (auto &entry : operator_memory_trackers) {
+		auto usage = entry.second->GetMemoryUsage();
+		if (usage > 0) {
+			operators.emplace_back(usage, entry.first.get().GetName());
+		}
+	}
+	std::sort(operators.begin(), operators.end(), std::greater<pair<idx_t, string>>());
+	vector<string> parts;
+	for (auto &entry : operators) {
+		parts.push_back(entry.second + " " + StringUtil::BytesToHumanReadableString(entry.first));
+	}
+	auto unattributed = unattributed_memory_tracker->GetMemoryUsage();
+	if (unattributed > 0) {
+		parts.push_back("unattributed " + StringUtil::BytesToHumanReadableString(unattributed));
+	}
+	return parts.empty() ? summary : summary + ": " + StringUtil::Join(parts, ", ");
+}
+
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
 	auto result = query_metrics.GetLiveMetrics();
 	shared_ptr<MemoryTracker> query_tracker;

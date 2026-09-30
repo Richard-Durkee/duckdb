@@ -1,0 +1,28 @@
+# name: test/sql/pragma/profiling/test_oom_memory_summary_secure_view.test
+# description: An out-of-memory error does not name the operators inside a secure view
+# group: [profiling]
+
+statement ok
+SET memory_limit = '300MB';
+
+statement ok
+SET temp_directory = '';
+
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE SECURE VIEW joined AS SELECT a.i FROM range(20000000) a(i) JOIN range(20000000) b(i) USING (i);
+
+statement ok
+PRAGMA enable_profiling = 'no_output';
+
+statement error
+SELECT count(*) FROM joined;
+----
+<REGEX>:Out of Memory Error.*This query held [0-9.]+ MiB.*
+
+statement error
+SELECT count(*) FROM joined;
+----
+<!REGEX>:.*HASH_JOIN.*

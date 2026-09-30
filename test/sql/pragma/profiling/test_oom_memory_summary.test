@@ -1,0 +1,25 @@
+# name: test/sql/pragma/profiling/test_oom_memory_summary.test
+# description: An out-of-memory error of a profiled query says which operators held the memory
+# group: [profiling]
+
+statement ok
+SET memory_limit = '300MB';
+
+statement ok
+SET temp_directory = '';
+
+statement ok
+SET threads = 4;
+
+statement error
+SELECT count(*) FROM range(20000000) a(i) JOIN range(20000000) b(i) USING (i);
+----
+<!REGEX>:.*This query held.*
+
+statement ok
+PRAGMA enable_profiling = 'no_output';
+
+statement error
+SELECT count(*) FROM range(20000000) a(i) JOIN range(20000000) b(i) USING (i);
+----
+<REGEX>:Out of Memory Error.*This query held [0-9.]+ MiB: HASH_JOIN [0-9.]+ MiB.*

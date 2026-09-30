@@ -42,6 +42,7 @@
         "test/sql/catalog/view/secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
         "test/sql/pragma/profiling/test_operator_memory_secure_view.test",
+        "test/sql/pragma/profiling/test_oom_memory_summary_secure_view.test",
         "test/sql/optimizer/secure_view_pushdown.test",
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/sql_export/secure_view_sql_export.test",
