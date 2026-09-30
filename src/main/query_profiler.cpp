@@ -1,4 +1,6 @@
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/storage/buffer/memory_tracker.hpp"
 
 #include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/common/fstream.hpp"
@@ -126,6 +128,9 @@ void QueryProfiler::Start(const string &query) {
 }
 
 void QueryProfiler::Reset() {
+	BufferManager::GetBufferManager(context).SetMemoryTracker(nullptr);
+	query_memory_tracker = nullptr;
+	unattributed_memory_tracker = nullptr;
 	tree_map.clear();
 	root = nullptr;
 	metrics.reset();
@@ -141,6 +146,8 @@ void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, b
 	query_metrics.bytes_read = 0;
 	query_metrics.bytes_written = 0;
 	query_metrics.total_memory_allocated = 0;
+	query_memory_tracker = nullptr;
+	unattributed_memory_tracker = nullptr;
 	if (is_explain_analyze_p) {
 		StartExplainAnalyze();
 	}
@@ -233,6 +240,7 @@ void QueryProfiler::EndQuery() {
 	}
 
 	FinalizeMetricsInternal();
+	BufferManager::GetBufferManager(context).SetMemoryTracker(nullptr);
 	running = false;
 	bool emit_output = false;
 
@@ -269,7 +277,18 @@ void QueryProfiler::FinalizeMetrics() {
 }
 
 profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
-	return query_metrics.GetLiveMetrics();
+	auto result = query_metrics.GetLiveMetrics();
+	shared_ptr<MemoryTracker> query_tracker;
+	{
+		lock_guard<std::mutex> guard(lock);
+		query_tracker = query_memory_tracker;
+	}
+	// the memory trackers only exist while the query is profiled
+	if (query_tracker) {
+		result[MetricQueryMemoryUsage::Name] = Value::UBIGINT(query_tracker->GetMemoryUsage());
+		result[MetricQueryPeakMemory::Name] = Value::UBIGINT(query_tracker->GetPeakMemoryUsage());
+	}
+	return result;
 }
 
 void QueryProfiler::TrackBytesRead(const idx_t amount) {
@@ -1072,6 +1091,9 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 	} else {
 		auto &client_config = ClientConfig::GetConfig(context);
 		metrics = make_uniq<GatheredMetrics>(client_config.tracked_metrics);
+		query_memory_tracker = make_shared_ptr<MemoryTracker>();
+		unattributed_memory_tracker = make_shared_ptr<MemoryTracker>(query_memory_tracker);
+		BufferManager::GetBufferManager(context).SetMemoryTracker(unattributed_memory_tracker.get());
 	}
 }
 
@@ -1142,6 +1164,11 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
+	}
+	if (query_memory_tracker) {
+		metrics->SetMetric<MetricQueryMemoryUsage>(query_memory_tracker->GetMemoryUsage());
+		metrics->SetMetric<MetricQueryPeakMemory>(query_memory_tracker->GetPeakMemoryUsage());
+		metrics->SetMetric<MetricQueryUnattributedPeakMemory>(unattributed_memory_tracker->GetPeakMemoryUsage());
 	}
 	query_metrics.FinalizeMetrics(*metrics);
 	metrics_finalized = true;

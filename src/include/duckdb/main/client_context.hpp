@@ -224,7 +224,8 @@ public:
 	//! Gets current percentage of the query's progress, returns 0 in case the progress bar is disabled.
 	DUCKDB_API QueryProgress GetQueryProgress();
 	//! Snapshot the query-level metrics of the running query, keyed by metric name (e.g. "io.total_bytes_read").
-	//! Safe to call from another thread while the query runs, and regardless of whether profiling is enabled.
+	//! Safe to call from another thread while the query runs. The memory metrics only exist while the query is
+	//! profiled; the others are kept regardless of whether profiling is enabled.
 	DUCKDB_API profiler_metrics_t GetLiveQueryMetrics();
 
 	//! Register function in the temporary schema

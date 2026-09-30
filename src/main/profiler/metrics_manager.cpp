@@ -27,6 +27,8 @@ struct MetricDescriptor {
 
 static const MetricDescriptor internal_metrics[] = {
 	DUCKDB_METRIC(MetricQueryCPUTime),
+	DUCKDB_METRIC(MetricQueryMemoryUsage),
+	DUCKDB_METRIC(MetricQueryPeakMemory),
 	DUCKDB_METRIC(MetricQuerySQL),
 	DUCKDB_METRIC(MetricQueryTotalIntermediateRows),
 	DUCKDB_METRIC(MetricQueryTotalIntermediateSizeBytes),
@@ -34,6 +36,7 @@ static const MetricDescriptor internal_metrics[] = {
 	DUCKDB_METRIC(MetricQueryTotalRowGroupsToScan),
 	DUCKDB_METRIC(MetricQueryTotalRowsScanned),
 	DUCKDB_METRIC(MetricQueryTotalTime),
+	DUCKDB_METRIC(MetricQueryUnattributedPeakMemory),
 	DUCKDB_METRIC(MetricSystemBlockedThreadTime),
 	DUCKDB_METRIC(MetricSystemPeakBufferMemory),
 	DUCKDB_METRIC(MetricSystemPeakStreamingBufferSize),

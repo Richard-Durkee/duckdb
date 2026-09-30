@@ -22,6 +22,20 @@ struct MetricQueryCPUTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricQueryMemoryUsage {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.memory_usage";
+	static constexpr const char *Description = "Buffer-managed memory the query currently holds";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
+struct MetricQueryPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.peak_memory";
+	static constexpr const char *Description = "Peak buffer-managed memory held by the query, including its operators";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
+};
 struct MetricQuerySQL {
 	using METRIC_TYPE = string;
 	static constexpr const char *Name = "query.sql";
@@ -70,6 +84,13 @@ struct MetricQueryTotalTime {
 	static constexpr const char *Description = "Time spent executing the entire query";
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
+};
+struct MetricQueryUnattributedPeakMemory {
+	using METRIC_TYPE = uint64_t;
+	static constexpr const char *Name = "query.unattributed_peak_memory";
+	static constexpr const char *Description = "Peak buffer-managed memory the query allocated outside any operator's buffer manager";
+	static constexpr const char *Unit = "bytes";
+	static constexpr const char *TypeStr = "uint64";
 };
 
 // System metrics

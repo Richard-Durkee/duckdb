@@ -43,10 +43,13 @@ public:
 
 	//! Registers a transient memory buffer.
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) final;
+	shared_ptr<BlockHandle> RegisterTransientMemory(QueryContext context, const idx_t size,
+	                                                BlockManager &block_manager) final;
 	//! Registers an in-memory buffer that cannot be unloaded until it is destroyed.
 	//! This buffer can be small (smaller than the block size of the temporary block manager).
 	//! Unpin and Pin are NOPs on this block of memory.
 	shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size) final;
+	shared_ptr<BlockHandle> RegisterSmallMemory(QueryContext context, MemoryTag tag, const idx_t size) final;
 
 	idx_t GetUsedMemory() const final;
 	idx_t GetMaxMemory() const final;
@@ -63,6 +66,10 @@ public:
 	DUCKDB_API shared_ptr<BlockHandle> AllocateTemporaryMemory(MemoryTag tag, idx_t block_size,
 	                                                           bool can_destroy = true) final;
 	DUCKDB_API shared_ptr<BlockHandle> AllocateMemory(MemoryTag tag, BlockManager *block_manager,
+	                                                  bool can_destroy = true) final;
+	DUCKDB_API shared_ptr<BlockHandle> AllocateTemporaryMemory(QueryContext context, MemoryTag tag, idx_t block_size,
+	                                                           bool can_destroy = true) final;
+	DUCKDB_API shared_ptr<BlockHandle> AllocateMemory(QueryContext context, MemoryTag tag, BlockManager *block_manager,
 	                                                  bool can_destroy = true) final;
 	DUCKDB_API BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) final;
 	DUCKDB_API BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) final;
@@ -99,6 +106,10 @@ public:
 	void SetTemporaryDirectory(const string &new_dir) final;
 
 	DUCKDB_API Allocator &GetBufferAllocator() final;
+	DUCKDB_API optional_ptr<Allocator> AcquireBufferAllocator(shared_ptr<MemoryTracker> tracker) final;
+	DUCKDB_API void ReleaseBufferAllocator(Allocator &allocator) final;
+	//! The number of tracker-bound buffer allocators ever created (they are reused once drained)
+	DUCKDB_API idx_t GetTrackerAllocatorCount();
 
 	const DatabaseInstance &GetDatabase() const override {
 		return db;
@@ -212,6 +223,11 @@ protected:
 	unique_ptr<BlockManager> temp_block_manager;
 	//! Temporary evicted memory data per tag
 	atomic<CheckedInteger<idx_t, InternalException>> evicted_data_per_tag[MEMORY_TAG_COUNT];
+	//! Buffer allocators bound to a memory tracker, kept for the database's lifetime; a released allocator is reused
+	//! once everything it allocated is freed
+	mutex tracker_allocator_lock;
+	vector<unique_ptr<Allocator>> tracker_allocators;
+	vector<reference<Allocator>> released_tracker_allocators;
 };
 
 } // namespace duckdb

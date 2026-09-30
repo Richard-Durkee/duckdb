@@ -29,6 +29,7 @@
 #include "duckdb/main/profiler/profiling_utils.hpp"
 
 namespace duckdb {
+class MemoryTracker;
 
 class BaseTreeRenderer;
 class ClientContext;
@@ -201,6 +202,9 @@ private:
 
 	//! Whether or not the query requires profiling
 	bool query_requires_profiling;
+	//! The memory the query holds, and the part of it allocated outside any operator's buffer manager
+	shared_ptr<MemoryTracker> query_memory_tracker;
+	shared_ptr<MemoryTracker> unattributed_memory_tracker;
 
 	//! The root of the query tree
 	unique_ptr<ProfilingNode> root;

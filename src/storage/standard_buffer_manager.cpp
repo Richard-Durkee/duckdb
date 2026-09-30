@@ -5,6 +5,8 @@
 #include "duckdb/common/enums/storage_block_prefetch.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/set.hpp"
+#include "duckdb/storage/buffer/memory_tracker.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
@@ -36,10 +38,37 @@ static void WriteGarbageIntoBuffer(BlockHandle &block) {
 #endif
 
 struct BufferAllocatorData : PrivateAllocatorData {
-	explicit BufferAllocatorData(StandardBufferManager &manager) : manager(manager) {
+	explicit BufferAllocatorData(StandardBufferManager &manager, bool tracker_bound = false)
+	    : manager(manager), tracker_bound(tracker_bound) {
 	}
 
 	StandardBufferManager &manager;
+	//! Tracker-bound allocators charge every allocation to `tracker`, and are only rebound to another tracker once
+	//! everything they allocated is freed, so a free always releases the tracker its allocation was charged to
+	const bool tracker_bound;
+	atomic<MemoryTracker *> tracker {nullptr};
+	//! Owns `tracker`; the previous one is kept for one more binding, for an allocation that races a rebind
+	shared_ptr<MemoryTracker> tracker_ref;
+	shared_ptr<MemoryTracker> previous_tracker_ref;
+
+	//! Bytes allocated and not freed yet, spread over per-CPU slots so allocating threads rarely share a cache line
+	static constexpr idx_t SLOT_COUNT = 64;
+	struct alignas(64) OutstandingSlot {
+		atomic<int64_t> bytes {0};
+	};
+	OutstandingSlot outstanding[SLOT_COUNT];
+
+	void AddOutstanding(int64_t delta) {
+		outstanding[TaskScheduler::GetEstimatedCPUId() % SLOT_COUNT].bytes.fetch_add(delta, std::memory_order_relaxed);
+	}
+	//! Only frees reach a released allocator, which only lower the slots: a sum of zero means everything was freed
+	bool IsDrained() const {
+		int64_t total = 0;
+		for (auto &slot : outstanding) {
+			total += slot.bytes.load(std::memory_order_relaxed);
+		}
+		return total == 0;
+	}
 };
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
@@ -134,26 +163,39 @@ TempBufferPoolReservation StandardBufferManager::EvictBlocksOrThrow(QueryContext
 		extra_text += InMemoryWarning();
 		throw OutOfMemoryException(args..., extra_text);
 	}
+	if (context.GetMemoryTracker()) {
+		r.reservation.SetTracker(context.GetMemoryTracker()->shared_from_this());
+	}
 	return std::move(r.reservation);
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::RegisterTransientMemory(const idx_t size, BlockManager &block_manager) {
+	return RegisterTransientMemory(QueryContext(), size, block_manager);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::RegisterTransientMemory(QueryContext context, const idx_t size,
+                                                                       BlockManager &block_manager) {
 	D_ASSERT(size <= block_manager.GetBlockSize());
 
 	// This comparison is the reason behind passing block_size through transient memory creation.
 	// Otherwise, any non-default block size would register as small memory, causing problems when
 	// trying to convert that memory to consistent blocks later on.
 	if (size < block_manager.GetBlockSize()) {
-		return RegisterSmallMemory(MemoryTag::IN_MEMORY_TABLE, size);
+		return RegisterSmallMemory(context, MemoryTag::IN_MEMORY_TABLE, size);
 	}
 
-	auto buffer_handle = Allocate(MemoryTag::IN_MEMORY_TABLE, &block_manager, false);
+	auto buffer_handle = Allocate(context, MemoryTag::IN_MEMORY_TABLE, &block_manager, false);
 	return buffer_handle.GetBlockHandle();
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::RegisterSmallMemory(MemoryTag tag, const idx_t size) {
+	return RegisterSmallMemory(QueryContext(), tag, size);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::RegisterSmallMemory(QueryContext context, MemoryTag tag,
+                                                                   const idx_t size) {
 	D_ASSERT(size < GetBlockSize());
-	auto reservation = EvictBlocksOrThrow(QueryContext(), tag, size, nullptr, "could not allocate block of size %s%s",
+	auto reservation = EvictBlocksOrThrow(context, tag, size, nullptr, "could not allocate block of size %s%s",
 	                                      StringUtil::BytesToHumanReadableString(size));
 
 	auto buffer = ConstructManagedBuffer(size, DEFAULT_BLOCK_HEADER_STORAGE_SIZE, nullptr, FileBufferType::TINY_BUFFER);
@@ -188,12 +230,23 @@ shared_ptr<BlockHandle> StandardBufferManager::RegisterMemory(MemoryTag tag, idx
 
 shared_ptr<BlockHandle> StandardBufferManager::AllocateTemporaryMemory(MemoryTag tag, idx_t block_size,
                                                                        bool can_destroy) {
-	return RegisterMemory(tag, block_size, Storage::DEFAULT_BLOCK_HEADER_SIZE, can_destroy);
+	return AllocateTemporaryMemory(QueryContext(), tag, block_size, can_destroy);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::AllocateTemporaryMemory(QueryContext context, MemoryTag tag,
+                                                                       idx_t block_size, bool can_destroy) {
+	return RegisterMemory(tag, block_size, Storage::DEFAULT_BLOCK_HEADER_SIZE, can_destroy, context);
 }
 
 shared_ptr<BlockHandle> StandardBufferManager::AllocateMemory(MemoryTag tag, BlockManager *block_manager,
                                                               bool can_destroy) {
-	return RegisterMemory(tag, block_manager->GetBlockSize(), block_manager->GetBlockHeaderSize(), can_destroy);
+	return AllocateMemory(QueryContext(), tag, block_manager, can_destroy);
+}
+
+shared_ptr<BlockHandle> StandardBufferManager::AllocateMemory(QueryContext context, MemoryTag tag,
+                                                              BlockManager *block_manager, bool can_destroy) {
+	return RegisterMemory(tag, block_manager->GetBlockSize(), block_manager->GetBlockHeaderSize(), can_destroy,
+	                      context);
 }
 
 BufferHandle StandardBufferManager::Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy) {
@@ -406,7 +459,10 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 			return buf; // Buffer was destroyed (e.g., due to DestroyBufferUpon::Eviction)
 		}
 		auto &memory_charge = block_memory.GetMemoryCharge(lock);
+		// the block stays charged to the tracker it was created for, not to whoever reloads it
+		auto tracker = std::move(memory_charge.tracker);
 		memory_charge = std::move(reservation);
+		memory_charge.SetTracker(std::move(tracker));
 		// in the case of a variable sized block, the buffer may be smaller than a full block.
 		int64_t delta = NumericCast<int64_t>(block_memory.GetBuffer(lock)->AllocSize()) -
 		                NumericCast<int64_t>(block_memory.GetMemoryUsage());
@@ -794,7 +850,13 @@ data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *
 	                                                   StringUtil::BytesToHumanReadableString(size));
 	// We rely on manual tracking of this one. :(
 	reservation.size = 0;
-	return BlockAllocator::Get(data.manager.db).AllocateData(size);
+	auto result = BlockAllocator::Get(data.manager.db).AllocateData(size);
+	if (data.tracker_bound) {
+		// counted as outstanding before the tracker is charged, so the allocator cannot be rebound in between
+		data.AddOutstanding(UnsafeNumericCast<int64_t>(size));
+		data.tracker.load(std::memory_order_acquire)->Update(UnsafeNumericCast<int64_t>(size));
+	}
+	return result;
 }
 
 void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
@@ -802,7 +864,11 @@ void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_da
 	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
 	r.size = size;
 	r.Resize(0);
-	return BlockAllocator::Get(data.manager.db).FreeData(pointer, size);
+	if (data.tracker_bound) {
+		data.tracker.load(std::memory_order_acquire)->Update(-UnsafeNumericCast<int64_t>(size));
+		data.AddOutstanding(-UnsafeNumericCast<int64_t>(size));
+	}
+	BlockAllocator::Get(data.manager.db).FreeData(pointer, size);
 }
 
 data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *private_data, data_ptr_t pointer,
@@ -815,7 +881,49 @@ data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *p
 	r.size = old_size;
 	r.Resize(size);
 	r.size = 0;
-	return BlockAllocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	auto result = BlockAllocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	if (data.tracker_bound) {
+		auto delta = UnsafeNumericCast<int64_t>(size) - UnsafeNumericCast<int64_t>(old_size);
+		data.tracker.load(std::memory_order_acquire)->Update(delta);
+		data.AddOutstanding(delta);
+	}
+	return result;
+}
+
+optional_ptr<Allocator> StandardBufferManager::AcquireBufferAllocator(shared_ptr<MemoryTracker> tracker) {
+	D_ASSERT(tracker);
+	lock_guard<mutex> guard(tracker_allocator_lock);
+	optional_ptr<Allocator> allocator;
+	for (idx_t i = 0; i < released_tracker_allocators.size(); i++) {
+		auto &candidate = released_tracker_allocators[i].get();
+		if (candidate.GetPrivateData()->Cast<BufferAllocatorData>().IsDrained()) {
+			allocator = candidate;
+			released_tracker_allocators.erase_at(i);
+			break;
+		}
+	}
+	if (!allocator) {
+		tracker_allocators.push_back(make_uniq<Allocator>(BufferAllocatorAllocate, BufferAllocatorFree,
+		                                                  BufferAllocatorRealloc,
+		                                                  make_uniq<BufferAllocatorData>(*this, true)));
+		allocator = *tracker_allocators.back();
+	}
+	auto &data = allocator->GetPrivateData()->Cast<BufferAllocatorData>();
+	data.tracker.store(tracker.get(), std::memory_order_release);
+	data.previous_tracker_ref = std::move(data.tracker_ref);
+	data.tracker_ref = std::move(tracker);
+	return allocator;
+}
+
+void StandardBufferManager::ReleaseBufferAllocator(Allocator &allocator) {
+	// the allocator keeps charging its tracker for what is still outstanding; it is rebound once that is freed
+	lock_guard<mutex> guard(tracker_allocator_lock);
+	released_tracker_allocators.push_back(allocator);
+}
+
+idx_t StandardBufferManager::GetTrackerAllocatorCount() {
+	lock_guard<mutex> guard(tracker_allocator_lock);
+	return tracker_allocators.size();
 }
 
 Allocator &BufferAllocator::Get(ClientContext &context) {
