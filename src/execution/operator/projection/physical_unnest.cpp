@@ -1,6 +1,7 @@
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/execution/operator/projection/physical_unnest.hpp"
 
 #include "duckdb/common/uhugeint.hpp"
@@ -33,8 +34,7 @@ public:
 		auto &allocator = Allocator::Get(context);
 		list_data.Initialize(allocator, list_data_types);
 
-		list_vector_data.resize(list_data.ColumnCount());
-		list_child_data.resize(list_data.ColumnCount());
+		list_entries.resize(list_data.ColumnCount());
 	}
 
 	idx_t current_row;
@@ -48,8 +48,7 @@ public:
 
 	ExpressionExecutor executor;
 	DataChunk list_data;
-	vector<UnifiedVectorFormat> list_vector_data;
-	vector<UnifiedVectorFormat> list_child_data;
+	vector<unique_ptr<VectorIterator<list_entry_t>>> list_entries;
 
 public:
 	//! Reset the fields of the unnest operator state
@@ -82,24 +81,16 @@ void UnnestOperatorState::PrepareInput(DataChunk &input, const vector<unique_ptr
 	list_data.Verify(executor.GetContextPtr());
 	D_ASSERT(input.size() == list_data.size());
 	D_ASSERT(list_data.ColumnCount() == select_list.size());
-	D_ASSERT(list_vector_data.size() == list_data.ColumnCount());
-	D_ASSERT(list_child_data.size() == list_data.ColumnCount());
+	D_ASSERT(list_entries.size() == list_data.ColumnCount());
 
-	// get the UnifiedVectorFormat of each list_data vector (LIST vectors for the different UNNESTs)
-	// both for the vector itself and its child vector
 	for (idx_t col_idx = 0; col_idx < list_data.ColumnCount(); col_idx++) {
 		const auto &list_vector = list_data.data[col_idx];
-		list_vector.ToUnifiedFormat(list_vector_data[col_idx]);
-
 		if (list_vector.GetType() == LogicalType::SQLNULL) {
-			// UNNEST(NULL): SQLNULL vectors don't have child vectors, but we need to point to the child vector of
-			// each vector, so we just get the UnifiedVectorFormat of the vector itself
-			const auto &child_vector = list_vector;
-			child_vector.ToUnifiedFormat(list_child_data[col_idx]);
-		} else {
-			const auto &child_vector = ListVector::GetChild(list_vector);
-			child_vector.ToUnifiedFormat(list_child_data[col_idx]);
+			// UNNEST(NULL): not a LIST vector, every row unnests to nothing
+			list_entries[col_idx].reset();
+			continue;
 		}
+		list_entries[col_idx] = make_uniq<VectorIterator<list_entry_t>>(list_vector);
 	}
 	// get the unnest lengths
 	if (list_data.size() > unnest_lengths.size()) {
@@ -108,19 +99,17 @@ void UnnestOperatorState::PrepareInput(DataChunk &input, const vector<unique_ptr
 	for (idx_t r = 0; r < list_data.size(); r++) {
 		unnest_lengths[r] = 0;
 	}
-	for (idx_t col_idx = 0; col_idx < list_data.ColumnCount(); col_idx++) {
-		auto &vector_data = list_vector_data[col_idx];
-		for (idx_t r = 0; r < list_data.size(); r++) {
-			auto current_idx = vector_data.sel->get_index(r);
-			if (!vector_data.validity.RowIsValid(current_idx)) {
+	for (auto &entries : list_entries) {
+		if (!entries) {
+			continue;
+		}
+		for (auto entry : *entries) {
+			if (!entry.IsValid()) {
 				continue;
 			}
 			// check if this list is longer than the current unnest length
-			auto list_data_entries = UnifiedVectorFormat::GetData<list_entry_t>(vector_data);
-			auto list_entry = list_data_entries[current_idx];
-			if (list_entry.length > unnest_lengths[r]) {
-				unnest_lengths[r] = list_entry.length;
-			}
+			auto &length = unnest_lengths[entry.GetIndex()];
+			length = MaxValue<idx_t>(length, entry.GetValue().length);
 		}
 	}
 
@@ -177,15 +166,15 @@ OperatorResultType PhysicalUnnest::ExecuteInternal(ExecutionContext &context, Da
 					}
 				}
 				for (idx_t col_idx = 0; col_idx < state.list_data.ColumnCount(); col_idx++) {
-					auto &vector_data = state.list_vector_data[col_idx];
-					auto current_idx = vector_data.sel->get_index(state.current_row);
+					auto &entries = state.list_entries[col_idx];
 					idx_t list_length = 0;
 					idx_t list_offset = 0;
-					if (vector_data.validity.RowIsValid(current_idx)) {
-						auto list_data = UnifiedVectorFormat::GetData<list_entry_t>(vector_data);
-						auto list_entry = list_data[current_idx];
-						list_length = list_entry.length;
-						list_offset = list_entry.offset;
+					if (entries) {
+						auto entry = (*entries)[state.current_row];
+						if (entry.IsValid()) {
+							list_length = entry.GetValue().length;
+							list_offset = entry.GetValue().offset;
+						}
 					}
 					// unnest any entries we can
 					idx_t unnest_length = MinValue<idx_t>(
