@@ -156,11 +156,12 @@ FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1, 
 3	3
 3	3
 
-# TRY_CAST: column is only used with try_cast
+# TRY_CAST: column is only used with try_cast. The reader converts while it parses and throws on a value it can
+# not convert, so a TRY_CAST is not pushed into it - it stays in a projection, where it yields NULL instead.
 query II
 EXPLAIN SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|');
 ----
-physical_plan	<!REGEX>:.*PROJECTION.*
+physical_plan	<REGEX>:.*PROJECTION.*
 
 query I
 SELECT TRY_CAST(column00 AS UTINYINT) FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|') ORDER BY 1;
@@ -375,3 +376,26 @@ query II
 SELECT x::UTINYINT, y::UTINYINT FROM pv3 ORDER BY x DESC LIMIT 1;
 ----
 3	3
+
+# A TRY_CAST over a value the reader can not convert yields NULL, and a CAST over it still throws
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('abc')) t(c)) TO '__TEST_DIR__/try_cast_pushdown.csv' (FORMAT csv, HEADER false);
+
+query I
+SELECT TRY_CAST(c AS INTEGER) FROM read_csv('__TEST_DIR__/try_cast_pushdown.csv', columns = {'c': 'VARCHAR'},
+    auto_detect = false, header = false) ORDER BY 1 NULLS LAST;
+----
+1
+NULL
+
+query II
+EXPLAIN SELECT TRY_CAST(c AS INTEGER) FROM read_csv('__TEST_DIR__/try_cast_pushdown.csv',
+    columns = {'c': 'VARCHAR'}, auto_detect = false, header = false);
+----
+physical_plan	<REGEX>:.*PROJECTION.*
+
+statement error
+SELECT CAST(c AS INTEGER) FROM read_csv('__TEST_DIR__/try_cast_pushdown.csv', columns = {'c': 'VARCHAR'},
+    auto_detect = false, header = false);
+----
+<REGEX>:.*Could not convert string "abc" to 'INTEGER'.*
