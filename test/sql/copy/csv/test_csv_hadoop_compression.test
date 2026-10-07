@@ -1,0 +1,69 @@
+# name: test/sql/copy/csv/test_csv_hadoop_compression.test
+# description: Read snappy and lz4 compressed files as Hadoop's SnappyCodec and Lz4Codec write them
+# group: [csv]
+
+require parquet
+
+# the fixtures in data/csv/hadoop are written by Hadoop 3.4's SnappyCodec and Lz4Codec
+
+foreach codec snappy lz4
+
+query II
+SELECT * FROM read_csv('data/csv/hadoop/hadoop.csv.{codec}', header = false, columns = {'id': 'INTEGER', 'name': 'VARCHAR'});
+----
+1	alpha
+2	beta
+3	gamma
+
+# the codec can be given explicitly as well
+query I
+SELECT count(*) FROM read_csv('data/csv/hadoop/hadoop.csv.{codec}', header = false, compression = '{codec}');
+----
+3
+
+# a file of many blocks (1 KiB each), which also span the reader's input buffers
+query III
+SELECT count(*), sum(column0), count(DISTINCT column1) FROM read_csv('data/csv/hadoop/blocks.csv.{codec}', header = false);
+----
+5000	12497500	5000
+
+# Hadoop writes an empty file as one empty block
+query I
+SELECT count(*) FROM read_csv('data/csv/hadoop/empty.csv.{codec}', header = false, columns = {'id': 'INTEGER'});
+----
+0
+
+statement error
+SELECT * FROM read_csv('data/csv/hadoop/truncated.csv.{codec}', header = false);
+----
+<REGEX>:.*Unexpected end of (snappy|lz4) stream.*
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/out.csv.{codec}';
+----
+<REGEX>:.*Writing (snappy|lz4) compressed files is not supported.*
+
+endloop
+
+# the other containers around the same codecs are refused, rather than read as Hadoop blocks
+statement error
+SELECT * FROM read_csv('data/csv/hadoop/framed.csv.snappy', header = false);
+----
+is in the snappy framing format
+
+statement error
+SELECT * FROM read_csv('data/csv/hadoop/frame.csv.lz4', header = false);
+----
+is in the lz4 frame format
+
+require json
+
+foreach codec snappy lz4
+
+query II
+SELECT id, name FROM read_json('data/csv/hadoop/hadoop.json.{codec}') ORDER BY id;
+----
+1	alpha
+2	beta
+
+endloop

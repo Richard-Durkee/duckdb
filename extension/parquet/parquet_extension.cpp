@@ -15,6 +15,7 @@
 #include "parquet_writer.hpp"
 #include "parquet_shredding.hpp"
 #include "zstd_file_system.hpp"
+#include "hadoop_file_system.hpp"
 #include "writer/primitive_column_writer.hpp"
 #include "writer/variant_column_writer.hpp"
 #include "reader/variant_column_reader.hpp"
@@ -1020,6 +1021,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto &db_instance = loader.GetDatabaseInstance();
 	auto &fs = db_instance.GetFileSystem();
 	fs.RegisterCompressionFilesystem(make_uniq<ZStdFileSystem>());
+	fs.RegisterCompressionFilesystem(make_uniq<HadoopFileSystem>(HadoopBlockCodec::SNAPPY));
+	fs.RegisterCompressionFilesystem(make_uniq<HadoopFileSystem>(HadoopBlockCodec::LZ4));
 
 	auto scan_fun = MultiFileReader::CreateFunctionSet(ParquetScanFunction::GetMultiFileFunction("read_parquet"));
 	scan_fun.SetName("read_parquet");

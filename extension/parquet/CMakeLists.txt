@@ -35,7 +35,8 @@ set(PARQUET_EXTENSION_FILES
     parquet_column_schema.cpp
     parquet_geometry.cpp
     serialize_parquet.cpp
-    zstd_file_system.cpp)
+    zstd_file_system.cpp
+    hadoop_file_system.cpp)
 
 if(NOT CLANG_TIDY)
   # parquet/thrift/snappy
