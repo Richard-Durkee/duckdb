@@ -19,7 +19,9 @@ CopyOutputLifecycle::~CopyOutputLifecycle() {
 
 CopyOutputOwnership CopyOutputLifecycle::GetOwnership(const string &path) const {
 	auto &fs = FileSystem::GetFileSystem(context);
-	if (fs.FileExists(path) || fs.DirectoryExists(path) || fs.IsPipe(path)) {
+	// Object stores have no directories, and their DirectoryExists can report any path as one (S3 always does)
+	auto existing_directory = !FileSystem::IsRemoteFile(path) && fs.DirectoryExists(path);
+	if (fs.FileExists(path) || existing_directory || fs.IsPipe(path)) {
 		return CopyOutputOwnership::PRESERVE;
 	}
 	return CopyOutputOwnership::REMOVE_ON_FAILURE;

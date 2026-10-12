@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/set.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
@@ -94,6 +95,80 @@ public:
 	bool ListFiles(const string &, const std::function<void(const string &, bool)> &, FileOpener *) override {
 		return true;
 	}
+};
+
+struct ObjectStore {
+	mutex lock;
+	set<string> objects;
+
+	bool Contains(const string &path) {
+		lock_guard<mutex> guard(lock);
+		return objects.find(path) != objects.end();
+	}
+};
+
+// An object store that behaves like httpfs' S3 file system: an object appears when its upload completes (on Close),
+// and DirectoryExists is true for any path, since object stores have no directories.
+class ObjectStoreFileSystem : public FileSystem {
+public:
+	explicit ObjectStoreFileSystem(shared_ptr<ObjectStore> store_p) : store(std::move(store_p)) {
+	}
+
+	struct Handle : FileHandle {
+		Handle(FileSystem &fs, const string &path, FileOpenFlags flags, shared_ptr<ObjectStore> store_p)
+		    : FileHandle(fs, path, flags), store(std::move(store_p)) {
+		}
+		void Close() override {
+			if (!flags.OpenForWriting() || aborted) {
+				return;
+			}
+			lock_guard<mutex> guard(store->lock);
+			store->objects.insert(path);
+		}
+		shared_ptr<ObjectStore> store;
+		bool aborted = false;
+	};
+
+	string GetName() const override {
+		return "ObjectStoreFileSystem";
+	}
+	bool CanHandleFile(const string &path) override {
+		return StringUtil::StartsWith(path, "s3://lifecycle-object-store/");
+	}
+	bool IsManuallySet() override {
+		return true;
+	}
+	string PathSeparator(const string &) override {
+		return "/";
+	}
+	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener>) override {
+		return make_uniq<Handle>(*this, path, flags, store);
+	}
+	void AbortFileWrite(FileHandle &handle) override {
+		handle.Cast<Handle>().aborted = true;
+	}
+	bool FileExists(const string &path, optional_ptr<FileOpener>) override {
+		return store->Contains(path);
+	}
+	bool IsPipe(const string &, optional_ptr<FileOpener>) override {
+		return false;
+	}
+	bool DirectoryExists(const string &, optional_ptr<FileOpener>) override {
+		return true;
+	}
+	bool CreateDirectoryExtended(const string &, const CreateDirectoryOptions &, optional_ptr<FileOpener>) override {
+		return false;
+	}
+	void RemoveFile(const string &path, optional_ptr<FileOpener>) override {
+		lock_guard<mutex> guard(store->lock);
+		store->objects.erase(path);
+	}
+	bool ListFiles(const string &, const std::function<void(const string &, bool)> &, FileOpener *) override {
+		return true;
+	}
+
+private:
+	shared_ptr<ObjectStore> store;
 };
 
 struct LifecycleCopyGlobalData : GlobalFunctionData {
@@ -484,6 +559,48 @@ TEST_CASE("Partitioned COPY to remote storage does not require the local filesys
 	                                     "(FORMAT copy_remote_partitions, PARTITION_BY (p))");
 	REQUIRE_FAIL(local_result);
 	REQUIRE(local_result->GetError().find("LocalFileSystem has been disabled") != string::npos);
+}
+
+TEST_CASE("COPY removes its outputs on object storage after failure", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(connection.Query("SET async_threads=0"));
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto store = make_shared_ptr<ObjectStore>();
+	fs.RegisterSubSystem(make_uniq<ObjectStoreFileSystem>(store));
+
+	auto failing = make_shared_ptr<LifecycleCopyInfo>();
+	failing->fail_finalize_after = 1;
+	RegisterLifecycleCopyFunction(db, "copy_object_store_failure", failing);
+	auto result = connection.Query("COPY (SELECT i AS p, 42 AS v FROM range(4) t(i)) "
+	                               "TO 's3://lifecycle-object-store/failed' "
+	                               "(FORMAT copy_object_store_failure, PARTITION_BY (p))");
+	REQUIRE_FAIL(result);
+	result.reset();
+	REQUIRE(!failing->finalized_paths.empty());
+	for (auto &path : failing->initialized_paths) {
+		REQUIRE(!fs.FileExists(path));
+	}
+
+	auto succeeding = make_shared_ptr<LifecycleCopyInfo>();
+	RegisterLifecycleCopyFunction(db, "copy_object_store_success", succeeding);
+	REQUIRE_NO_FAIL(connection.Query("COPY (SELECT i AS p, 42 AS v FROM range(4) t(i)) "
+	                                 "TO 's3://lifecycle-object-store/succeeded' "
+	                                 "(FORMAT copy_object_store_success, PARTITION_BY (p))"));
+	REQUIRE(succeeding->finalized_paths.size() == 4);
+	for (auto &path : succeeding->finalized_paths) {
+		REQUIRE(fs.FileExists(path));
+	}
+
+	// an object that existed before the COPY is not its output
+	auto existing_path = "s3://lifecycle-object-store/existing.test";
+	store->objects.insert(existing_path);
+	{
+		CopyOutputLifecycle lifecycle(*connection.context);
+		lifecycle.RegisterFile(existing_path);
+	}
+	REQUIRE(fs.FileExists(existing_path));
 }
 
 TEST_CASE("COPY output lifecycle removes owned files after failure", "[api][copy]") {
