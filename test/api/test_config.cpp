@@ -261,3 +261,21 @@ TEST_CASE("Test secret_directory configuration update after secret creation", "[
 	auto update_secret_directory = con.Query("SET secret_directory='new_secret_dir';");
 	REQUIRE_FAIL(update_secret_directory);
 }
+
+TEST_CASE("duckdb_settings reports whether an extension option is debug or deprecated", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = DBConfig::GetConfig(*db.instance);
+	config.AddExtensionOption("test_regular_option", "a regular option", LogicalType::BOOLEAN, Value::BOOLEAN(false));
+	config.AddExtensionOption("test_debug_option", "a debug option", LogicalType::BOOLEAN, Value::BOOLEAN(false),
+	                          nullptr, SetScope::SESSION, true, false);
+	config.AddExtensionOption("test_deprecated_option", "a deprecated option", LogicalType::BOOLEAN,
+	                          Value::BOOLEAN(false), nullptr, SetScope::SESSION, false, true);
+
+	auto result = con.Query("SELECT name, debug, deprecated FROM duckdb_settings(include_all := true) WHERE name "
+	                        "LIKE 'test\\_%\\_option' ESCAPE '\\' ORDER BY name");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {"test_debug_option", "test_deprecated_option", "test_regular_option"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {true, false, false}));
+	REQUIRE(CHECK_COLUMN(result, 2, {false, true, false}));
+}

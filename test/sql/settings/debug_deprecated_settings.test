@@ -57,6 +57,41 @@ SELECT (SELECT count(*) FROM duckdb_settings(include_all := false)) = (SELECT co
 ----
 true
 
+# the debug and deprecated columns report what the filters select on
+query II
+SELECT bool_and(debug), bool_or(deprecated) FROM duckdb_settings(debug := true);
+----
+true	false
+
+query II
+SELECT bool_or(debug), bool_and(deprecated) FROM duckdb_settings(deprecated := true);
+----
+false	true
+
+query II
+SELECT bool_or(debug), bool_or(deprecated) FROM duckdb_settings();
+----
+false	false
+
+query I
+SELECT count(*) FROM duckdb_settings(debug := true, deprecated := true) WHERE NOT (debug AND deprecated);
+----
+0
+
+query IIII
+SELECT count(*) FILTER (WHERE NOT debug AND NOT deprecated) = (SELECT count(*) FROM duckdb_settings()),
+    count(*) FILTER (WHERE debug AND NOT deprecated) = (SELECT count(*) FROM duckdb_settings(debug := true)),
+    count(*) FILTER (WHERE NOT debug AND deprecated) = (SELECT count(*) FROM duckdb_settings(deprecated := true)),
+    count(*) FILTER (WHERE debug AND deprecated) = (SELECT count(*) FROM duckdb_settings(debug := true, deprecated := true))
+FROM duckdb_settings(include_all := true);
+----
+true	true	true	true
+
+query II
+SELECT debug, deprecated FROM duckdb_settings(include_all := true) WHERE name = 'debug_enable_caching_operators';
+----
+true	false
+
 statement error
 SELECT * FROM duckdb_settings(include_all := true, debug := true);
 ----

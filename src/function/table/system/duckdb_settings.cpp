@@ -12,6 +12,8 @@ struct DuckDBSettingValue {
 	string input_type;
 	string scope;
 	vector<Value> aliases;
+	bool debug = false;
+	bool deprecated = false;
 
 	inline bool operator<(const DuckDBSettingValue &rhs) const {
 		return name < rhs.name;
@@ -59,6 +61,12 @@ static unique_ptr<FunctionData> DuckDBSettingsBind(ClientContext &context, Table
 
 	names.emplace_back("typed_value");
 	return_types.emplace_back(LogicalType::VARIANT());
+
+	names.emplace_back("debug");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+
+	names.emplace_back("deprecated");
+	return_types.emplace_back(LogicalType::BOOLEAN);
 
 	auto result = make_uniq<DuckDBSettingsBindData>();
 	for (auto name : {"debug", "deprecated", "include_all"}) {
@@ -120,6 +128,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBSettingsInit(ClientContext &context, 
 		value.description = option->description;
 		value.input_type = option->parameter_type;
 		value.scope = EnumUtil::ToString(scope);
+		value.debug = option->is_debug;
+		value.deprecated = option->is_deprecated;
 		auto entry = aliases.find(option->name);
 		if (entry != aliases.end()) {
 			value.aliases = std::move(entry->second);
@@ -148,6 +158,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBSettingsInit(ClientContext &context, 
 		value.description = ext_param.second.description;
 		value.input_type = ext_param.second.type.ToString();
 		value.scope = EnumUtil::ToString(scope);
+		value.debug = ext_param.second.is_debug;
+		value.deprecated = ext_param.second.is_deprecated;
 
 		result->settings.push_back(std::move(value));
 	}
@@ -179,6 +191,10 @@ void DuckDBSettingsFunction(ClientContext &context, TableFunctionInput &data_p, 
 	auto &aliases = output.data[5];
 	// value, LogicalType::VARIANT
 	auto &typed_value = output.data[6];
+	// debug, LogicalType::BOOLEAN
+	auto &debug = output.data[7];
+	// deprecated, LogicalType::BOOLEAN
+	auto &deprecated = output.data[8];
 
 	while (data.offset < data.settings.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &entry = data.settings[data.offset++];
@@ -190,6 +206,8 @@ void DuckDBSettingsFunction(ClientContext &context, TableFunctionInput &data_p, 
 		scope.Append(Value(entry.scope));
 		aliases.Append(Value::LIST(LogicalType::VARCHAR, std::move(entry.aliases)));
 		typed_value.Append(entry.value.CastAs(context, LogicalType::VARIANT()));
+		debug.Append(Value::BOOLEAN(entry.debug));
+		deprecated.Append(Value::BOOLEAN(entry.deprecated));
 		count++;
 	}
 }
