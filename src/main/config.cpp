@@ -69,6 +69,11 @@ DebugVerificationMode DBConfigOptions::global_verification_mode = DebugVerificat
 #define FINAL_ALIAS                                                                                                    \
 	{ nullptr, nullptr }
 
+#define DUCKDB_REMOVED_SETTING(_NAME, _REPLACEMENT)                                                                    \
+	{ _NAME, _REPLACEMENT }
+#define FINAL_REMOVED_SETTING                                                                                          \
+	{ nullptr, nullptr }
+
 static const ConfigurationOption internal_options[] = {
 
     DUCKDB_GLOBAL(AccessModeSetting),
@@ -284,6 +289,31 @@ static const ConfigurationAlias setting_aliases[] = {
     DUCKDB_SETTING_ALIAS("wal_autocheckpoint", CheckpointThresholdSetting),
     DUCKDB_SETTING_ALIAS("worker_threads", ThreadsSetting),
     FINAL_ALIAS};
+
+static const RemovedConfigurationOption removed_settings[] = {
+    DUCKDB_REMOVED_SETTING("block_allocator_memory",
+                           "use enable_block_allocator to turn the block allocator on or off"),
+    DUCKDB_REMOVED_SETTING("custom_profiling_settings",
+                           "choose the profiler's metrics with CALL enable_profiling([...])"),
+    DUCKDB_REMOVED_SETTING("deprecated_using_key_syntax",
+                           "the UNION syntax it enabled for USING KEY CTEs is no longer supported"),
+    DUCKDB_REMOVED_SETTING("enable_http_logging", "log HTTP requests with CALL enable_logging('HTTP')"),
+    DUCKDB_REMOVED_SETTING("http_logging_output",
+                           "HTTP requests are logged by the logger, configured with logging_storage"),
+    FINAL_REMOVED_SETTING};
+
+string RemovedConfigurationOption::GetErrorMessage() const {
+	return StringUtil::Format("The setting \"%s\" was removed: %s", name, replacement);
+}
+
+optional_ptr<const RemovedConfigurationOption> DBConfig::GetRemovedOptionByName(const Identifier &name) {
+	for (idx_t index = 0; removed_settings[index].name; index++) {
+		if (removed_settings[index].name == name) {
+			return removed_settings + index;
+		}
+	}
+	return nullptr;
+}
 
 vector<ConfigurationOption> DBConfig::GetOptions() {
 	vector<ConfigurationOption> options;

@@ -261,3 +261,10 @@ TEST_CASE("Test secret_directory configuration update after secret creation", "[
 	auto update_secret_directory = con.Query("SET secret_directory='new_secret_dir';");
 	REQUIRE_FAIL(update_secret_directory);
 }
+
+TEST_CASE("A removed setting passed at startup fails with what to use instead", "[api]") {
+	DBConfig config;
+	config.SetOptionByName("enable_http_logging", Value::BOOLEAN(true));
+	REQUIRE_THROWS_WITH(DuckDB(nullptr, &config),
+	                    Catch::Contains("enable_http_logging") && Catch::Contains("was removed: log HTTP requests"));
+}

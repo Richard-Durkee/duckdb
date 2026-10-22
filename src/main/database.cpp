@@ -247,6 +247,13 @@ void DatabaseInstance::CreateMainDatabase() {
 static void ThrowExtensionSetUnrecognizedOptions(const identifier_map_t<Value> &unrecognized_options) {
 	D_ASSERT(!unrecognized_options.empty());
 
+	for (auto &kv : unrecognized_options) {
+		auto removed = DBConfig::GetRemovedOptionByName(kv.first);
+		if (removed) {
+			throw InvalidInputException(removed->GetErrorMessage());
+		}
+	}
+
 	vector<duckdb::Identifier> options;
 	for (auto &kv : unrecognized_options) {
 		options.push_back(kv.first);

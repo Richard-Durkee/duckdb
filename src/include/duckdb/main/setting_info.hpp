@@ -105,6 +105,16 @@ struct ConfigurationAlias {
 	const char *setting_name;
 };
 
+//! A setting that no longer exists. Its name is kept so that using it fails with what to do instead, rather than
+//! with the error for a name that was never a setting
+struct RemovedConfigurationOption {
+	const char *name;
+	//! What to use instead
+	const char *replacement;
+
+	DUCKDB_API string GetErrorMessage() const;
+};
+
 typedef void (*set_option_callback_t)(ClientContext &context, SetScope scope, Value &parameter);
 
 //! Extra state and behavior of an extension option

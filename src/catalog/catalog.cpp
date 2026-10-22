@@ -869,6 +869,11 @@ bool Catalog::AutoLoadExtensionByCatalogEntry(DatabaseInstance &db, CatalogType 
 }
 
 CatalogException Catalog::UnrecognizedConfigurationError(ClientContext &context, const Identifier &name) {
+	// check if this is a setting that was removed
+	auto removed = DBConfig::GetRemovedOptionByName(name);
+	if (removed) {
+		return CatalogException(removed->GetErrorMessage());
+	}
 	// check if the setting exists in any extensions
 	auto extension_name = ExtensionHelper::FindExtensionInEntries(name, EXTENSION_SETTINGS);
 	if (!extension_name.empty()) {

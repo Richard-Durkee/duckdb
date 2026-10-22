@@ -1,0 +1,48 @@
+# name: test/sql/settings/removed_settings.test
+# description: Using a setting that was removed fails with what to use instead
+# group: [settings]
+
+statement error
+SET enable_http_logging = true;
+----
+The setting "enable_http_logging" was removed: log HTTP requests with CALL enable_logging('HTTP')
+
+statement error
+SET GLOBAL custom_profiling_settings = '{}';
+----
+The setting "custom_profiling_settings" was removed: choose the profiler's metrics with CALL enable_profiling([...])
+
+statement error
+RESET http_logging_output;
+----
+The setting "http_logging_output" was removed
+
+statement error
+SELECT current_setting('deprecated_using_key_syntax');
+----
+The setting "deprecated_using_key_syntax" was removed
+
+statement error
+SET block_allocator_memory = '1GB';
+----
+The setting "block_allocator_memory" was removed: use enable_block_allocator
+
+# setting names are case insensitive
+statement error
+SET Enable_HTTP_Logging = true;
+----
+The setting "enable_http_logging" was removed
+
+# a name that was never a setting keeps the existing error
+statement error
+SET enable_http_logs = true;
+----
+unrecognized configuration parameter "enable_http_logs"
+
+# no removed setting is also a current setting or alias
+query I
+SELECT count(*) FROM duckdb_settings(include_all := true)
+WHERE name IN ('block_allocator_memory', 'custom_profiling_settings', 'deprecated_using_key_syntax',
+    'enable_http_logging', 'http_logging_output');
+----
+0

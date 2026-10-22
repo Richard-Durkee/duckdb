@@ -1,0 +1,22 @@
+[
+    {
+        "name": "block_allocator_memory",
+        "replacement": "use enable_block_allocator to turn the block allocator on or off"
+    },
+    {
+        "name": "custom_profiling_settings",
+        "replacement": "choose the profiler's metrics with CALL enable_profiling([...])"
+    },
+    {
+        "name": "deprecated_using_key_syntax",
+        "replacement": "the UNION syntax it enabled for USING KEY CTEs is no longer supported"
+    },
+    {
+        "name": "enable_http_logging",
+        "replacement": "log HTTP requests with CALL enable_logging('HTTP')"
+    },
+    {
+        "name": "http_logging_output",
+        "replacement": "HTTP requests are logged by the logger, configured with logging_storage"
+    }
+]

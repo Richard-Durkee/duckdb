@@ -1,5 +1,5 @@
 import json
-from .config import Setting, SettingsList, JSON_PATH
+from .config import Setting, SettingsList, RemovedSettingsList, JSON_PATH, REMOVED_JSON_PATH
 
 
 # sort settings in json by name
@@ -58,6 +58,21 @@ def add_all_settings_to_global_list():
             is_deprecated=entry.get('is_deprecated', False),
         )
         SettingsList.append(setting)
+    add_all_removed_settings_to_global_list()
+
+
+# parse the removed settings, which must not share a name with a current setting or alias
+def add_all_removed_settings_to_global_list():
+    print(f"Parsing and sorting the removed settings in {REMOVED_JSON_PATH}")
+    RemovedSettingsList.clear()
+    current_names = {setting.name for setting in SettingsList}
+    current_names.update(alias for setting in SettingsList for alias in setting.aliases)
+    for entry in sort_json_data(REMOVED_JSON_PATH):
+        if set(entry) != {'name', 'replacement'}:
+            raise ValueError(f"Removed setting {entry} must have exactly the entries \"name\" and \"replacement\"")
+        if entry['name'] in current_names:
+            raise ValueError(f"Removed setting \"{entry['name']}\" is also a current setting or alias")
+        RemovedSettingsList.append((entry['name'], entry['replacement']))
 
 
 def clear_global_settings_list():

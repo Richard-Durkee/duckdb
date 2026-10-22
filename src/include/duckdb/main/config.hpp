@@ -286,6 +286,8 @@ public:
 	DUCKDB_API static optional_ptr<const ConfigurationAlias> GetAliasByIndex(idx_t index);
 	//! Fetch an option by name. Returns a pointer to the option, or nullptr if none exists.
 	DUCKDB_API static optional_ptr<const ConfigurationOption> GetOptionByName(const Identifier &name);
+	//! Fetch a removed setting by name. Returns nullptr if no setting with this name was removed.
+	DUCKDB_API static optional_ptr<const RemovedConfigurationOption> GetRemovedOptionByName(const Identifier &name);
 	DUCKDB_API void SetOption(const ConfigurationOption &option, const Value &value);
 	DUCKDB_API void SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationOption &option, const Value &value);
 	DUCKDB_API void SetOption(const Identifier &name, Value value);

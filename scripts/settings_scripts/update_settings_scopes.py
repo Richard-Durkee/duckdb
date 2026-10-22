@@ -1,5 +1,8 @@
+import json
+
 from .config import (
     SettingsList,
+    RemovedSettingsList,
     VALID_SCOPE_VALUES,
     find_start_end_indexes,
     write_content_to_file,
@@ -8,7 +11,7 @@ from .config import (
 
 # markers
 START_MARKER = r'static const ConfigurationOption internal_options\[\] = \{\n'
-END_MARKER = r',\s*FINAL_ALIAS};'
+END_MARKER = r',\s*FINAL_REMOVED_SETTING};'
 
 
 # generate the scope code for the ConfigurationOption array and insert into the config file
@@ -45,6 +48,14 @@ def generate_scope_code(file):
     new_array_section += ',    FINAL_SETTING};\n\n'
     new_array_section += 'static const ConfigurationAlias setting_aliases[] = {'
     new_array_section += ',\n    '.join([x[1] for x in new_aliases])
+    new_array_section += ',    FINAL_ALIAS};\n\n'
+    new_array_section += 'static const RemovedConfigurationOption removed_settings[] = {'
+    new_array_section += ',\n    '.join(
+        [
+            f"DUCKDB_REMOVED_SETTING({json.dumps(name)}, {json.dumps(replacement)})"
+            for name, replacement in RemovedSettingsList
+        ]
+    )
 
     return before_array + new_array_section + after_array
 
