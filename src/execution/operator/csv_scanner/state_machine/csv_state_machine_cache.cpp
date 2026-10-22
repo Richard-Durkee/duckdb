@@ -399,7 +399,30 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 		transition_array[escape][static_cast<uint8_t>(CSVState::ESCAPED_RETURN)] = CSVState::UNQUOTED_ESCAPE;
 	}
 
-	// 14) Maybe quoted
+	// 14) OpenCSV escaping
+	if (state_machine_options.opencsv_escaping.GetValue()) {
+		if (enable_unquoted_escape) {
+			// The escape only escapes the quote and itself: before anything else it is dropped and that character keeps
+			// its meaning, so a delimiter or a line break after it still ends the value
+			for (idx_t i = 0; i < StateMachine::NUM_TRANSITIONS; i++) {
+				if (i != quote && i != escape) {
+					transition_array[i][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
+					    transition_array[i][static_cast<uint8_t>(CSVState::STANDARD)];
+				}
+			}
+		}
+		if (quote != '\0' && quote != escape) {
+			// A doubled quote inside a quoted value is one quote, also in strict mode
+			transition_array[quote][static_cast<uint8_t>(CSVState::UNQUOTED)] = CSVState::QUOTED;
+			// An escaped line break inside quotes is still a quoted line break
+			transition_array[static_cast<uint8_t>('\n')][static_cast<uint8_t>(CSVState::ESCAPE)] =
+			    CSVState::QUOTED_NEW_LINE;
+			transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::ESCAPE)] =
+			    CSVState::QUOTED_NEW_LINE;
+		}
+	}
+
+	// 15) Maybe quoted
 	transition_array[quote][static_cast<uint8_t>(CSVState::MAYBE_QUOTED)] = CSVState::MAYBE_QUOTED;
 
 	transition_array[static_cast<uint8_t>('\n')][static_cast<uint8_t>(CSVState::MAYBE_QUOTED)] =

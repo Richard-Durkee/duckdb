@@ -1,0 +1,148 @@
+# name: test/sql/copy/csv/opencsv_escaping.test
+# description: opencsv_escaping parses quotes and escapes the way OpenCSV does
+# group: [csv]
+
+# Hive's OpenCSVSerde writes with quote '"' and escape '\'; other writers double the quote
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('1,"a\"b"'),
+    ('2,"a""b"'),
+    ('3,"a\\b"'),
+    ('4,"a\b"'),
+    ('5,a\b'),
+    ('6,a\'),
+    ('7,x'),
+    ('8,\'),
+    ('9,"q,\"r"')
+) t(line)) TO '{TEST_DIR}/opencsv.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# the escape only escapes the quote and itself, elsewhere it is dropped; a doubled quote is one quote
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '\', strict_mode = false, opencsv_escaping = true, header = false);
+----
+1	a"b
+2	a"b
+3	a\b
+4	ab
+5	ab
+6	a
+7	x
+8	NULL
+9	q,"r
+
+# without the option an escape at the end of a line escapes the line break, and a doubled quote stays doubled
+query II
+SELECT id, replace(c, chr(10), '<LF>') FROM read_csv('{TEST_DIR}/opencsv.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'},
+    quote = '"', escape = '\', strict_mode = false, header = false, auto_detect = false, delim = ',')
+WHERE id IN (2, 6, 7);
+----
+2	a""b
+6	a<LF>7
+
+# the same with every buffer boundary
+loop buffer_size 10 25
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '\', strict_mode = false, opencsv_escaping = true, header = false, buffer_size = {buffer_size});
+----
+1	a"b
+2	a"b
+3	a\b
+4	ab
+5	ab
+6	a
+7	x
+8	NULL
+9	q,"r
+
+endloop
+
+# a delimiter after the escape still separates the values
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('1,x\,y'),
+    ('2,"x\,y",z')
+) t(line)) TO '{TEST_DIR}/opencsv_delimiter.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_delimiter.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR', 'd': 'VARCHAR'},
+    quote = '"', escape = '\', strict_mode = false, opencsv_escaping = true, header = false);
+----
+1	x	y
+2	x,y	z
+
+# \r\n line breaks
+statement ok
+COPY (SELECT '1,a\' || chr(13) || chr(10) || '2,"b""c"' || chr(13) || chr(10) || '3,d') TO '{TEST_DIR}/opencsv_crlf.csv'
+    (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_crlf.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '\', strict_mode = false, opencsv_escaping = true, header = false, new_line = '\r\n');
+----
+1	a
+2	b"c
+3	d
+
+# an escaped line break inside quotes is a quoted line break
+statement ok
+COPY (SELECT '1,"a\' || chr(10) || 'b"' || chr(10) || '2,c') TO '{TEST_DIR}/opencsv_quoted_newline.csv'
+    (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT id, replace(c, chr(10), '<LF>') FROM read_csv('{TEST_DIR}/opencsv_quoted_newline.csv',
+    columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"', escape = '\', strict_mode = false, opencsv_escaping = true,
+    header = false);
+----
+1	a<LF>b
+2	c
+
+# in strict mode both forms of an escaped quote are accepted too
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('1,"a\"b"'),
+    ('2,"a""b"'),
+    ('3,plain')
+) t(line)) TO '{TEST_DIR}/opencsv_strict.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_strict.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '\', strict_mode = true, opencsv_escaping = true, header = false);
+----
+1	a"b
+2	a"b
+3	plain
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_strict.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '\', strict_mode = true, header = false, auto_detect = false, delim = ',');
+----
+CSV Error
+
+# the sniffer keeps the option
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv.csv', quote = '"', escape = '\', strict_mode = false, opencsv_escaping = true,
+    header = false, names = ['id', 'c']) WHERE id IN (2, 6, 7);
+----
+2	a"b
+6	a
+7	x
+
+# with the quote as the escape there is nothing to change
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"a""b"'), ('2,c')) t(line)) TO '{TEST_DIR}/opencsv_doubled.csv'
+    (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/opencsv_doubled.csv', columns = {'id': 'INTEGER', 'c': 'VARCHAR'}, quote = '"',
+    escape = '"', strict_mode = false, opencsv_escaping = true, header = false);
+----
+1	a"b
+2	c
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/opencsv.csv', opencsv_escaping = 'maybe');
+----
+<REGEX>:.*opencsv_escaping.*

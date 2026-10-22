@@ -1221,6 +1221,12 @@
         "type": "idx_t",
         "property": "options.rejects_line_size_limit",
         "default": "10000"
+      },
+      {
+        "id": 145,
+        "name": "opencsv_escaping",
+        "type": "CSVOption<bool>",
+        "property": "options.dialect_options.state_machine_options.opencsv_escaping"
       }
     ],
     "constructor": [

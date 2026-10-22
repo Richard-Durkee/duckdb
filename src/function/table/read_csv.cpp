@@ -96,6 +96,7 @@ void ReadCSVTableFunction::ReadCSVAddNamedParameters(TableFunction &table_functi
 		    .Add("parallel", LogicalType::BOOLEAN)
 		    .Add("null_padding", LogicalType::BOOLEAN)
 		    .Add("allow_quoted_nulls", LogicalType::BOOLEAN)
+		    .Add("opencsv_escaping", LogicalType::BOOLEAN)
 		    .Add("column_types", LogicalType::ANY)
 		    .Add("dtypes", LogicalType::ANY)
 		    .Add("types", LogicalType::ANY)
