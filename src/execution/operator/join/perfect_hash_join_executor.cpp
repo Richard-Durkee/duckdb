@@ -385,18 +385,16 @@ void PerfectHashJoinExecutor::TemplatedFillSelectionVectorProbe(const Vector &so
 			continue;
 		}
 		const auto &input_value = entry.GetValue();
-		// add index to selection vector if value in the range
-		if (min_value <= input_value && input_value <= max_value) {
-			// subtract min value to get the idx
-			const auto idx = UnsafeNumericCast<idx_t>(input_value - min_value);
-			// position check for matches in the build
-			if (bitmap_build_idx.RowIsValid(idx)) {
-				if (BUILD_SEL_VEC) {
-					build_sel_vec->set_index(probe_sel_count, idx);
-				}
-				probe_sel_vec.set_index(probe_sel_count++, i);
-			}
+		// a value matches if it is in the range and its position is set in the build
+		// write the indexes unconditionally to avoid branching on the (unpredictable) match
+		const bool in_range = (min_value <= input_value) & (input_value <= max_value);
+		const auto idx = in_range ? UnsafeNumericCast<idx_t>(input_value - min_value) : 0;
+		const bool found = in_range & bitmap_build_idx.RowIsValid(idx);
+		if (BUILD_SEL_VEC) {
+			build_sel_vec->set_index(probe_sel_count, idx);
 		}
+		probe_sel_vec.set_index(probe_sel_count, i);
+		probe_sel_count += found;
 	}
 }
 

@@ -1,0 +1,61 @@
+# name: test/sql/join/inner/test_perfect_hash_join_random_matches.test
+# description: Test perfect hash joins whose probe keys match in a random pattern, against regular hash joins
+# group: [inner]
+
+statement ok
+CREATE TABLE probe AS
+SELECT
+    CASE WHEN i % 97 = 0 THEN NULL ELSE (hash(i) % 3000)::INTEGER - 1000 END AS k32,
+    CASE WHEN i % 89 = 0 THEN NULL ELSE (hash(i + 1) % 3000)::BIGINT - 1000 END AS k64,
+    ((hash(i + 2) % 200)::INTEGER - 100)::TINYINT AS k8,
+    ((hash(i + 3) % 3000)::INTEGER - 1000)::SMALLINT AS k16,
+    i AS payload
+FROM range(50000) t(i);
+
+statement ok
+CREATE TABLE build AS
+SELECT
+    i::INTEGER AS k32, i::BIGINT AS k64, (i % 100)::TINYINT AS k8, i::SMALLINT AS k16, i * 10 AS v
+FROM range(-500, 1500) t(i) WHERE hash(i * 7) % 2 = 0;
+
+statement ok
+CREATE TABLE build8 AS SELECT k8, max(v) AS v FROM build GROUP BY k8;
+
+foreach threshold 12 0
+
+statement ok
+SET perfect_ht_threshold=${threshold};
+
+query III
+SELECT count(*), sum(p.payload), sum(b.v) FROM probe p JOIN build b ON p.k32 = b.k32
+----
+16823	422160252	87292530
+
+query III
+SELECT count(*), sum(p.payload), sum(b.v) FROM probe p JOIN build b ON p.k64 = b.k64
+----
+16812	421911629	87370550
+
+query II
+SELECT count(*), sum(b.v) FROM probe p JOIN build b ON p.k16 = b.k16
+----
+17006	88365680
+
+query II
+SELECT count(*), sum(b.v) FROM probe p JOIN build8 b ON p.k8 = b.k8
+----
+48498	308107350
+
+# without statistics propagation no filter is added to the probe side, so out-of-range keys reach the perfect hash probe
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query II
+SELECT count(*), sum(b.v) FROM (SELECT (hash(i) % 3000)::INTEGER - 1000 AS k32 FROM range(50000) t(i)) p JOIN build b ON p.k32 = b.k32
+----
+17007	88374020
+
+statement ok
+RESET disabled_optimizers;
+
+endloop
