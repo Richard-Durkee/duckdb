@@ -925,8 +925,17 @@ static void DistinctExecuteGenericLoop(const T *__restrict ldata, const T *__res
 	for (idx_t i = 0; i < count; i++) {
 		auto lindex = lsel->get_index(i);
 		auto rindex = rsel->get_index(i);
-		result_data[i] = OP::template Operation<T>(ldata[lindex], rdata[rindex], !lmask.RowIsValid(lindex),
-		                                           !rmask.RowIsValid(rindex));
+		const bool left_null = !lmask.RowIsValid(lindex);
+		const bool right_null = !rmask.RowIsValid(rindex);
+		if (std::is_arithmetic<T>::value) {
+			// comparing the (unused) values of NULL rows is safe for arithmetic types: select the result without
+			// branching on the (unpredictable) NULLs
+			const auto value_result = Comparator::Operation<T>(ldata[lindex], rdata[rindex]);
+			const auto null_result = OP::NullOrdering(left_null, right_null);
+			result_data[i] = (left_null | right_null) ? null_result : value_result;
+		} else {
+			result_data[i] = OP::template Operation<T>(ldata[lindex], rdata[rindex], left_null, right_null);
+		}
 	}
 }
 

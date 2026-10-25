@@ -1,0 +1,66 @@
+# name: test/sql/function/operator/test_distinct_from_nulls.test
+# description: Test IS [NOT] DISTINCT FROM and IS [NOT] TRUE/FALSE on vectors with NULLs on both sides
+# group: [operator]
+
+statement ok
+CREATE TABLE pairs AS
+SELECT
+    CASE WHEN i % 5 = 0 THEN NULL ELSE i % 7 END::INTEGER AS a,
+    CASE WHEN i % 3 = 0 THEN NULL ELSE i % 4 END::INTEGER AS b,
+    CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 7) / 2 END::DOUBLE AS fa,
+    CASE WHEN i % 3 = 0 THEN NULL WHEN i % 11 = 0 THEN 'nan'::DOUBLE ELSE (i % 4) / 2 END::DOUBLE AS fb,
+    CASE WHEN i % 5 = 0 THEN NULL ELSE 'v' || (i % 7) END AS sa,
+    CASE WHEN i % 3 = 0 THEN NULL ELSE 'v' || (i % 4) END AS sb,
+    CASE WHEN i % 5 = 0 THEN NULL ELSE i % 2 = 0 END AS bl
+FROM range(3000) t(i);
+
+statement ok
+CREATE MACRO ref_distinct(x, y) AS CASE WHEN x IS NULL AND y IS NULL THEN false WHEN x IS NULL OR y IS NULL THEN true ELSE x <> y END;
+
+foreach pair a,b fa,fb sa,sb a,a b,a
+
+query I
+SELECT count(*) FROM (SELECT ${pair} FROM pairs) t(x, y) WHERE (x IS DISTINCT FROM y) <> ref_distinct(x, y)
+----
+0
+
+query I
+SELECT
+    (SELECT count(*) FROM (SELECT ${pair} FROM pairs) t(x, y) WHERE x IS DISTINCT FROM y) =
+    (SELECT count(*) FROM (SELECT ${pair} FROM pairs) t(x, y) WHERE ref_distinct(x, y))
+----
+true
+
+query I
+SELECT
+    (SELECT count(*) FROM (SELECT ${pair} FROM pairs) t(x, y) WHERE x IS NOT DISTINCT FROM y) =
+    (SELECT count(*) FROM (SELECT ${pair} FROM pairs) t(x, y) WHERE NOT ref_distinct(x, y))
+----
+true
+
+endloop
+
+query IIII
+SELECT
+    count(*) FILTER (WHERE bl IS TRUE),
+    count(*) FILTER (WHERE bl IS NOT TRUE),
+    count(*) FILTER (WHERE bl IS FALSE),
+    count(*) FILTER (WHERE bl IS NOT FALSE)
+FROM pairs
+----
+1200	1800	1200	1800
+
+query I
+SELECT count(*) FROM pairs WHERE bl IS TRUE
+----
+1200
+
+query I
+SELECT count(*) FROM pairs WHERE bl IS NOT FALSE
+----
+1800
+
+query I
+SELECT count(*) FROM pairs WHERE a IS NOT DISTINCT FROM NULL
+----
+600

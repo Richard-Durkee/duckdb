@@ -30,31 +30,47 @@ void VectorOperations::NotDistinctFrom(const Vector &left, const Vector &right, 
 	}
 }
 
+template <bool HAS_TRUE_SEL, bool HAS_FALSE_SEL, class PREDICATE>
+static idx_t DistinctComparatorSelectLoop(const int8_t *cmp_data, const SelectionVector &sel, idx_t count,
+                                          optional_ptr<SelectionVector> true_sel,
+                                          optional_ptr<SelectionVector> false_sel, PREDICATE predicate) {
+	// write to both selections unconditionally to avoid a branch on the (unpredictable) result
+	idx_t true_count = 0;
+	idx_t false_count = 0;
+	for (idx_t i = 0; i < count; i++) {
+		const auto result_idx = sel.get_index(i);
+		const bool result = predicate(cmp_data[i]);
+		if (HAS_TRUE_SEL) {
+			true_sel->set_index(true_count, result_idx);
+		}
+		if (HAS_FALSE_SEL) {
+			false_sel->set_index(false_count, result_idx);
+		}
+		true_count += result;
+		false_count += !result;
+	}
+	return true_count;
+}
+
 template <class FILL_FN, class PREDICATE>
 static idx_t DistinctComparatorSelect(const Vector &left, const Vector &right, optional_ptr<const SelectionVector> sel,
                                       idx_t count, optional_ptr<SelectionVector> true_sel,
                                       optional_ptr<SelectionVector> false_sel, FILL_FN fill_fn, PREDICATE predicate) {
 	Vector comparator_result(LogicalType::TINYINT, count);
 	fill_fn(left, right, comparator_result, count);
-	auto cmp_data = comparator_result.Values<int8_t>();
-
-	idx_t true_count = 0;
-	idx_t false_count = 0;
-	for (idx_t i = 0; i < count; i++) {
-		auto result_idx = sel ? sel->get_index(i) : i;
-		if (predicate(cmp_data[i].GetValueUnsafe())) {
-			if (true_sel) {
-				true_sel->set_index(true_count, result_idx);
-			}
-			true_count++;
-		} else {
-			if (false_sel) {
-				false_sel->set_index(false_count, result_idx);
-			}
-			false_count++;
-		}
+	comparator_result.Flatten();
+	auto cmp_data = FlatVector::GetData<int8_t>(comparator_result);
+	if (!sel) {
+		sel = FlatVector::IncrementalSelectionVector();
 	}
-	return true_count;
+	if (true_sel && false_sel) {
+		return DistinctComparatorSelectLoop<true, true>(cmp_data, *sel, count, true_sel, false_sel, predicate);
+	} else if (true_sel) {
+		return DistinctComparatorSelectLoop<true, false>(cmp_data, *sel, count, true_sel, false_sel, predicate);
+	} else if (false_sel) {
+		return DistinctComparatorSelectLoop<false, true>(cmp_data, *sel, count, true_sel, false_sel, predicate);
+	}
+	return DistinctComparatorSelectLoop<false, false>(cmp_data, *sel, count, true_sel, false_sel, predicate);
 }
 
 // true := A != B with nulls being equal

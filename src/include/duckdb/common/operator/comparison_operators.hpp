@@ -176,6 +176,10 @@ struct DistinctComparator {
 		}
 		return Comparator::Operation<T>(left, right);
 	}
+	//! The result when at least one side is NULL (NULLS LAST)
+	static inline int8_t NullOrdering(bool left_null, bool right_null) {
+		return static_cast<int8_t>(left_null) - static_cast<int8_t>(right_null);
+	}
 };
 
 struct DistinctComparatorNullsFirst {
@@ -189,6 +193,10 @@ struct DistinctComparatorNullsFirst {
 			return left_null ? -1 : 1;
 		}
 		return Comparator::Operation<T>(left, right);
+	}
+	//! The result when at least one side is NULL (NULLS FIRST)
+	static inline int8_t NullOrdering(bool left_null, bool right_null) {
+		return static_cast<int8_t>(right_null) - static_cast<int8_t>(left_null);
 	}
 };
 
