@@ -23,10 +23,18 @@ struct VectorTryCastData {
 };
 
 struct HandleVectorCastError {
+	//! Whether a failing row needs to produce an error message: a try cast only keeps the first one
+	static bool NeedsErrorMessage(const VectorTryCastData &cast_data) {
+		auto error_message = cast_data.parameters.error_message;
+		return !error_message || error_message->empty();
+	}
+
 	template <class RESULT_TYPE, class MASK_TYPE>
 	static RESULT_TYPE Operation(const string &error_message, MASK_TYPE &mask, idx_t idx,
 	                             VectorTryCastData &cast_data) {
-		HandleCastError::AssignError(error_message, cast_data.parameters);
+		if (NeedsErrorMessage(cast_data)) {
+			HandleCastError::AssignError(error_message, cast_data.parameters);
+		}
 		cast_data.all_converted = false;
 		mask.SetInvalid(idx);
 		return NullValue<RESULT_TYPE>();

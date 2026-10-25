@@ -34,8 +34,10 @@ struct VectorTryCastOperator {
 		if (DUCKDB_LIKELY(OP::template Operation<INPUT_TYPE, RESULT_TYPE>(input, output))) {
 			return output;
 		}
-		return HandleVectorCastError::Operation<RESULT_TYPE>(CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input), mask,
-		                                                     idx, data);
+		return HandleVectorCastError::Operation<RESULT_TYPE>(HandleVectorCastError::NeedsErrorMessage(data)
+		                                                         ? CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input)
+		                                                         : string(),
+		                                                     mask, idx, data);
 	}
 };
 
@@ -47,8 +49,10 @@ struct VectorTryCastStrictOperator {
 		if (DUCKDB_LIKELY(OP::template Operation<INPUT_TYPE, RESULT_TYPE>(input, output, data.parameters.strict))) {
 			return output;
 		}
-		return HandleVectorCastError::Operation<RESULT_TYPE>(CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input), mask,
-		                                                     idx, data);
+		return HandleVectorCastError::Operation<RESULT_TYPE>(HandleVectorCastError::NeedsErrorMessage(data)
+		                                                         ? CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input)
+		                                                         : string(),
+		                                                     mask, idx, data);
 	}
 };
 
@@ -60,10 +64,11 @@ struct VectorTryCastErrorOperator {
 		if (DUCKDB_LIKELY(OP::template Operation<INPUT_TYPE, RESULT_TYPE>(input, output, data.parameters))) {
 			return output;
 		}
-		bool has_error = data.parameters.error_message && !data.parameters.error_message->empty();
-		return HandleVectorCastError::Operation<RESULT_TYPE>(
-		    has_error ? *data.parameters.error_message : CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input), mask, idx,
-		    data);
+		// the cast operator may already have set a more specific error message
+		return HandleVectorCastError::Operation<RESULT_TYPE>(HandleVectorCastError::NeedsErrorMessage(data)
+		                                                         ? CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input)
+		                                                         : string(),
+		                                                     mask, idx, data);
 	}
 };
 
@@ -77,7 +82,9 @@ struct VectorTryCastStringOperator {
 			return output;
 		}
 		return HandleVectorCastError::Operation<RESULT_TYPE>(
-		    CastExceptionText<INPUT_TYPE>(input, data.result.GetType()), mask, idx, data);
+		    HandleVectorCastError::NeedsErrorMessage(data) ? CastExceptionText<INPUT_TYPE>(input, data.result.GetType())
+		                                                   : string(),
+		    mask, idx, data);
 	}
 };
 

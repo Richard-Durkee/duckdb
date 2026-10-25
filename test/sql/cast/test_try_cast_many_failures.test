@@ -1,0 +1,50 @@
+# name: test/sql/cast/test_try_cast_many_failures.test
+# description: Test casts where many rows fail to convert
+# group: [cast]
+
+statement ok
+CREATE TABLE vals AS SELECT i::BIGINT AS big, (i * 1e30)::DOUBLE AS dbl, CASE WHEN i % 3 = 0 THEN 'x' || i ELSE i::VARCHAR END AS str FROM range(100000) t(i);
+
+query III
+SELECT count(TRY_CAST(big AS SMALLINT)), count(TRY_CAST(dbl AS BIGINT)), count(TRY_CAST(str AS INTEGER)) FROM vals
+----
+32768	1	66666
+
+query I
+SELECT count(*) FROM vals WHERE TRY_CAST(big AS TINYINT) IS NULL
+----
+99872
+
+# the error reports the first value that failed to convert
+statement error
+SELECT big::SMALLINT FROM vals
+----
+<REGEX>:Conversion Error:.*32768.*out of range.*
+
+statement error
+SELECT dbl::BIGINT FROM vals
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement error
+SELECT str::INTEGER FROM vals
+----
+<REGEX>:Conversion Error:.*x0.*
+
+statement error
+SELECT CAST(big AS SMALLINT) FROM (SELECT big AS my_column FROM vals) t(big)
+----
+<REGEX>:Conversion Error:.*32768.*
+
+statement ok
+CREATE TYPE small_enum AS ENUM ('a', 'b');
+
+query I
+SELECT count(TRY_CAST(CASE WHEN i % 2 = 0 THEN 'a' ELSE 'zz' || i END AS small_enum)) FROM range(10000) t(i)
+----
+5000
+
+statement error
+SELECT CAST(CASE WHEN i % 2 = 0 THEN 'a' ELSE 'zz' || i END AS small_enum) FROM range(10000) t(i)
+----
+<REGEX>:Conversion Error:.*zz1.*

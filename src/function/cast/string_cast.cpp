@@ -28,8 +28,11 @@ static bool StringEnumCastLoop(const VectorIterator<string_t> &source_data, Vect
 		auto &source_val = source_entry.GetValue();
 		auto pos = EnumType::GetPos(result_type, source_val);
 		if (pos == -1) {
-			result_data[i] = HandleVectorCastError::Operation<T>(CastExceptionText<string_t>(source_val, result_type),
-			                                                     result_data, i, vector_cast_data);
+			result_data[i] =
+			    HandleVectorCastError::Operation<T>(HandleVectorCastError::NeedsErrorMessage(vector_cast_data)
+			                                            ? CastExceptionText<string_t>(source_val, result_type)
+			                                            : string(),
+			                                        result_data, i, vector_cast_data);
 		} else {
 			result_data[i] = UnsafeNumericCast<T>(pos);
 		}
