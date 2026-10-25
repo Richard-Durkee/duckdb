@@ -1,0 +1,88 @@
+# name: test/sql/table_function/duckdb_queries.test
+# description: duckdb_queries() lists every connection and the query it is running
+# group: [table_function]
+
+# other connections do not survive a database restart
+require skip_reload
+
+query IIIIIIIIII
+SELECT typeof(connection_id), typeof(state), typeof(query_id), typeof(query), typeof(query_start), typeof(elapsed),
+	typeof(transaction_start), typeof(progress), typeof(rows_processed), typeof(total_rows_to_process)
+FROM duckdb_queries() LIMIT 1
+----
+UBIGINT	VARCHAR	UBIGINT	VARCHAR	TIMESTAMP WITH TIME ZONE	INTERVAL	TIMESTAMP WITH TIME ZONE	DOUBLE	UBIGINT	UBIGINT
+
+# the calling connection sees its own query as running
+query III
+SELECT state, query, elapsed >= INTERVAL 0 SECONDS FROM duckdb_queries() WHERE query LIKE '%own query marker%'
+----
+running	SELECT state, query, elapsed >= INTERVAL 0 SECONDS FROM duckdb_queries() WHERE query LIKE '%own query marker%'	true
+
+# a second connection that is not running anything shows up as idle
+statement ok con1
+SELECT 42
+
+query I
+SELECT count(*) >= 1 FROM duckdb_queries() WHERE state = 'idle'
+----
+true
+
+query IIIIIII
+SELECT DISTINCT query_id, query, query_start, elapsed, transaction_start, progress, rows_processed
+FROM duckdb_queries() WHERE state = 'idle'
+----
+NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+# progress is NULL when the observed connection doesn't track it, and a percentage otherwise
+query I
+SELECT progress IS NULL OR progress BETWEEN 0 AND 100 FROM duckdb_queries() WHERE query LIKE '%progress marker%'
+----
+true
+
+
+# a connection with an open explicit transaction but no running query is idle in transaction
+statement ok con1
+BEGIN
+
+query II
+SELECT count(*), bool_and(transaction_start <= now() AND query IS NULL) FROM duckdb_queries()
+WHERE state = 'idle in transaction'
+----
+1	true
+
+# the running query of an explicit transaction reports when the transaction started
+statement ok
+BEGIN
+
+query I
+SELECT transaction_start IS NOT NULL FROM duckdb_queries() WHERE connection_id = current_connection_id()
+----
+true
+
+statement ok
+COMMIT
+
+statement ok con1
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_queries() WHERE state = 'idle in transaction' OR transaction_start IS NOT NULL
+----
+0
+
+# a failed transaction that is rolled back automatically leaves no transaction open
+statement ok con1
+BEGIN
+
+statement error con1
+SELECT 'x'::INTEGER
+----
+Conversion Error
+
+statement ok con1
+ROLLBACK
+
+query I
+SELECT count(*) FROM duckdb_queries() WHERE state = 'idle in transaction'
+----
+0

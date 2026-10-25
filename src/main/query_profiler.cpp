@@ -285,6 +285,14 @@ profiler_metrics_t QueryProfiler::GetLiveMetrics() const {
 	return query_metrics.GetLiveMetrics();
 }
 
+optional_idx QueryProfiler::GetLiveMetricsGeneration() const {
+	lock_guard<std::mutex> guard(lock);
+	if (!query_started) {
+		return optional_idx();
+	}
+	return query_metrics.GetLiveMetricResets();
+}
+
 void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
 	query_metrics.UpdateBytesRead(amount, elapsed_us);
 }

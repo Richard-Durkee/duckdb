@@ -149,6 +149,8 @@ public:
 
 	//! Reset the counters that are tracked without profiling; Reset keeps them, so they outlive their query.
 	void ResetLiveMetrics() {
+		// counted before the counters are cleared, so a reader that sees a cleared counter also sees the new count
+		live_metric_resets++;
 		bytes_read = 0;
 		read_operations = 0;
 		read_time_us = 0;
@@ -158,6 +160,11 @@ public:
 		bytes_spilled = 0;
 		// bytes_scanned is not reset here, so it can be read after a failed query; StartQuery resets it
 		total_memory_allocated = 0;
+	}
+
+	//! How often the live metrics have been reset; unchanged while they belong to the same query
+	idx_t GetLiveMetricResets() const {
+		return live_metric_resets.load();
 	}
 
 	void Reset() {
@@ -200,6 +207,7 @@ private:
 	unordered_map<string, MetricTiming> string_timings;
 	// String-keyed counters for storage counter metrics (e.g. "storage.wal_replay_entry_count")
 	unordered_map<string, idx_t> string_counters;
+	atomic<idx_t> live_metric_resets;
 
 public:
 	// Declared after string_timings so it is destroyed first; its destructor writes to string_timings.

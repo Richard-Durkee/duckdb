@@ -10,6 +10,7 @@
 
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/enums/profiling_coverage.hpp"
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/enums/metric_type.hpp"
@@ -107,6 +108,8 @@ public:
 	DUCKDB_API void FinalizeMetrics();
 	//! Snapshot the query-level metrics that are kept up to date while the query runs, keyed by metric name.
 	DUCKDB_API profiler_metrics_t GetLiveMetrics() const;
+	//! The reset count of the live metrics while they belong to a started query; invalid once that query has ended
+	DUCKDB_API optional_idx GetLiveMetricsGeneration() const;
 
 	//! Track bytes read and the time spent reading.
 	DUCKDB_API void TrackBytesRead(idx_t amount, idx_t elapsed_us);

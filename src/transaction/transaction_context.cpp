@@ -94,6 +94,7 @@ void TransactionContext::SetAutoCommit(bool value) {
 	if (!auto_commit && !current_transaction) {
 		BeginTransaction();
 	}
+	context.UpdateTransactionActivity();
 }
 
 void TransactionContext::SetReadOnly() {
@@ -132,6 +133,7 @@ void TransactionContext::Rollback(optional_ptr<ErrorData> error) {
 void TransactionContext::ClearTransaction() {
 	SetAutoCommit(true);
 	current_transaction = nullptr;
+	context.UpdateTransactionActivity();
 }
 
 idx_t TransactionContext::GetActiveQuery() {

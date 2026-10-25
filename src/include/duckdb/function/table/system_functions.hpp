@@ -52,6 +52,10 @@ struct DuckDBConnectionCountFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DuckDBQueriesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBApproxDatabaseCountFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };

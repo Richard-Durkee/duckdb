@@ -168,7 +168,7 @@ ClientContext::~ClientContext() {
 }
 
 unique_ptr<ClientContextLock> ClientContext::LockContext() {
-	return make_uniq<ClientContextLock>(context_lock);
+	return make_uniq<ClientContextLock>(context_lock, context_lock_state);
 }
 
 void ClientContext::ConnectToCatalog(const shared_ptr<AttachedDatabase> &target) {
@@ -322,6 +322,11 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatementInternal
 
 	auto &profiler = QueryProfiler::Get(*this);
 	profiler.StartQuery(statement->query, IsExplainAnalyze(*this, statement.get()));
+	if (active_query) {
+		// the live metrics belong to the running query from here on
+		lock_guard<mutex> guard(query_activity_lock);
+		query_activity_metrics_generation = profiler.GetLiveMetricsGeneration();
+	}
 	Planner logical_planner(*this);
 	if (parameters.statement_args) {
 		auto &parameter_values = *parameters.statement_args;
@@ -411,8 +416,61 @@ QueryProgress ClientContext::GetQueryProgress() {
 	return query_progress;
 }
 
-profiler_metrics_t ClientContext::GetLiveQueryMetrics() {
-	return QueryProfiler::Get(*this).GetLiveMetrics();
+LiveQueryMetrics ClientContext::GetLiveQueryMetrics() {
+	auto &profiler = QueryProfiler::Get(*this);
+	LiveQueryMetrics result;
+	idx_t query_id;
+	optional_idx generation;
+	{
+		lock_guard<mutex> guard(query_activity_lock);
+		query_id = query_activity.query_id;
+		generation = query_activity.running ? query_activity_metrics_generation : optional_idx();
+	}
+	result.metrics = profiler.GetLiveMetrics();
+	// the metrics belong to the query if they were not reset since it claimed them, and it is still running
+	if (!generation.IsValid() || profiler.GetLiveMetricsGeneration() != generation) {
+		return result;
+	}
+	lock_guard<mutex> guard(query_activity_lock);
+	if (query_activity.running && query_activity.query_id == query_id) {
+		result.query_id = query_id;
+	}
+	return result;
+}
+
+QueryActivity ClientContext::GetQueryActivity() {
+	QueryActivity result;
+	idx_t lock_state;
+	// retry until no client call started or ended while the activity was read
+	static constexpr idx_t MAX_ATTEMPTS = 100;
+	for (idx_t attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+		lock_state = context_lock_state.load();
+		{
+			lock_guard<mutex> guard(query_activity_lock);
+			result = query_activity;
+		}
+		if (lock_state == context_lock_state.load()) {
+			break;
+		}
+		// the connection is busy with client calls: report it as running
+		lock_state = 1;
+	}
+	bool client_call_active = lock_state % 2 == 1;
+	if (result.running) {
+		result.state = client_call_active ? QueryActivityState::RUNNING : QueryActivityState::WAITING_FOR_CLIENT;
+	} else {
+		result.state = result.in_transaction ? QueryActivityState::IDLE_IN_TRANSACTION : QueryActivityState::IDLE;
+	}
+	return result;
+}
+
+void ClientContext::UpdateTransactionActivity() {
+	bool in_transaction = !transaction.IsAutoCommit() && transaction.HasActiveTransaction();
+	auto transaction_start =
+	    in_transaction ? transaction.ActiveTransaction().GetCurrentTransactionStartTimestamp() : timestamp_t();
+	lock_guard<mutex> guard(query_activity_lock);
+	query_activity.in_transaction = in_transaction;
+	query_activity.transaction_start = transaction_start;
 }
 
 void ClientContext::CheckIfPreparedStatementIsExecutable(PreparedStatementData &statement) {

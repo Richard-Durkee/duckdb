@@ -1,5 +1,5 @@
 # name: test/sql/table_function/duckdb_live_query_metrics.test
-# description: duckdb_live_query_metrics() lists each connection's live query counters by metric name
+# description: duckdb_live_query_metrics() lists the live counters of each running query by metric name
 # group: [table_function]
 
 # the idle checks below follow one connection across statements, which a restart would replace
@@ -9,6 +9,7 @@ query II
 SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM duckdb_live_query_metrics());
 ----
 connection_id	UBIGINT
+query_id	UBIGINT
 metric_name	VARCHAR
 metric_value	VARIANT
 
@@ -76,5 +77,19 @@ boom
 query I con2
 SELECT metric_value::UBIGINT > 0 FROM duckdb_live_query_metrics()
 WHERE connection_id = (SELECT id FROM monitored) AND metric_name = 'io.total_bytes_read';
+----
+true
+
+# the metrics of a running query are labeled with its query id
+query I
+SELECT count(*) > 0 FROM duckdb_live_query_metrics() m JOIN duckdb_queries() q USING (connection_id, query_id)
+WHERE q.state = 'running' AND m.connection_id = current_connection_id();
+----
+true
+
+# the metrics of an idle connection are those of its most recent query and belong to no running query
+query I
+SELECT count(*) > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored) AND query_id IS NULL;
 ----
 true

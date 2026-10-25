@@ -23,12 +23,25 @@
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/result_format.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/transaction/transaction_context.hpp"
 
 namespace duckdb {
+
+//! The query text other connections may see: secret definitions are hidden unless unredacted secrets are allowed
+static string GetPublishedQuery(ClientContext &context, const SQLStatement &statement) {
+	if (statement.type == StatementType::CREATE_STATEMENT && !Settings::Get<AllowUnredactedSecretsSetting>(context)) {
+		auto &info = statement.Cast<CreateStatement>().info;
+		if (info && info->type == CatalogType::SECRET_ENTRY) {
+			return "CREATE SECRET <redacted>";
+		}
+	}
+	return statement.query;
+}
 
 void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
                                        const QueryParameters &parameters, Retention retention) {
@@ -41,7 +54,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	if (ValidChecker::IsInvalidated(db_inst)) {
 		throw ErrorManager::InvalidatedDatabase(*this, ValidChecker::InvalidatedMessage(db_inst));
 	}
-	auto query = statements.statements[0]->query;
+	auto &first_statement = *statements.statements[0];
 	active_query = make_uniq<ActiveQueryContext>(std::move(statements));
 	active_query->format = parameters.format;
 	if (retention == Retention::RETAINED_AT_SUBMISSION) {
@@ -50,7 +63,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	if (transaction.IsAutoCommit() && !transaction.HasActiveTransaction()) {
 		transaction.BeginTransaction();
 	}
-	BeginStatementInternal(lock, query);
+	BeginStatementInternal(lock, first_statement);
 
 	query_progress.Initialize();
 	// Set query deadline if max_execution_time is configured
@@ -74,10 +87,17 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	RefreshLoggerInternal();
 }
 
-void ClientContext::BeginStatementInternal(ClientContextLock &lock, const string &query) {
+void ClientContext::BeginStatementInternal(ClientContextLock &lock, const SQLStatement &statement) {
+	auto &query = statement.query;
 	transaction.SetActiveQuery(db->GetDatabaseManager().GetNewQueryNumber());
 	LogQueryInternal(lock, query);
 	active_query->query = query;
+	lock_guard<mutex> guard(query_activity_lock);
+	query_activity.running = true;
+	query_activity.query_id = transaction.GetActiveQuery();
+	query_activity.query = GetPublishedQuery(*this, statement);
+	query_activity.start_time = Timestamp::GetCurrentTimestamp();
+	query_activity_metrics_generation = QueryProfiler::Get(*this).GetLiveMetricsGeneration();
 }
 
 void ClientContext::RefreshLoggerInternal() {
@@ -95,6 +115,14 @@ void ClientContext::RefreshLoggerInternal() {
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
+	{
+		lock_guard<mutex> guard(query_activity_lock);
+		query_activity.running = false;
+		query_activity.query_id = 0;
+		query_activity.query.clear();
+		query_activity.start_time = timestamp_t();
+		query_activity_metrics_generation = optional_idx();
+	}
 	if (active_query->executor) {
 		active_query->executor->CancelTasks();
 	}
@@ -515,7 +543,7 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 	}
 	EndStatementInternal(lock);
 	auto statement = active_query->TakeNextStatement();
-	BeginStatementInternal(lock, statement->query);
+	BeginStatementInternal(lock, *statement);
 	RefreshLoggerInternal();
 	QueryParameters parameters(active_query->format);
 	auto produced = SubmitStatementInternal(lock, std::move(statement), parameters);

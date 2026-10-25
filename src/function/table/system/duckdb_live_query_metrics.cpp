@@ -11,6 +11,7 @@ struct DuckDBLiveQueryMetricsData : public GlobalTableFunctionState {
 
 	struct Entry {
 		connection_t connection_id;
+		optional_idx query_id;
 		string metric_name;
 		Value metric_value;
 	};
@@ -22,6 +23,9 @@ static unique_ptr<FunctionData> DuckDBLiveQueryMetricsBind(ClientContext &contex
                                                            vector<LogicalType> &return_types,
                                                            vector<Identifier> &names) {
 	names.emplace_back("connection_id");
+	return_types.emplace_back(LogicalType::UBIGINT);
+
+	names.emplace_back("query_id");
 	return_types.emplace_back(LogicalType::UBIGINT);
 
 	names.emplace_back("metric_name");
@@ -36,13 +40,13 @@ static unique_ptr<FunctionData> DuckDBLiveQueryMetricsBind(ClientContext &contex
 static unique_ptr<GlobalTableFunctionState> DuckDBLiveQueryMetricsInit(ClientContext &context,
                                                                        TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBLiveQueryMetricsData>();
-	// the counters of each connection's current query, or of its most recent one if it is idle
+	// the counters of each connection's current query, labeled with it, or of its most recent one if it is idle
 	for (auto &connection : ConnectionManager::Get(context).GetConnectionList()) {
-		auto metrics = connection->GetLiveQueryMetrics();
-		map<string, Value> sorted(metrics.begin(), metrics.end());
+		auto live = connection->GetLiveQueryMetrics();
+		map<string, Value> sorted(live.metrics.begin(), live.metrics.end());
 		for (auto &metric : sorted) {
-			result->entries.push_back(
-			    {connection->GetConnectionId(), metric.first, metric.second.CastAs(context, LogicalType::VARIANT())});
+			result->entries.push_back({connection->GetConnectionId(), live.query_id, metric.first,
+			                           metric.second.CastAs(context, LogicalType::VARIANT())});
 		}
 	}
 	return std::move(result);
@@ -54,8 +58,13 @@ static void DuckDBLiveQueryMetricsFunction(ClientContext &context, TableFunction
 	while (data.offset < data.entries.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &entry = data.entries[data.offset++];
 		output.data[0].Append(Value::UBIGINT(entry.connection_id));
-		output.data[1].Append(Value(entry.metric_name));
-		output.data[2].Append(entry.metric_value);
+		if (entry.query_id.IsValid()) {
+			output.data[1].Append(Value::UBIGINT(entry.query_id.GetIndex()));
+		} else {
+			output.data[1].Append(Value(LogicalType::UBIGINT));
+		}
+		output.data[2].Append(Value(entry.metric_name));
+		output.data[3].Append(entry.metric_value);
 		count++;
 	}
 }

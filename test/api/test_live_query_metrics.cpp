@@ -10,7 +10,7 @@ using namespace duckdb;
 // the rest is in duckdb_live_query_metrics.test: SQL cannot pause a running query or hook into its start
 
 static idx_t LiveMetric(Connection &con, const char *name) {
-	auto metrics = con.context->GetLiveQueryMetrics();
+	auto metrics = con.context->GetLiveQueryMetrics().metrics;
 	auto entry = metrics.find(name);
 	REQUIRE(entry != metrics.end());
 	return entry->second.GetValue<idx_t>();
