@@ -1,4 +1,5 @@
 #include "duckdb/execution/join_hashtable.hpp"
+#include "duckdb/common/likely.hpp"
 
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
@@ -234,7 +235,15 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
 
 	idx_t keys_to_compare_count = 0;
 
+	// the entries are accessed in random order: start loading the entries of upcoming rows
+	static constexpr idx_t PREFETCH_DISTANCE = 16;
+	for (idx_t i = 0; i < MinValue(count, PREFETCH_DISTANCE); i++) {
+		DUCKDB_PREFETCH(entries.get() + (hashes_dense[i] & bitmask));
+	}
 	for (idx_t i = 0; i < count; i++) {
+		if (i + PREFETCH_DISTANCE < count) {
+			DUCKDB_PREFETCH(entries.get() + (hashes_dense[i + PREFETCH_DISTANCE] & bitmask));
+		}
 		auto row_hash = hashes_dense[i]; // hashes have been flattened before -> always access dense
 		auto row_ht_offset = row_hash & bitmask;
 

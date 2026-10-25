@@ -1,4 +1,5 @@
 #include "duckdb/execution/aggregate_hashtable.hpp"
+#include "duckdb/common/likely.hpp"
 
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -906,6 +907,8 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, V
 		ht_offset = ApplyBitMask(hash);
 		D_ASSERT(ht_offset == hash % capacity);
 		hash_salts[r] = ht_entry_t::ExtractSalt(hash);
+		// the probe below accesses the entries in random order: start loading them now
+		DUCKDB_PREFETCH(entries + ht_offset);
 	}
 
 	SelectionVector empty_vector;
