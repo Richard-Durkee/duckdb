@@ -1,0 +1,50 @@
+# name: test/sql/join/left_outer/test_left_join_null_padding.test
+# description: Test the NULL padding of unmatched rows in left joins, including nested types and NULL build values
+# group: [left_outer]
+
+statement ok
+CREATE TABLE probe AS SELECT i AS k FROM range(10000) t(i)
+
+statement ok
+CREATE TABLE build AS SELECT i * 3 AS k, CASE WHEN i % 5 = 0 THEN NULL ELSE i END AS v, 'str_' || i AS s, CASE WHEN i % 4 = 0 THEN NULL ELSE {'a': i, 'b': 'x' || i} END AS st, [i, i + 1]::INTEGER[2] AS arr FROM range(2000) t(i)
+
+query IIIIIIII
+SELECT count(*), count(v), sum(v), count(s), count(st), count(st.a), count(arr), sum(arr[2]) FROM probe LEFT JOIN build USING (k)
+----
+10000	1600	1600000	2000	1500	1500	2000	2001000
+
+query III
+SELECT count(*) FILTER (WHERE s IS NULL), count(*) FILTER (WHERE v IS NULL AND s IS NOT NULL), count(*) FILTER (WHERE st IS NULL AND s IS NOT NULL) FROM probe LEFT JOIN build USING (k)
+----
+8000	400	500
+
+query IIIII
+SELECT k, v, s, st, arr FROM probe LEFT JOIN build USING (k) WHERE k IN (0, 1, 2, 3, 15, 5998, 5999, 6000, 9999) ORDER BY k
+----
+0	NULL	str_0	NULL	[0, 1]
+1	NULL	NULL	NULL	NULL
+2	NULL	NULL	NULL	NULL
+3	1	str_1	{'a': 1, 'b': x1}	[1, 2]
+15	NULL	str_5	{'a': 5, 'b': x5}	[5, 6]
+5998	NULL	NULL	NULL	NULL
+5999	NULL	NULL	NULL	NULL
+6000	NULL	NULL	NULL	NULL
+9999	NULL	NULL	NULL	NULL
+
+# all probe rows match
+query II
+SELECT count(*), count(v) FROM (SELECT i * 3 AS k FROM range(2000) t(i)) p LEFT JOIN build USING (k)
+----
+2000	1600
+
+# no probe row matches
+query III
+SELECT count(*), count(v), count(st) FROM (SELECT -i - 1 AS k FROM range(3000) t(i)) p LEFT JOIN build USING (k)
+----
+3000	0	0
+
+# a join condition beyond the keys leaves rows with matching keys unmatched
+query II
+SELECT count(*), count(b.v) FROM probe p LEFT JOIN build b ON p.k = b.k AND b.v > 1000
+----
+10000	800

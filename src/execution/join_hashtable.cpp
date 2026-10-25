@@ -2180,6 +2180,40 @@ void ScanStructure::NextLeftJoin(DataChunk &keys, DataChunk &probe_data, DataChu
 	}
 }
 
+//! Marks the rows without a match as NULL in the RHS output columns [first_col, first_col + col_count) of result
+static void SetUnmatchedRowsNull(DataChunk &result, idx_t first_col, idx_t col_count, const bool *found_match,
+                                 idx_t count) {
+	// build the validity of the unmatched rows once, 64 rows at a time, and copy it into every column
+	ValidityMask unmatched;
+	unmatched.Initialize(count);
+	const auto entry_count = ValidityMask::EntryCount(count);
+	for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+		const auto base_idx = entry_idx * ValidityMask::BITS_PER_VALUE;
+		const auto next = MinValue<idx_t>(base_idx + ValidityMask::BITS_PER_VALUE, count);
+		validity_t entry = 0;
+		for (idx_t i = base_idx; i < next; i++) {
+			entry |= validity_t(found_match[i]) << (i - base_idx);
+		}
+		// rows past the end of the chunk are marked valid
+		entry |= ~ValidityMask::EntryWithValidBits(next - base_idx);
+		unmatched.GetData()[entry_idx] = entry;
+	}
+	for (idx_t col_idx = first_col; col_idx < first_col + col_count; col_idx++) {
+		auto &vector = result.data[col_idx];
+		const auto internal_type = vector.GetType().InternalType();
+		if (internal_type == PhysicalType::STRUCT || internal_type == PhysicalType::ARRAY) {
+			// nested types also need their children set to NULL
+			for (idx_t i = 0; i < count; i++) {
+				if (!found_match[i]) {
+					FlatVector::SetNull(vector, i, true);
+				}
+			}
+			continue;
+		}
+		FlatVector::ValidityMutable(vector).Copy(unmatched, count);
+	}
+}
+
 void ScanStructure::NextSingleJoin(DataChunk &keys, DataChunk &probe_data, DataChunk &result) {
 	idx_t result_count = 0;
 	SelectionVector result_sel(STANDARD_VECTOR_SIZE);
@@ -2208,14 +2242,11 @@ void ScanStructure::NextSingleJoin(DataChunk &keys, DataChunk &probe_data, DataC
 	}
 
 	// now fetch the data from the RHS
+	// set NULL entries for every entry that was not found
+	SetUnmatchedRowsNull(result, ht.lhs_output_in_probe.size(), ht.output_columns.size(), found_match.get(),
+	                     probe_data.size());
 	for (idx_t i = 0; i < ht.output_columns.size(); i++) {
 		auto &vector = result.data[ht.lhs_output_in_probe.size() + i];
-		// set NULL entries for every entry that was not found
-		for (idx_t j = 0; j < probe_data.size(); j++) {
-			if (!found_match[j]) {
-				FlatVector::SetNull(vector, j, true);
-			}
-		}
 		const auto output_col_idx = ht.output_columns[i];
 		D_ASSERT(vector.GetType() == ht.layout_ptr->GetTypes()[output_col_idx]);
 		GatherResult(vector, result_sel, result_sel, result_count, output_col_idx);
@@ -2275,15 +2306,12 @@ void ScanStructure::NextUniqueLeftJoin(DataChunk &keys, DataChunk &probe_data, D
 	// Fetch RHS data. If all rows matched we can skip NULL-setting and gather directly.
 	// Otherwise, mark unmatched rows as NULL before gathering matched rows.
 	const bool all_match = result_count == probe_size;
+	if (!all_match) {
+		SetUnmatchedRowsNull(result, ht.lhs_output_in_probe.size(), ht.output_columns.size(), found_match.get(),
+		                     probe_size);
+	}
 	for (idx_t i = 0; i < ht.output_columns.size(); i++) {
 		auto &vector = result.data[ht.lhs_output_in_probe.size() + i];
-		if (!all_match) {
-			for (idx_t j = 0; j < probe_size; j++) {
-				if (!found_match[j]) {
-					FlatVector::SetNull(vector, j, true);
-				}
-			}
-		}
 		const auto output_col_idx = ht.output_columns[i];
 		D_ASSERT(vector.GetType() == ht.layout_ptr->GetTypes()[output_col_idx]);
 		GatherResult(vector, result_sel, result_sel, result_count, output_col_idx);
