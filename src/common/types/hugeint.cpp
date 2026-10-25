@@ -310,44 +310,12 @@ hugeint_t Hugeint::Modulo<false>(hugeint_t lhs, hugeint_t rhs) {
 //===--------------------------------------------------------------------===//
 // Add/Subtract
 //===--------------------------------------------------------------------===//
-bool Hugeint::TryAddInPlace(hugeint_t &lhs, hugeint_t rhs) {
-	int overflow = lhs.lower + rhs.lower < lhs.lower;
-	if (rhs.upper >= 0) {
-		// RHS is positive: check for overflow
-		if (lhs.upper > (std::numeric_limits<int64_t>::max() - rhs.upper - overflow)) {
-			return false;
-		}
-		lhs.upper = lhs.upper + overflow + rhs.upper;
-	} else {
-		// RHS is negative: check for underflow
-		if (lhs.upper < std::numeric_limits<int64_t>::min() - rhs.upper - overflow) {
-			return false;
-		}
-		lhs.upper = lhs.upper + (overflow + rhs.upper);
-	}
-	lhs.lower += rhs.lower;
-	return true;
+void Hugeint::ThrowAddOverflow(hugeint_t lhs, hugeint_t rhs) {
+	throw OutOfRangeException("Overflow in HUGEINT addition: %s + %s", lhs.ToString(), rhs.ToString());
 }
 
-bool Hugeint::TrySubtractInPlace(hugeint_t &lhs, hugeint_t rhs) {
-	// underflow
-	int underflow = lhs.lower - rhs.lower > lhs.lower;
-	if (rhs.upper >= 0) {
-		// RHS is positive: check for underflow
-		if (lhs.upper < (std::numeric_limits<int64_t>::min() + rhs.upper + underflow)) {
-			return false;
-		}
-		lhs.upper = (lhs.upper - rhs.upper) - underflow;
-	} else {
-		// RHS is negative: check for overflow
-		if (lhs.upper > std::numeric_limits<int64_t>::min() &&
-		    lhs.upper - 1 >= (std::numeric_limits<int64_t>::max() + rhs.upper + underflow)) {
-			return false;
-		}
-		lhs.upper = lhs.upper - (rhs.upper + underflow);
-	}
-	lhs.lower -= rhs.lower;
-	return true;
+void Hugeint::ThrowSubtractUnderflow(hugeint_t lhs, hugeint_t rhs) {
+	throw OutOfRangeException("Underflow in HUGEINT subtraction: %s - %s", lhs.ToString(), rhs.ToString());
 }
 
 template <>

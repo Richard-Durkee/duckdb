@@ -13,6 +13,8 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/exception.hpp"
 
+#include <limits>
+
 namespace duckdb {
 
 //! The Hugeint class contains static operations for the INT128 type
@@ -101,25 +103,65 @@ public:
 		return Modulo<false>(lhs, rhs);
 	}
 
-	static bool TryAddInPlace(hugeint_t &lhs, hugeint_t rhs);
+	inline static bool TryAddInPlace(hugeint_t &lhs, hugeint_t rhs) {
+		int overflow = lhs.lower + rhs.lower < lhs.lower;
+		if (rhs.upper >= 0) {
+			// RHS is positive: check for overflow
+			if (lhs.upper > (std::numeric_limits<int64_t>::max() - rhs.upper - overflow)) {
+				return false;
+			}
+			lhs.upper = lhs.upper + overflow + rhs.upper;
+		} else {
+			// RHS is negative: check for underflow
+			if (lhs.upper < std::numeric_limits<int64_t>::min() - rhs.upper - overflow) {
+				return false;
+			}
+			lhs.upper = lhs.upper + (overflow + rhs.upper);
+		}
+		lhs.lower += rhs.lower;
+		return true;
+	}
 
 	template <bool CHECK_OVERFLOW = true>
 	inline static hugeint_t Add(hugeint_t lhs, hugeint_t rhs) {
 		if (!TryAddInPlace(lhs, rhs)) {
-			throw OutOfRangeException("Overflow in HUGEINT addition: %s + %s", lhs.ToString(), rhs.ToString());
+			ThrowAddOverflow(lhs, rhs);
 		}
 		return lhs;
 	}
 
-	static bool TrySubtractInPlace(hugeint_t &lhs, hugeint_t rhs);
+	inline static bool TrySubtractInPlace(hugeint_t &lhs, hugeint_t rhs) {
+		// underflow
+		int underflow = lhs.lower - rhs.lower > lhs.lower;
+		if (rhs.upper >= 0) {
+			// RHS is positive: check for underflow
+			if (lhs.upper < (std::numeric_limits<int64_t>::min() + rhs.upper + underflow)) {
+				return false;
+			}
+			lhs.upper = (lhs.upper - rhs.upper) - underflow;
+		} else {
+			// RHS is negative: check for overflow
+			if (lhs.upper > std::numeric_limits<int64_t>::min() &&
+			    lhs.upper - 1 >= (std::numeric_limits<int64_t>::max() + rhs.upper + underflow)) {
+				return false;
+			}
+			lhs.upper = lhs.upper - (rhs.upper + underflow);
+		}
+		lhs.lower -= rhs.lower;
+		return true;
+	}
 
 	template <bool CHECK_OVERFLOW = true>
 	inline static hugeint_t Subtract(hugeint_t lhs, hugeint_t rhs) {
 		if (!TrySubtractInPlace(lhs, rhs)) {
-			throw OutOfRangeException("Underflow in HUGEINT subtraction: %s - %s", lhs.ToString(), rhs.ToString());
+			ThrowSubtractUnderflow(lhs, rhs);
 		}
 		return lhs;
 	}
+
+	//! Kept out of line so the arithmetic above stays small enough to inline
+	[[noreturn]] static void ThrowAddOverflow(hugeint_t lhs, hugeint_t rhs);
+	[[noreturn]] static void ThrowSubtractUnderflow(hugeint_t lhs, hugeint_t rhs);
 
 	// DivMod -> returns the result of the division (lhs / rhs), and fills up the remainder
 	static hugeint_t DivMod(hugeint_t lhs, hugeint_t rhs, hugeint_t &remainder);
