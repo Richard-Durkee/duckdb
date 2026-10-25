@@ -1,0 +1,59 @@
+# name: test/sql/function/string/test_contains_positions.test
+# description: Test substring search against a brute force reference for many needle lengths and match positions
+# group: [string]
+
+statement ok
+CREATE TABLE haystacks AS
+SELECT h FROM (VALUES
+    ('abcdefghijklmnopqrstuvwxyz0123456789'),
+    ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab'),
+    ('abababababababababababababababababc'),
+    ('xyz'),
+    ('the quick brown fox jumps over the lazy dog, the quick brown fox'),
+    ('aabaabaabaabaabaabaabaaab'),
+    ('0123456701234567012345670123456789')
+) t(h);
+
+statement ok
+CREATE TABLE needles AS
+SELECT DISTINCT substring(h, s, l) AS n FROM haystacks, range(1, 40) a(s), range(2, 21) b(l)
+WHERE s + l - 1 <= length(h)
+UNION ALL SELECT n FROM (VALUES ('aab'), ('aaab'), ('abc'), ('xyzw'), ('zz'), ('dog!'), ('89x'), ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab'), ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab')) t(n);
+
+# instr returns the first match position, compare with a brute force search
+query I
+SELECT count(*)
+FROM haystacks, needles
+WHERE instr(h, n) <> coalesce((SELECT min(k) FROM range(1, length(h) - length(n) + 2) r(k) WHERE substring(h, k, length(n)) = n), 0)
+----
+0
+
+query I
+SELECT count(*)
+FROM haystacks, needles
+WHERE contains(h, n) <> (instr(h, n) > 0) OR (h LIKE '%' || n || '%') <> contains(h, n)
+----
+0
+
+# matches at the very end of a haystack and right after each word boundary
+query IIII
+SELECT instr('0123456789abcdefg', 'fg'), instr('0123456789abcdefg', '89'), instr('0123456789abcdefg', '789abcde'), instr('0123456789abcdefg', 'defgh')
+----
+16	9	8	0
+
+# multi-byte characters
+query III
+SELECT contains('Grüße aus Köln, schöne Grüße', 'schöne'), instr('Grüße aus Köln', 'Köln'), contains('Grüße', 'üß')
+----
+true	11	true
+
+# almost-matching needles take the linear-time fallback
+query I
+SELECT contains(repeat('a', 100000), repeat('a', 1000) || 'b')
+----
+false
+
+query I
+SELECT instr(repeat('a', 100000) || 'b', repeat('a', 1000) || 'b')
+----
+99001
