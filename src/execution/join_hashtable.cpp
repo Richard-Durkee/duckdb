@@ -210,11 +210,9 @@ idx_t GetOptionalIndex(optional_ptr<const SelectionVector> sel, const idx_t idx)
 	return HAS_SEL ? sel->get_index(idx) : idx;
 }
 
-static void AddPointerToCompare(JoinHashTable::ProbeState &state, const ht_entry_t &entry, Vector &pointers_result_v,
-                                idx_t row_ht_offset, idx_t &keys_to_compare_count, const idx_t &row_index) {
-	const auto row_ptr_insert_to = FlatVector::GetDataMutable<data_ptr_t>(pointers_result_v);
-	const auto ht_offsets_and_salts = FlatVector::GetDataMutable<idx_t>(state.ht_offsets_and_salts_v);
-
+static void AddPointerToCompare(JoinHashTable::ProbeState &state, const ht_entry_t &entry,
+                                data_ptr_t *row_ptr_insert_to, idx_t *ht_offsets_and_salts, idx_t row_ht_offset,
+                                idx_t &keys_to_compare_count, const idx_t &row_index) {
 	state.keys_to_compare_sel.set_index(keys_to_compare_count, row_index);
 	row_ptr_insert_to[row_index] = entry.GetPointer();
 
@@ -230,6 +228,8 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
                                       unsafe_optional_ptr<ht_entry_t> entries, Vector &pointers_result_v,
                                       optional_ptr<const SelectionVector> row_sel, idx_t &count) {
 	auto hashes_dense = FlatVector::GetDataMutable<hash_t>(state.hashes_dense_v);
+	const auto row_ptr_insert_to = FlatVector::GetDataMutable<data_ptr_t>(pointers_result_v);
+	const auto ht_offsets_and_salts = FlatVector::GetDataMutable<idx_t>(state.ht_offsets_and_salts_v);
 	const auto bitmask = ht.bitmask;
 
 	idx_t keys_to_compare_count = 0;
@@ -254,8 +254,8 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
 				if (salt_match) {
 					// we know that the entry is occupied and the salt matches -> compare the keys
 					auto row_index = GetOptionalIndex<HAS_SEL>(row_sel, i);
-					AddPointerToCompare(state, entry, pointers_result_v, row_ht_offset, keys_to_compare_count,
-					                    row_index);
+					AddPointerToCompare(state, entry, row_ptr_insert_to, ht_offsets_and_salts, row_ht_offset,
+					                    keys_to_compare_count, row_index);
 					break;
 				}
 
@@ -268,7 +268,8 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
 			if (occupied) {
 				// the entry is occupied -> compare the keys
 				auto row_index = GetOptionalIndex<HAS_SEL>(row_sel, i);
-				AddPointerToCompare(state, entry, pointers_result_v, row_ht_offset, keys_to_compare_count, row_index);
+				AddPointerToCompare(state, entry, row_ptr_insert_to, ht_offsets_and_salts, row_ht_offset,
+				                    keys_to_compare_count, row_index);
 			}
 		}
 	}
