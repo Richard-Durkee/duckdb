@@ -340,14 +340,16 @@ static inline idx_t DefaultSelectLoop(const SelectionVector *bsel, const uint8_t
 	for (idx_t i = 0; i < count; i++) {
 		auto bidx = bsel->get_index(i);
 		auto result_idx = sel->get_index(i);
-		if ((NO_NULL || mask.RowIsValid(bidx)) && bdata[bidx] > 0) {
-			if (HAS_TRUE_SEL) {
-				true_sel->set_index(true_count++, result_idx);
-			}
-		} else {
-			if (HAS_FALSE_SEL) {
-				false_sel->set_index(false_count++, result_idx);
-			}
+		// write to both selections unconditionally to avoid a branch on the (unpredictable) result
+		const bool is_valid = NO_NULL || mask.RowIsValid(bidx);
+		const bool result = is_valid & (bdata[bidx] > 0);
+		if (HAS_TRUE_SEL) {
+			true_sel->set_index(true_count, result_idx);
+			true_count += result;
+		}
+		if (HAS_FALSE_SEL) {
+			false_sel->set_index(false_count, result_idx);
+			false_count += !result;
 		}
 	}
 	if (HAS_TRUE_SEL) {
