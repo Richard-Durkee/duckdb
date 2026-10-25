@@ -1,0 +1,43 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_filter_random_matches.test
+# description: Test filters pushed into DICT_FSST scans whose matching rows are in a random order
+# group: [dict_fsst]
+
+load {TEST_DIR}/dict_fsst_filter_random_matches.db readwrite v1.3.0
+
+statement ok
+pragma force_compression='dict_fsst'
+
+statement ok
+CREATE TABLE strs AS
+SELECT CASE WHEN hash(i) % 13 = 0 THEN NULL ELSE 'value_' || (hash(i * 3) % 7) END AS s, i FROM range(200000) t(i);
+
+statement ok
+checkpoint
+
+restart
+
+# the WHERE filters are pushed into the scan, the aggregate FILTER clauses are evaluated on the scanned strings
+foreach predicate ='value_3' <>'value_3' >='value_4' <'value_2'
+
+query I
+SELECT (SELECT count(*) FROM strs WHERE s ${predicate}) = (SELECT count(*) FILTER (WHERE s ${predicate}) FROM strs)
+----
+true
+
+query I
+SELECT (SELECT sum(i) FROM strs WHERE s ${predicate}) = (SELECT sum(i) FILTER (WHERE s ${predicate}) FROM strs)
+----
+true
+
+endloop
+
+query I
+SELECT (SELECT count(*) FROM strs WHERE s IS NULL) = (SELECT count(*) FILTER (WHERE s IS NULL) FROM strs)
+----
+true
+
+# a filter on the dictionary column combined with a filter on another column
+query I
+SELECT (SELECT count(*) FROM strs WHERE s = 'value_3' AND i % 2 = 0) = (SELECT count(*) FILTER (WHERE s = 'value_3' AND i % 2 = 0) FROM strs)
+----
+true

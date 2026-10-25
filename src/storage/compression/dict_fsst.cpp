@@ -216,11 +216,9 @@ static void DictFSSTFilter(ColumnSegment &segment, ColumnScanState &state, idx_t
 				scan_state.null_filter_result_initialized = true;
 			}
 			// Check filter result for the value at the offset and assign selection vector.
-			if (!scan_state.filter_result[dict_offset]) {
-				// does not pass the filter
-				continue;
-			}
-			new_sel.set_index(approved_tuple_count++, row_idx);
+			// write unconditionally to avoid branching on the (unpredictable) filter result
+			new_sel.set_index(approved_tuple_count, row_idx);
+			approved_tuple_count += scan_state.filter_result[dict_offset];
 		}
 		if (approved_tuple_count < vector_count) {
 			sel.Initialize(new_sel);
