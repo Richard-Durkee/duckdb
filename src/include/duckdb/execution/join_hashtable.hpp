@@ -261,6 +261,10 @@ public:
 		Vector ht_offsets_and_salts_v;
 		Vector hashes_dense_v;
 		SelectionVector non_empty_sel;
+		//! Whether to probe without branching on whether a row has a candidate, adapted to how often that changes
+		bool branchless_probe = false;
+		//! Probes with fewer rows than this do not change branchless_probe
+		static constexpr idx_t BRANCHLESS_PROBE_MIN_COUNT = STANDARD_VECTOR_SIZE / 4;
 		//! Allocated only when the operator gates the compressed-probe paths on; null otherwise
 		unique_ptr<ProbeDictionaryState> dict_state;
 	};

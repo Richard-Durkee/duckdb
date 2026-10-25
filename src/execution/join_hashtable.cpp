@@ -214,7 +214,7 @@ static void AddPointerToCompare(JoinHashTable::ProbeState &state, const ht_entry
                                 data_ptr_t *row_ptr_insert_to, idx_t *ht_offsets_and_salts, idx_t row_ht_offset,
                                 idx_t &keys_to_compare_count, const idx_t &row_index) {
 	state.keys_to_compare_sel.set_index(keys_to_compare_count, row_index);
-	row_ptr_insert_to[row_index] = entry.GetPointer();
+	row_ptr_insert_to[row_index] = entry.GetPointerOrNull();
 
 	// If the key does not match, we have to continue linear probing, we need to store the ht_offset and the salt
 	// for this element based on the row_index. We can't get the offset from the hash as we already might have
@@ -223,7 +223,7 @@ static void AddPointerToCompare(JoinHashTable::ProbeState &state, const ht_entry
 	keys_to_compare_count += 1;
 }
 
-template <bool USE_SALTS, bool HAS_SEL>
+template <bool USE_SALTS, bool HAS_SEL, bool BRANCHLESS>
 static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHashTable &ht,
                                       unsafe_optional_ptr<ht_entry_t> entries, Vector &pointers_result_v,
                                       optional_ptr<const SelectionVector> row_sel, idx_t &count) {
@@ -233,10 +233,37 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
 	const auto bitmask = ht.bitmask;
 
 	idx_t keys_to_compare_count = 0;
+	// the number of rows whose outcome differs from the previous row, which makes a branch on the outcome mispredict
+	idx_t outcome_changes = 0;
+	bool previous_outcome = false;
 
 	for (idx_t i = 0; i < count; i++) {
 		auto row_hash = hashes_dense[i]; // hashes have been flattened before -> always access dense
 		auto row_ht_offset = row_hash & bitmask;
+
+		if (BRANCHLESS) {
+			ht_entry_t entry = entries.get()[row_ht_offset];
+			if (USE_SALTS) {
+				// increment the ht_offset of the entry as long as the entry is occupied and the salt does not match
+				const hash_t row_salt = ht_entry_t::ExtractSalt(row_hash);
+				while (entry.IsOccupied() && entry.GetSalt() != row_salt) {
+					IncrementAndWrap(row_ht_offset, bitmask);
+					entry = entries.get()[row_ht_offset];
+				}
+			}
+			// an occupied entry needs its keys compared, an empty entry means there is no match
+			// write unconditionally and only count the occupied entries to avoid branching on the result
+			auto row_index = GetOptionalIndex<HAS_SEL>(row_sel, i);
+			const auto occupied = entry.IsOccupied();
+			AddPointerToCompare(state, entry, row_ptr_insert_to, ht_offsets_and_salts, row_ht_offset,
+			                    keys_to_compare_count, row_index);
+			keys_to_compare_count -= !occupied;
+			outcome_changes += occupied != previous_outcome;
+			previous_outcome = occupied;
+			continue;
+		}
+
+		const auto keys_to_compare_before = keys_to_compare_count;
 
 		if (USE_SALTS) {
 			// increment the ht_offset of the entry as long as the next entry is occupied and salt does not match
@@ -272,8 +299,15 @@ static idx_t ProbeForPointersInternal(JoinHashTable::ProbeState &state, JoinHash
 				                    keys_to_compare_count, row_index);
 			}
 		}
+		const bool outcome = keys_to_compare_count != keys_to_compare_before;
+		outcome_changes += outcome != previous_outcome;
+		previous_outcome = outcome;
 	}
 
+	// branching on the outcome is cheap if it rarely changes between consecutive rows
+	if (count >= JoinHashTable::ProbeState::BRANCHLESS_PROBE_MIN_COUNT) {
+		state.branchless_probe = outcome_changes * 8 >= count;
+	}
 	return keys_to_compare_count;
 }
 
@@ -286,11 +320,19 @@ template <bool USE_SALTS>
 static idx_t ProbeForPointers(JoinHashTable::ProbeState &state, JoinHashTable &ht,
                               unsafe_optional_ptr<ht_entry_t> entries, Vector &pointers_result_v,
                               optional_ptr<const SelectionVector> row_sel, idx_t count, const bool has_row_sel) {
-	if (has_row_sel) {
-		return ProbeForPointersInternal<USE_SALTS, true>(state, ht, entries, pointers_result_v, row_sel, count);
+	idx_t result;
+	if (state.branchless_probe) {
+		result = has_row_sel ? ProbeForPointersInternal<USE_SALTS, true, true>(state, ht, entries, pointers_result_v,
+		                                                                       row_sel, count)
+		                     : ProbeForPointersInternal<USE_SALTS, false, true>(state, ht, entries, pointers_result_v,
+		                                                                        row_sel, count);
 	} else {
-		return ProbeForPointersInternal<USE_SALTS, false>(state, ht, entries, pointers_result_v, row_sel, count);
+		result = has_row_sel ? ProbeForPointersInternal<USE_SALTS, true, false>(state, ht, entries, pointers_result_v,
+		                                                                        row_sel, count)
+		                     : ProbeForPointersInternal<USE_SALTS, false, false>(state, ht, entries, pointers_result_v,
+		                                                                         row_sel, count);
 	}
+	return result;
 }
 
 //! Gets a pointer to the entry in the HT for each of the hashes_v using linear probing. Will update the key_match_sel
