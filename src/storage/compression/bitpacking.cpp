@@ -64,6 +64,10 @@ static void ValidateBitpackingMode(BitpackingMode mode) {
 	}
 }
 
+[[noreturn]] static void ThrowBitpackingMissingPayload() {
+	throw InternalException("Bitpacking algorithm group has no payload");
+}
+
 [[noreturn]] static void ThrowBitpackingWidthOutOfRange() {
 	throw DataCorruptionException("Corrupted bitpacking segment: bit width exceeds the physical type width");
 }
@@ -731,7 +735,7 @@ public:
 			D_ASSERT(!AtEnd());
 			D_ASSERT(width > 0);
 			if (!payload) {
-				throw InternalException("Bitpacking algorithm group has no payload");
+				ThrowBitpackingMissingPayload();
 			}
 			auto algorithm_group_index = offset / BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 			D_ASSERT(algorithm_group_index < algorithm_group_count);
