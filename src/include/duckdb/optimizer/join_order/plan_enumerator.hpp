@@ -52,21 +52,23 @@ private:
 	//! cancelling the dynamic programming step.
 	bool TryEmitPair(JoinRelationSet &left, JoinRelationSet &right, const vector<reference<NeighborInfo>> &info);
 	const vector<reference<NeighborInfo>> &GetConnections(JoinRelationSet &left, JoinRelationSet &right);
-	const vector<reference<JoinRelationSet>> &GetAllNeighborRelationSets(vector<RelationIndex> neighbors);
+	//! Returns the relation sets of all non-empty subsets of the neighbors in the given bitmask
+	const vector<reference<JoinRelationSet>> &GetAllNeighborRelationSets(idx_t neighbor_mask);
+	//! Returns the relation set that contains every relation
+	JoinRelationSet &GetTotalRelationSet();
 
-	bool EnumerateCmpRecursive(JoinRelationSet &left, JoinRelationSet &right,
-	                           unordered_set<RelationIndex> &exclusion_set);
+	bool EnumerateCmpRecursive(JoinRelationSet &left, JoinRelationSet &right, idx_t exclusion_mask);
 	//! Emit a relation set node
 	bool EmitCSG(JoinRelationSet &node);
 	//! Enumerate the possible connected subgraphs that can be joined together in the join graph
-	bool EnumerateCSGRecursive(JoinRelationSet &node, unordered_set<RelationIndex> &exclusion_set);
+	bool EnumerateCSGRecursive(JoinRelationSet &node, idx_t exclusion_mask);
 	//! Solve the join order exactly using dynamic programming. Returns true if it was completed successfully (i.e. did
 	//! not time-out)
 	bool SolveJoinOrderExactly();
 	//! Solve the join order approximately using a greedy algorithm
 	bool SolveJoinOrderApproximately();
 	bool PlanUsesCrossProduct(const DPJoinNode &node) const;
-	bool HasCompletePlan() const;
+	bool HasCompletePlan();
 	bool ActivateRequiredCrossProducts();
 
 private:
