@@ -1,0 +1,65 @@
+# name: test/sql/join/cross_product/cross_product_components.test
+# description: Cross products between independently solved connected components of the join graph
+# group: [cross_product]
+
+statement ok
+CREATE TABLE t (k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+CREATE TABLE u (k INTEGER, w INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1, 100), (3, 300);
+
+# many uncorrelated scalar subqueries, each one becomes a component of its own
+query IIIIIIIIIII
+SELECT (SELECT max(v) FROM t WHERE k > 0), (SELECT max(v) FROM t WHERE k > 1), (SELECT max(v) FROM t WHERE k > 2),
+       (SELECT min(v) FROM t WHERE k > 0), (SELECT min(v) FROM t WHERE k > 1), (SELECT min(v) FROM t WHERE k > 2),
+       (SELECT count(*) FROM t), (SELECT count(*) FROM u), (SELECT sum(w) FROM u), (SELECT max(w) FROM u),
+       (SELECT min(w) FROM u)
+FROM t
+LIMIT 1;
+----
+30	30	30	10	20	30	3	2	400	300	100
+
+# components that are joins themselves, combined with explicit cross products
+query IIII
+SELECT a.k, a.w, b.k, b.v
+FROM (SELECT t.k, u.w FROM t JOIN u USING (k)) a,
+     (SELECT t.k, t.v FROM t JOIN u USING (k) WHERE t.k = 1) b,
+     (SELECT 1) c,
+     (SELECT 2) d
+ORDER BY ALL;
+----
+1	100	1	10
+3	300	1	10
+
+# the explicit cross products are still reported when cross products are disallowed
+statement ok
+SET debug_force_no_cross_product=true;
+
+statement error
+SELECT (SELECT max(v) FROM t), (SELECT min(v) FROM t), (SELECT count(*) FROM u) FROM t LIMIT 1;
+----
+Query requires a cross-product
+
+statement error
+SELECT a.k, b.k
+FROM (SELECT t.k FROM t JOIN u USING (k)) a,
+     (SELECT t.k FROM t JOIN u USING (k)) b
+ORDER BY ALL;
+----
+Query requires a cross-product
+
+# a join between the components is not a cross product
+query II
+SELECT a.k, b.k
+FROM (SELECT t.k FROM t JOIN u USING (k)) a
+JOIN (SELECT t.k FROM t JOIN u USING (k)) b ON a.k = b.k
+ORDER BY ALL;
+----
+1	1
+3	3

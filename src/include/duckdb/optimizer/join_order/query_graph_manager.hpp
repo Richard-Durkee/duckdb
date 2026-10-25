@@ -50,6 +50,8 @@ public:
 	bool ActivateRequiredCrossProducts();
 	//! Whether the predicate graph still has disconnected components.
 	bool RequiresCrossProduct() const;
+	//! Returns the connected component of the predicate graph that the relation belongs to
+	idx_t GetGraphComponent(RelationIndex relation) const;
 	bool IsConnectionApplicable(const NeighborInfo &connection, const JoinRelationSet &left,
 	                            const JoinRelationSet &right) const;
 	bool IsJoinOrderCandidate(optional_ptr<JoinOrderOperator> selected_operator, bool generated_cross_product,
@@ -73,7 +75,6 @@ private:
 	void BuildInnerCompanionSets();
 	void ClearExtractedExpressions();
 	idx_t FindGraphComponent(RelationIndex relation);
-	idx_t GetGraphComponent(RelationIndex relation) const;
 	void ConnectGraphComponents(const JoinRelationSet &left, const JoinRelationSet &right);
 
 	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set);

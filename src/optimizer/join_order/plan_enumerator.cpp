@@ -375,14 +375,47 @@ bool PlanEnumerator::SolveJoinOrderExactly() {
 	return true;
 }
 
-bool PlanEnumerator::SolveJoinOrderApproximately() {
+vector<reference<JoinRelationSet>> PlanEnumerator::GetSingleRelationSets() {
+	vector<reference<JoinRelationSet>> result;
+	for (idx_t i = 0; i < query_graph_manager.relation_manager.NumRelations(); i++) {
+		result.push_back(query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i)));
+	}
+	return result;
+}
+
+bool PlanEnumerator::GetSolvedComponentSets(vector<reference<JoinRelationSet>> &result) {
+	// group the relations by connected component, in order of their smallest relation
+	vector<pair<idx_t, idx_t>> component_masks;
+	for (idx_t i = 0; i < query_graph_manager.relation_manager.NumRelations(); i++) {
+		auto component = query_graph_manager.GetGraphComponent(RelationIndex(i));
+		bool found = false;
+		for (auto &entry : component_masks) {
+			if (entry.first == component) {
+				entry.second |= idx_t(1) << i;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			component_masks.emplace_back(component, idx_t(1) << i);
+		}
+	}
+	for (auto &entry : component_masks) {
+		auto &set = query_graph_manager.set_manager.GetJoinRelationFromMask(entry.second);
+		if (plans.find(set) == plans.end()) {
+			// the exact enumeration did not produce a plan for this component
+			return false;
+		}
+		result.push_back(set);
+	}
+	return true;
+}
+
+bool PlanEnumerator::SolveJoinOrderApproximately(vector<reference<JoinRelationSet>> join_relations) {
 	// at this point, we exited the dynamic programming but did not compute the final join order because it took too
 	// long instead, we use a greedy heuristic to obtain a join ordering now we use Greedy Operator Ordering to
-	// construct the result tree first we start out with all the base relations (the to-be-joined relations)
-	vector<reference<JoinRelationSet>> join_relations; // T in the paper
-	for (idx_t i = 0; i < query_graph_manager.relation_manager.NumRelations(); i++) {
-		join_relations.push_back(query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i)));
-	}
+	// construct the result tree. join_relations holds the to-be-joined relation sets (T in the paper), which are
+	// either the base relations or the already solved connected components
 
 	// in every step of the algorithm, we greedily pick the join between the to-be-joined relations that has the
 	// smallest cost. Pair costs are deterministic while the query graph is unchanged, so we evaluate each pair once
@@ -564,15 +597,26 @@ bool PlanEnumerator::SolveJoinOrder() {
 	bool solved;
 	auto num_relations = query_graph_manager.relation_manager.NumRelations();
 	if (num_relations >= swap_to_approximate_threshold || num_relations > MAX_EXACT_RELATIONS) {
-		solved = SolveJoinOrderApproximately();
+		solved = SolveJoinOrderApproximately(GetSingleRelationSets());
 	} else {
 		auto completed_exactly = SolveJoinOrderExactly();
-		if (completed_exactly && !HasCompletePlan() && ActivateRequiredCrossProducts()) {
-			completed_exactly = SolveJoinOrderExactly();
+		if (completed_exactly && !HasCompletePlan()) {
+			// the query graph is disconnected: every connected component has an optimal plan, but the components
+			// still have to be combined through the cross products the query requires
+			vector<reference<JoinRelationSet>> components;
+			bool components_solved = GetSolvedComponentSets(components);
+			if (ActivateRequiredCrossProducts()) {
+				if (components_solved) {
+					// combine the solved components greedily instead of enumerating all of their combinations
+					completed_exactly = SolveJoinOrderApproximately(std::move(components));
+				} else {
+					completed_exactly = SolveJoinOrderExactly();
+				}
+			}
 		}
 		if (!completed_exactly || !HasCompletePlan()) {
 			// Exact enumeration either reached its pair budget or could not connect the graph.
-			solved = SolveJoinOrderApproximately();
+			solved = SolveJoinOrderApproximately(GetSingleRelationSets());
 		} else {
 			solved = true;
 		}
