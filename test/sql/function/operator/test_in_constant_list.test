@@ -1,0 +1,111 @@
+# name: test/sql/function/operator/test_in_constant_list.test
+# description: Test IN and NOT IN against lists of constants
+# group: [operator]
+
+statement ok
+CREATE TABLE vals AS
+SELECT
+    CASE WHEN i % 11 = 0 THEN NULL ELSE i % 50 END::INTEGER AS i32,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE i % 50 END::BIGINT AS i64,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 50)::HUGEINT * 100000000000000000000 END AS i128,
+    CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN 'nan'::DOUBLE ELSE (i % 50) / 2 END::DOUBLE AS dbl,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE 'v' || (i % 50) END AS str,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE 'a_long_string_that_is_not_inlined_' || (i % 50) END AS long_str,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE INTERVAL (i % 50) DAY END AS itv,
+    CASE WHEN i % 11 = 0 THEN NULL ELSE i % 3 = 0 END AS bln
+FROM range(3000) t(i);
+
+# IN matches the equivalent disjunction, also with a NULL in the list
+query I
+SELECT count(*) FROM vals WHERE (i32 IN (3, 17, 42)) IS DISTINCT FROM (i32 = 3 OR i32 = 17 OR i32 = 42)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (i32 IN (3, NULL, 42)) IS DISTINCT FROM (i32 = 3 OR i32 = NULL OR i32 = 42)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (i32 NOT IN (3, 17, 42)) IS DISTINCT FROM (i32 <> 3 AND i32 <> 17 AND i32 <> 42)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (i32 NOT IN (3, NULL, 42)) IS DISTINCT FROM (i32 <> 3 AND i32 <> NULL AND i32 <> 42)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (i64 IN (1, 25, 49)) IS DISTINCT FROM (i64 = 1 OR i64 = 25 OR i64 = 49)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (i128 IN (100000000000000000000, 2500000000000000000000)) IS DISTINCT FROM (i128 = 100000000000000000000 OR i128 = 2500000000000000000000)
+----
+0
+
+# NaN is equal to NaN
+query I
+SELECT count(*) FROM vals WHERE (dbl IN (0.5, 'nan'::DOUBLE, 12)) IS DISTINCT FROM (dbl = 0.5 OR dbl = 'nan'::DOUBLE OR dbl = 12)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE dbl IN ('nan'::DOUBLE)
+----
+210
+
+query I
+SELECT count(*) FROM vals WHERE (str IN ('v1', 'v22', 'v49')) IS DISTINCT FROM (str = 'v1' OR str = 'v22' OR str = 'v49')
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (long_str NOT IN ('a_long_string_that_is_not_inlined_7', 'a_long_string_that_is_not_inlined_8')) IS DISTINCT FROM (long_str <> 'a_long_string_that_is_not_inlined_7' AND long_str <> 'a_long_string_that_is_not_inlined_8')
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (itv IN (INTERVAL 1 DAY, INTERVAL 24 HOUR, INTERVAL 30 DAY)) IS DISTINCT FROM (itv = INTERVAL 1 DAY OR itv = INTERVAL 24 HOUR OR itv = INTERVAL 30 DAY)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (bln IN (true)) IS DISTINCT FROM (bln = true)
+----
+0
+
+query I
+SELECT count(*) FROM vals WHERE (bln NOT IN (false, NULL)) IS DISTINCT FROM (bln <> false AND bln <> NULL)
+----
+0
+
+# counts in filters and projections
+query IIII
+SELECT
+    count(*) FILTER (WHERE i32 IN (3, 17, 42)),
+    count(*) FILTER (WHERE i32 NOT IN (3, 17, 42)),
+    count(*) FILTER (WHERE (i32 IN (3, 17, 42)) IS NULL),
+    count(*) FILTER (WHERE (i32 NOT IN (3, NULL, 42)) IS NULL)
+FROM vals
+----
+164	2563	273	2891
+
+query I
+SELECT count(*) FROM vals WHERE str NOT IN ('v1', 'v22', 'v49')
+----
+2564
+
+# constant left-hand side
+query II
+SELECT 3 IN (1, 2, 3), 4 NOT IN (1, NULL, 3)
+----
+true	NULL
+
+# dictionary-encoded input
+query I
+SELECT count(*) FROM (SELECT CASE WHEN i % 3 = 0 THEN 'x' WHEN i % 3 = 1 THEN 'y' ELSE NULL END AS d FROM range(5000) t(i)) WHERE d IN ('x', 'z')
+----
+1667

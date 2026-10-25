@@ -3,6 +3,9 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/operator/comparison_operators.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
@@ -83,6 +86,137 @@ idx_t ExpressionExecutor::Select(const BoundOperatorExpression &expr, Expression
 	return count - SelectNulls(child, input_sel, count, false_sel, true_sel);
 }
 
+template <class T, bool IS_NOT_IN>
+static void ExecuteConstantInList(const BoundOperatorExpression &expr, const Vector &left, Vector &result,
+                                  idx_t count) {
+	vector<T> constants;
+	bool has_null_constant = false;
+	for (idx_t child = 1; child < expr.GetChildren().size(); child++) {
+		auto &value = expr.GetChildren()[child]->Cast<BoundConstantExpression>().GetValue();
+		if (value.IsNull()) {
+			has_null_constant = true;
+		} else {
+			constants.push_back(value.GetValueUnsafe<T>());
+		}
+	}
+	if (left.GetVectorType() == VectorType::FLAT_VECTOR) {
+		// compare all rows against one constant at a time so the comparison loops vectorize
+		auto data = FlatVector::GetData<T>(left);
+		auto &left_validity = FlatVector::Validity(left);
+		result.SetVectorType(VectorType::FLAT_VECTOR);
+		FlatVector::SetSize(result, count);
+		auto result_data = FlatVector::GetDataMutable<bool>(result);
+		for (idx_t i = 0; i < count; i++) {
+			result_data[i] = false;
+		}
+		for (auto &constant : constants) {
+			for (idx_t i = 0; i < count; i++) {
+				result_data[i] |= Equals::Operation(data[i], constant);
+			}
+		}
+		auto &result_validity = FlatVector::ValidityMutable(result);
+		if (has_null_constant) {
+			// a NULL in the list makes the result NULL for rows that do not match any other entry
+			result_validity.Copy(left_validity, count);
+			for (idx_t i = 0; i < count; i++) {
+				if (!result_data[i]) {
+					result_validity.SetInvalid(i);
+				}
+			}
+		} else {
+			result_validity.Initialize(left_validity);
+		}
+		if (IS_NOT_IN) {
+			for (idx_t i = 0; i < count; i++) {
+				result_data[i] = !result_data[i];
+			}
+		}
+		return;
+	}
+	auto contains = [&](const T &input) {
+		bool found = false;
+		for (auto &constant : constants) {
+			found |= Equals::Operation(input, constant);
+		}
+		return found;
+	};
+	if (has_null_constant) {
+		// a NULL in the list makes the result NULL for rows that do not match any other entry
+		UnaryExecutor::Execute<T, bool>(
+		    left, result, count,
+		    [&](const T &input) -> optional<bool> {
+			    if (contains(input)) {
+				    return !IS_NOT_IN;
+			    }
+			    return nullopt;
+		    },
+		    FunctionErrors::CANNOT_ERROR);
+	} else {
+		UnaryExecutor::Execute<T, bool>(
+		    left, result, count, [&](const T &input) { return contains(input) != IS_NOT_IN; },
+		    FunctionErrors::CANNOT_ERROR);
+	}
+}
+
+template <bool IS_NOT_IN>
+static bool TryExecuteConstantInList(const BoundOperatorExpression &expr, const Vector &left, Vector &result,
+                                     idx_t count) {
+	for (idx_t child = 1; child < expr.GetChildren().size(); child++) {
+		auto &child_expr = *expr.GetChildren()[child];
+		if (child_expr.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
+		    child_expr.GetReturnType() != left.GetType()) {
+			return false;
+		}
+	}
+	switch (left.GetType().InternalType()) {
+	case PhysicalType::BOOL:
+	case PhysicalType::INT8:
+		ExecuteConstantInList<int8_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::INT16:
+		ExecuteConstantInList<int16_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::INT32:
+		ExecuteConstantInList<int32_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::INT64:
+		ExecuteConstantInList<int64_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::INT128:
+		ExecuteConstantInList<hugeint_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::UINT8:
+		ExecuteConstantInList<uint8_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::UINT16:
+		ExecuteConstantInList<uint16_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::UINT32:
+		ExecuteConstantInList<uint32_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::UINT64:
+		ExecuteConstantInList<uint64_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::UINT128:
+		ExecuteConstantInList<uhugeint_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::FLOAT:
+		ExecuteConstantInList<float, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::DOUBLE:
+		ExecuteConstantInList<double, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::INTERVAL:
+		ExecuteConstantInList<interval_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	case PhysicalType::VARCHAR:
+		ExecuteConstantInList<string_t, IS_NOT_IN>(expr, left, result, count);
+		return true;
+	default:
+		return false;
+	}
+}
+
 void ExpressionExecutor::Execute(const BoundOperatorExpression &expr, ExpressionState *state,
                                  const SelectionVector *sel, idx_t count, Vector &result) {
 	// special handling for special snowflake 'IN'
@@ -96,6 +230,13 @@ void ExpressionExecutor::Execute(const BoundOperatorExpression &expr, Expression
 		Vector left(expr.GetChildren()[0]->GetReturnType());
 		// eval left side
 		Execute(*expr.GetChildren()[0], state->child_states[0].get(), sel, count, left);
+
+		// fast path: compare against a list of constants in a single pass
+		if (expression_type == ExpressionType::COMPARE_NOT_IN
+		        ? TryExecuteConstantInList<true>(expr, left, result, count)
+		        : TryExecuteConstantInList<false>(expr, left, result, count)) {
+			return;
+		}
 
 		// init result to false
 		Vector intermediate(LogicalType::BOOLEAN);
