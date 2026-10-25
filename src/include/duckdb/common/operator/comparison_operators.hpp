@@ -9,11 +9,13 @@
 #pragma once
 
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/likely.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/string_type.hpp"
 
+#include <cmath>
 #include <cstring>
 
 namespace duckdb {
@@ -79,25 +81,94 @@ struct Comparator {
 	}
 };
 
-template <>
-DUCKDB_API int8_t Comparator::Operation(const float &left, const float &right);
-template <>
-DUCKDB_API int8_t Comparator::Operation(const double &left, const double &right);
+//! Floating point comparisons: NaN is equal to NaN and bigger than any other value
+struct FloatComparisonOperators {
+	template <class T>
+	static inline bool Equals(T left, T right) {
+		if (DUCKDB_UNLIKELY(std::isnan(left) && std::isnan(right))) {
+			return true;
+		}
+		return left == right;
+	}
+	template <class T>
+	static inline bool GreaterThan(T left, T right) {
+		// if right is nan, there is no number that is bigger than right
+		if (DUCKDB_UNLIKELY(std::isnan(right))) {
+			return false;
+		}
+		// if left is nan, but right is not, left is always bigger
+		if (DUCKDB_UNLIKELY(std::isnan(left))) {
+			return true;
+		}
+		return left > right;
+	}
+	template <class T>
+	static inline bool GreaterThanEquals(T left, T right) {
+		// if right is nan, there is no bigger number: left is only equal if it is also nan
+		if (DUCKDB_UNLIKELY(std::isnan(right))) {
+			return std::isnan(left);
+		}
+		// if left is nan, but right is not, left is always bigger
+		if (DUCKDB_UNLIKELY(std::isnan(left))) {
+			return true;
+		}
+		return left >= right;
+	}
+	template <class T>
+	static inline int8_t Compare(T left, T right) {
+		bool left_is_nan = std::isnan(left);
+		bool right_is_nan = std::isnan(right);
+		if (DUCKDB_UNLIKELY(left_is_nan || right_is_nan)) {
+			if (left_is_nan && right_is_nan) {
+				return Comparator::VALUES_ARE_EQUAL;
+			}
+			return left_is_nan ? Comparator::LEFT_IS_GREATER : Comparator::RIGHT_IS_GREATER;
+		}
+		if (left < right) {
+			return Comparator::RIGHT_IS_GREATER;
+		}
+		if (left > right) {
+			return Comparator::LEFT_IS_GREATER;
+		}
+		return Comparator::VALUES_ARE_EQUAL;
+	}
+};
 
 template <>
-DUCKDB_API bool Equals::Operation(const float &left, const float &right);
+inline int8_t Comparator::Operation(const float &left, const float &right) {
+	return FloatComparisonOperators::Compare(left, right);
+}
 template <>
-DUCKDB_API bool Equals::Operation(const double &left, const double &right);
+inline int8_t Comparator::Operation(const double &left, const double &right) {
+	return FloatComparisonOperators::Compare(left, right);
+}
 
 template <>
-DUCKDB_API bool GreaterThan::Operation(const float &left, const float &right);
+inline bool Equals::Operation(const float &left, const float &right) {
+	return FloatComparisonOperators::Equals(left, right);
+}
 template <>
-DUCKDB_API bool GreaterThan::Operation(const double &left, const double &right);
+inline bool Equals::Operation(const double &left, const double &right) {
+	return FloatComparisonOperators::Equals(left, right);
+}
 
 template <>
-DUCKDB_API bool GreaterThanEquals::Operation(const float &left, const float &right);
+inline bool GreaterThan::Operation(const float &left, const float &right) {
+	return FloatComparisonOperators::GreaterThan(left, right);
+}
 template <>
-DUCKDB_API bool GreaterThanEquals::Operation(const double &left, const double &right);
+inline bool GreaterThan::Operation(const double &left, const double &right) {
+	return FloatComparisonOperators::GreaterThan(left, right);
+}
+
+template <>
+inline bool GreaterThanEquals::Operation(const float &left, const float &right) {
+	return FloatComparisonOperators::GreaterThanEquals(left, right);
+}
+template <>
+inline bool GreaterThanEquals::Operation(const double &left, const double &right) {
+	return FloatComparisonOperators::GreaterThanEquals(left, right);
+}
 
 // Distinct semantics are from Postgres record sorting. NULL = NULL and not-NULL < NULL
 // Deferring to the non-distinct operations removes the need for further specialisation.
