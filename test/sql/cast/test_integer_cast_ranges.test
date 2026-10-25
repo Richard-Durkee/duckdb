@@ -1,0 +1,60 @@
+# name: test/sql/cast/test_integer_cast_ranges.test
+# description: Test integer casts of whole vectors that are in range, at the boundaries and out of range
+# group: [cast]
+
+statement ok
+CREATE TABLE ints AS SELECT i::BIGINT AS i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END::BIGINT AS ni FROM range(-40000, 40000) t(i);
+
+query IIII
+SELECT sum(i::INTEGER), sum(ni::INTEGER), count(ni::INTEGER), min(i::INTEGER)
+FROM ints
+----
+-40000	-40000	68571	-40000
+
+query II
+SELECT sum((i % 32768)::SMALLINT), sum(ni::HUGEINT) FROM ints
+----
+-7232	-40000
+
+# a single out-of-range value fails the cast, wherever it is in the vector
+statement error
+SELECT sum(i::SMALLINT) FROM ints
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement error
+SELECT (CASE WHEN i = 1000 THEN 100000 ELSE i % 100 END)::TINYINT FROM ints WHERE i BETWEEN 0 AND 2047
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+query II
+SELECT count(TRY_CAST(i AS SMALLINT)), count(*) FILTER (WHERE TRY_CAST(i AS SMALLINT) IS NULL) FROM ints
+----
+65536	14464
+
+# boundaries of the target types
+query IIII
+SELECT x::TINYINT, y::TINYINT, z::UTINYINT, w::SMALLINT FROM (VALUES (127::BIGINT, -128::BIGINT, 255::BIGINT, -32768::BIGINT)) t(x, y, z, w)
+----
+127	-128	255	-32768
+
+statement error
+SELECT x::UINTEGER FROM (SELECT CASE WHEN i = 5 THEN -1 ELSE i END AS x FROM range(10) t(i))
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement error
+SELECT x::BIGINT FROM (SELECT CASE WHEN i = 5 THEN 18446744073709551615::UBIGINT ELSE i::UBIGINT END AS x FROM range(10) t(i))
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+query I
+SELECT sum(x::UBIGINT) FROM (SELECT i::INTEGER AS x FROM range(100) t(i))
+----
+4950
+
+# NULL rows do not cause errors
+query I
+SELECT count(x::TINYINT) FROM (SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE i % 100 END::BIGINT AS x FROM range(10000) t(i))
+----
+5000

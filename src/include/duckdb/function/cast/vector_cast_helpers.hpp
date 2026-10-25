@@ -12,6 +12,7 @@
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/vector_operations/general_cast.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/operator/numeric_cast.hpp"
 #include "duckdb/common/likely.hpp"
 #include "duckdb/common/string_map_set.hpp"
 #include "duckdb/function/cast/nested_to_varchar_cast.hpp"
@@ -119,8 +120,44 @@ struct VectorCastHelpers {
 		return input.all_converted;
 	}
 
+	//! Casts a flat vector between integer types without checking every row, if its minimum and maximum fit the
+	//! result type (so all of its values do)
+	template <class SRC, class DST>
+	static bool TryIntegerCastFlatInRange(Vector &source, Vector &result, idx_t count) {
+		if (source.GetVectorType() != VectorType::FLAT_VECTOR || count == 0) {
+			return false;
+		}
+		auto source_data = FlatVector::GetData<SRC>(source);
+		// NULL rows are included: their values are not used, but they only cause us to take the slow path
+		SRC min_value = source_data[0];
+		SRC max_value = source_data[0];
+		for (idx_t i = 1; i < count; i++) {
+			min_value = MinValue(min_value, source_data[i]);
+			max_value = MaxValue(max_value, source_data[i]);
+		}
+		DST converted;
+		if (!NumericTryCast::Operation(min_value, converted) || !NumericTryCast::Operation(max_value, converted)) {
+			return false;
+		}
+		result.SetVectorType(VectorType::FLAT_VECTOR);
+		FlatVector::SetSize(result, count);
+		auto result_data = FlatVector::GetDataMutable<DST>(result);
+		for (idx_t i = 0; i < count; i++) {
+			result_data[i] = static_cast<DST>(source_data[i]);
+		}
+		FlatVector::SetValidity(result, FlatVector::Validity(source));
+		return true;
+	}
+
 	template <class SRC, class DST, class OP>
 	static bool TryCastLoop(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+		if constexpr (std::is_same<OP, NumericTryCast>::value && std::is_integral<SRC>::value &&
+		              std::is_integral<DST>::value && !std::is_same<SRC, bool>::value &&
+		              !std::is_same<DST, bool>::value) {
+			if (TryIntegerCastFlatInRange<SRC, DST>(source, result, count)) {
+				return true;
+			}
+		}
 		return TemplatedTryCastLoop<SRC, DST, VectorTryCastOperator<OP>>(source, result, count, parameters);
 	}
 
