@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
@@ -240,6 +241,24 @@ bool MultiFileList::IsEmpty() const {
 
 unique_ptr<MultiFileList> MultiFileList::Copy() const {
 	return make_uniq<SimpleMultiFileList>(GetAllFiles());
+}
+
+unique_ptr<MultiFileList> MultiFileList::RestrictToFiles(const vector<OpenFileInfo> &files) const {
+	unordered_set<string> requested;
+	for (auto &file : files) {
+		requested.insert(file.path);
+	}
+	vector<OpenFileInfo> result;
+	for (auto &file : GetAllFiles()) {
+		if (requested.erase(file.path)) {
+			result.push_back(file);
+		}
+	}
+	if (!requested.empty()) {
+		throw InvalidInputException("Cannot restrict the file list to \"%s\": it is not one of the list's files",
+		                            *requested.begin());
+	}
+	return make_uniq<SimpleMultiFileList>(std::move(result));
 }
 
 bool MultiFileList::FileIsAvailable(idx_t i) const {

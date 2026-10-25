@@ -121,6 +121,10 @@ public:
 
 	virtual unique_ptr<NodeStatistics> GetCardinality(ClientContext &context) const;
 	virtual unique_ptr<MultiFileList> Copy() const;
+	//! A copy of the list that reads only 'files', which must be files of this list, in the list's order. This lets an
+	//! engine that splits a scan by its files hand each part to a different machine. A list whose files carry state of
+	//! their own (partition values, delete files) overrides it to keep that state.
+	virtual unique_ptr<MultiFileList> RestrictToFiles(const vector<OpenFileInfo> &files) const;
 
 protected:
 	//! Whether or not the file at the index is available instantly - or if this requires additional I/O
