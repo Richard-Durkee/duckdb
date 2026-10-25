@@ -65,8 +65,13 @@ private:
 	//! Solve the join order exactly using dynamic programming. Returns true if it was completed successfully (i.e. did
 	//! not time-out)
 	bool SolveJoinOrderExactly();
-	//! Solve the join order approximately using a greedy algorithm
-	bool SolveJoinOrderApproximately();
+	//! Solve the join order approximately using a greedy algorithm, starting from the given relation sets
+	bool SolveJoinOrderApproximately(vector<reference<JoinRelationSet>> join_relations);
+	//! Returns a relation set for every base relation
+	vector<reference<JoinRelationSet>> GetSingleRelationSets();
+	//! Returns a relation set for every connected component of the query graph. Returns false if the exact
+	//! enumeration has not produced a plan for one of the components.
+	bool GetSolvedComponentSets(vector<reference<JoinRelationSet>> &result);
 	bool PlanUsesCrossProduct(const DPJoinNode &node) const;
 	bool HasCompletePlan();
 	bool ActivateRequiredCrossProducts();

@@ -65,7 +65,8 @@
     {
       "reason": "Requires the join order optimizer to enforce debug_force_no_cross_product.",
       "paths": [
-        "test/optimizer/joins/required_cross_product_activation.test"
+        "test/optimizer/joins/required_cross_product_activation.test",
+        "test/sql/join/cross_product/cross_product_components.test"
       ]
     },
     {
