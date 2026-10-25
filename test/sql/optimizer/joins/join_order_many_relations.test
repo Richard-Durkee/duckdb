@@ -1,0 +1,86 @@
+# name: test/sql/optimizer/joins/join_order_many_relations.test
+# description: Join ordering with more relations than the exact enumerator can track in a bitmask
+# group: [joins]
+
+# raise the threshold above the number of relations so exact enumeration would be attempted
+statement ok
+SET approximate_join_order_threshold=200;
+
+statement ok
+CREATE TABLE t AS SELECT range AS k, range * 10 AS v FROM range(5);
+
+# 70 relations joined in a chain
+query II
+SELECT count(*), sum(t0.v + t69.v)
+FROM t t0
+JOIN t t1 ON t0.k = t1.k
+JOIN t t2 ON t1.k = t2.k
+JOIN t t3 ON t2.k = t3.k
+JOIN t t4 ON t3.k = t4.k
+JOIN t t5 ON t4.k = t5.k
+JOIN t t6 ON t5.k = t6.k
+JOIN t t7 ON t6.k = t7.k
+JOIN t t8 ON t7.k = t8.k
+JOIN t t9 ON t8.k = t9.k
+JOIN t t10 ON t9.k = t10.k
+JOIN t t11 ON t10.k = t11.k
+JOIN t t12 ON t11.k = t12.k
+JOIN t t13 ON t12.k = t13.k
+JOIN t t14 ON t13.k = t14.k
+JOIN t t15 ON t14.k = t15.k
+JOIN t t16 ON t15.k = t16.k
+JOIN t t17 ON t16.k = t17.k
+JOIN t t18 ON t17.k = t18.k
+JOIN t t19 ON t18.k = t19.k
+JOIN t t20 ON t19.k = t20.k
+JOIN t t21 ON t20.k = t21.k
+JOIN t t22 ON t21.k = t22.k
+JOIN t t23 ON t22.k = t23.k
+JOIN t t24 ON t23.k = t24.k
+JOIN t t25 ON t24.k = t25.k
+JOIN t t26 ON t25.k = t26.k
+JOIN t t27 ON t26.k = t27.k
+JOIN t t28 ON t27.k = t28.k
+JOIN t t29 ON t28.k = t29.k
+JOIN t t30 ON t29.k = t30.k
+JOIN t t31 ON t30.k = t31.k
+JOIN t t32 ON t31.k = t32.k
+JOIN t t33 ON t32.k = t33.k
+JOIN t t34 ON t33.k = t34.k
+JOIN t t35 ON t34.k = t35.k
+JOIN t t36 ON t35.k = t36.k
+JOIN t t37 ON t36.k = t37.k
+JOIN t t38 ON t37.k = t38.k
+JOIN t t39 ON t38.k = t39.k
+JOIN t t40 ON t39.k = t40.k
+JOIN t t41 ON t40.k = t41.k
+JOIN t t42 ON t41.k = t42.k
+JOIN t t43 ON t42.k = t43.k
+JOIN t t44 ON t43.k = t44.k
+JOIN t t45 ON t44.k = t45.k
+JOIN t t46 ON t45.k = t46.k
+JOIN t t47 ON t46.k = t47.k
+JOIN t t48 ON t47.k = t48.k
+JOIN t t49 ON t48.k = t49.k
+JOIN t t50 ON t49.k = t50.k
+JOIN t t51 ON t50.k = t51.k
+JOIN t t52 ON t51.k = t52.k
+JOIN t t53 ON t52.k = t53.k
+JOIN t t54 ON t53.k = t54.k
+JOIN t t55 ON t54.k = t55.k
+JOIN t t56 ON t55.k = t56.k
+JOIN t t57 ON t56.k = t57.k
+JOIN t t58 ON t57.k = t58.k
+JOIN t t59 ON t58.k = t59.k
+JOIN t t60 ON t59.k = t60.k
+JOIN t t61 ON t60.k = t61.k
+JOIN t t62 ON t61.k = t62.k
+JOIN t t63 ON t62.k = t63.k
+JOIN t t64 ON t63.k = t64.k
+JOIN t t65 ON t64.k = t65.k
+JOIN t t66 ON t65.k = t66.k
+JOIN t t67 ON t66.k = t67.k
+JOIN t t68 ON t67.k = t68.k
+JOIN t t69 ON t68.k = t69.k;
+----
+5	200

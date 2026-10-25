@@ -75,6 +75,7 @@ void QueryGraphEdges::CreateEdge(JoinRelationSet &left, JoinRelationSet &right, 
 		}
 	}
 	// neighbor does not exist, create it
+	neighbor_mask_cache.clear();
 	auto n = make_uniq<NeighborInfo>(&right, join_operator, generated_cross_product);
 	if (info && predicate) {
 		n->predicates.push_back(*predicate);
@@ -110,24 +111,20 @@ void QueryGraphEdges::EnumerateNeighbors(JoinRelationSet &node,
 	}
 }
 
-//! Returns true if a JoinRelationSet is banned by the list of exclusion_set, false otherwise
-static bool JoinRelationSetIsExcluded(optional_ptr<JoinRelationSet> node, unordered_set<RelationIndex> &exclusion_set) {
-	return exclusion_set.find(node->relations[0]) != exclusion_set.end();
-}
-
-const vector<RelationIndex> QueryGraphEdges::GetNeighbors(JoinRelationSet &node,
-                                                          unordered_set<RelationIndex> &exclusion_set) const {
-	unordered_set<RelationIndex> result;
-	EnumerateNeighbors(node, [&](NeighborInfo &info) -> bool {
-		if (!JoinRelationSetIsExcluded(info.neighbor, exclusion_set)) {
+idx_t QueryGraphEdges::GetNeighbors(JoinRelationSet &node, idx_t exclusion_mask) const {
+	auto entry = neighbor_mask_cache.find(node);
+	if (entry == neighbor_mask_cache.end()) {
+		idx_t mask = 0;
+		EnumerateNeighbors(node, [&](NeighborInfo &info) -> bool {
 			// add the smallest node of the neighbor to the set
-			result.insert(info.neighbor->relations[0]);
-		}
-		return false;
-	});
-	vector<RelationIndex> neighbors;
-	neighbors.insert(neighbors.end(), result.begin(), result.end());
-	return neighbors;
+			auto index = info.neighbor->relations[0].index;
+			D_ASSERT(index < JoinRelationSet::BITMASK_WORD_SIZE);
+			mask |= idx_t(1) << index;
+			return false;
+		});
+		entry = neighbor_mask_cache.emplace(node, mask).first;
+	}
+	return entry->second & ~exclusion_mask;
 }
 
 const vector<reference<NeighborInfo>> QueryGraphEdges::GetConnections(JoinRelationSet &node,

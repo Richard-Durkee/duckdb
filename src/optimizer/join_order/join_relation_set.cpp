@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
+#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/to_string.hpp"
@@ -8,8 +9,6 @@
 namespace duckdb {
 
 using JoinRelationTreeNode = JoinRelationSetManager::JoinRelationTreeNode;
-
-static constexpr idx_t BITMASK_WORD_SIZE = sizeof(idx_t) * 8;
 
 JoinRelationSet::JoinRelationSet(unsafe_unique_array<RelationIndex> relations, idx_t count)
     : relations(std::move(relations)), count(count) {
@@ -37,6 +36,15 @@ bool JoinRelationSet::Empty() const {
 	return count == 0;
 }
 
+bool JoinRelationSet::FitsInWord() const {
+	return bitmask.size() <= 1;
+}
+
+idx_t JoinRelationSet::WordMask() const {
+	D_ASSERT(FitsInWord());
+	return bitmask.empty() ? 0 : bitmask[0];
+}
+
 //! Returns true if sub is a subset of super
 bool JoinRelationSet::IsSubset(const JoinRelationSet &super, const JoinRelationSet &sub) {
 	D_ASSERT(sub.count > 0);
@@ -62,7 +70,21 @@ bool JoinRelationSet::Intersects(const JoinRelationSet &left, const JoinRelation
 }
 
 JoinRelationSet &JoinRelationSetManager::GetJoinRelation(unsafe_unique_array<RelationIndex> relations, idx_t count) {
-	// now look it up in the tree
+	if (count == 0 || relations[count - 1].index < JoinRelationSet::BITMASK_WORD_SIZE) {
+		idx_t mask = 0;
+		for (idx_t i = 0; i < count; i++) {
+			mask |= idx_t(1) << relations[i].index;
+		}
+		auto entry = word_sets.find(mask);
+		if (entry != word_sets.end()) {
+			return *entry->second;
+		}
+		auto set = make_uniq<JoinRelationSet>(std::move(relations), count);
+		auto &result = *set;
+		word_sets.emplace(mask, std::move(set));
+		return result;
+	}
+	// the set does not fit in a single word: look it up in the tree
 	reference<JoinRelationTreeNode> info(root);
 	for (idx_t i = 0; i < count; i++) {
 		auto entry = info.get().children.find(relations[i]);
@@ -82,13 +104,35 @@ JoinRelationSet &JoinRelationSetManager::GetJoinRelation(unsafe_unique_array<Rel
 	return *info.get().relation;
 }
 
+JoinRelationSet &JoinRelationSetManager::GetJoinRelationFromMask(idx_t mask) {
+	auto entry = word_sets.find(mask);
+	if (entry != word_sets.end()) {
+		return *entry->second;
+	}
+	idx_t count = 0;
+	for (auto remaining = mask; remaining != 0; remaining &= remaining - 1) {
+		count++;
+	}
+	unsafe_unique_array<RelationIndex> relations = count == 0 ? nullptr : make_unsafe_uniq_array<RelationIndex>(count);
+	idx_t i = 0;
+	for (auto remaining = mask; remaining != 0; remaining &= remaining - 1) {
+		relations[i++] = RelationIndex(CountZeros<uint64_t>::Trailing(remaining));
+	}
+	return GetJoinRelation(std::move(relations), count);
+}
+
 //! Create or get a JoinRelationSet from a single node with the given index
 JoinRelationSet &JoinRelationSetManager::GetJoinRelation(RelationIndex index) {
-	// create a sorted vector of the relations
-	auto relations = make_unsafe_uniq_array<RelationIndex>(1);
-	relations[0] = index;
-	idx_t count = 1;
-	return GetJoinRelation(std::move(relations), count);
+	if (index.index >= single_relation_sets.size()) {
+		single_relation_sets.resize(index.index + 1);
+	}
+	auto &entry = single_relation_sets[index.index];
+	if (!entry) {
+		auto relations = make_unsafe_uniq_array<RelationIndex>(1);
+		relations[0] = index;
+		entry = GetJoinRelation(std::move(relations), 1);
+	}
+	return *entry;
 }
 
 JoinRelationSet &JoinRelationSetManager::GetEmptyJoinRelationSet() {
@@ -112,6 +156,9 @@ JoinRelationSet &JoinRelationSetManager::GetJoinRelation(const unordered_set<Rel
 }
 
 JoinRelationSet &JoinRelationSetManager::Union(JoinRelationSet &left, JoinRelationSet &right) {
+	if (left.FitsInWord() && right.FitsInWord()) {
+		return GetJoinRelationFromMask(left.WordMask() | right.WordMask());
+	}
 	auto relations = make_unsafe_uniq_array<RelationIndex>(left.count + right.count);
 	idx_t count = 0;
 	// move through the left and right relations, eliminating duplicates
@@ -178,6 +225,7 @@ JoinRelationSet &JoinRelationSetManager::Union(JoinRelationSet &left, JoinRelati
 // 	return GetJoinRelation(std::move(relations), count);
 // }
 
+// LCOV_EXCL_START
 static string JoinRelationTreeNodeToString(const JoinRelationTreeNode *node) {
 	string result = "";
 	if (node->relation) {
@@ -190,11 +238,17 @@ static string JoinRelationTreeNodeToString(const JoinRelationTreeNode *node) {
 }
 
 string JoinRelationSetManager::ToString() const {
-	return JoinRelationTreeNodeToString(&root);
+	string result;
+	for (auto &entry : word_sets) {
+		result += entry.second->ToString() + "\n";
+	}
+	result += JoinRelationTreeNodeToString(&root);
+	return result;
 }
 
 void JoinRelationSetManager::Print() {
 	Printer::Print(ToString());
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb
