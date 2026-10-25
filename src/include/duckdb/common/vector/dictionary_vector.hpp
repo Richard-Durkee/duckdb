@@ -167,6 +167,8 @@ struct DictionaryVector {
 		return vector.Buffer().Cast<DictionaryBuffer>().GetEntry().global_dictionary;
 	}
 	static const Vector &GetCachedHashes(const Vector &input);
+	//! Like GetCachedHashes, but returns nullptr instead of waiting while another thread computes the hashes
+	static optional_ptr<const Vector> TryGetCachedHashes(const Vector &input);
 };
 
 } // namespace duckdb

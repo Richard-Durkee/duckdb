@@ -179,17 +179,29 @@ buffer_ptr<DictionaryEntry> DictionaryVector::CreateReusableGlobalDictionary(con
 	return entry;
 }
 
+static void ComputeCachedHashes(const Vector &input, const DictionaryEntry &entry) {
+	const auto dictionary_size = DictionaryVector::DictionarySize(input).GetIndex();
+	auto hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
+	VectorOperations::Hash(entry.data, *hashes);
+	entry.cached_hashes = std::move(hashes);
+}
+
 const Vector &DictionaryVector::GetCachedHashes(const Vector &input) {
 	D_ASSERT(CanCacheHashes(input));
 
 	const auto &entry = input.Buffer().Cast<DictionaryBuffer>().GetEntry();
-	CallOnce(entry.cached_hashes_once, [&] {
-		const auto dictionary_size = DictionarySize(input).GetIndex();
-		auto hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
-		VectorOperations::Hash(entry.data, *hashes);
-		entry.cached_hashes = std::move(hashes);
-	});
+	CallOnce(entry.cached_hashes_once, [&] { ComputeCachedHashes(input, entry); });
 	return *entry.cached_hashes;
+}
+
+optional_ptr<const Vector> DictionaryVector::TryGetCachedHashes(const Vector &input) {
+	D_ASSERT(CanCacheHashes(input));
+
+	const auto &entry = input.Buffer().Cast<DictionaryBuffer>().GetEntry();
+	if (!entry.cached_hashes_once.TryCall([&] { ComputeCachedHashes(input, entry); })) {
+		return nullptr;
+	}
+	return entry.cached_hashes.get();
 }
 
 bool DictionaryBuffer::TrySerialize(Serializer &serializer, const LogicalType &type,

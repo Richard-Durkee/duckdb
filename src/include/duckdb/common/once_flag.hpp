@@ -34,6 +34,23 @@ public:
 		done.store(true, std::memory_order_release);
 	}
 
+	//! Like Call, but returns false instead of waiting while another caller is running func
+	template <class FUNC>
+	bool TryCall(FUNC &&func) {
+		if (done.load(std::memory_order_acquire)) {
+			return true;
+		}
+		unique_lock<mutex> guard(lock, std::try_to_lock);
+		if (!guard.owns_lock()) {
+			return false;
+		}
+		if (!done.load(std::memory_order_relaxed)) {
+			func();
+			done.store(true, std::memory_order_release);
+		}
+		return true;
+	}
+
 private:
 	atomic<bool> done {false};
 	mutex lock;

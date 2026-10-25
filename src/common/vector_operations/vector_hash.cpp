@@ -503,20 +503,28 @@ void CombineHashTypeSwitch(Vector &hashes, const Vector &input, const SelectionV
 
 void VectorOperations::Hash(const Vector &input, Vector &result, idx_t count) {
 	if (input.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::CanCacheHashes(input)) {
-		Vector input_hashes(DictionaryVector::GetCachedHashes(input), DictionaryVector::SelVector(input), count);
-		TemplatedLoopHash<false, hash_t, true>(input_hashes, result, nullptr, count);
-	} else {
-		HashTypeSwitch<false>(input, result, nullptr, count);
+		// if another thread is still hashing the dictionary, hash this vector directly instead of waiting
+		auto cached_hashes = DictionaryVector::TryGetCachedHashes(input);
+		if (cached_hashes) {
+			Vector input_hashes(*cached_hashes, DictionaryVector::SelVector(input), count);
+			TemplatedLoopHash<false, hash_t, true>(input_hashes, result, nullptr, count);
+			return;
+		}
 	}
+	HashTypeSwitch<false>(input, result, nullptr, count);
 }
 
 void VectorOperations::Hash(const Vector &input, Vector &result, const SelectionVector &sel, idx_t count) {
 	if (input.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::CanCacheHashes(input)) {
-		Vector input_hashes(DictionaryVector::GetCachedHashes(input), DictionaryVector::SelVector(input), count);
-		TemplatedLoopHash<true, hash_t, true>(input_hashes, result, &sel, count);
-	} else {
-		HashTypeSwitch<true>(input, result, &sel, count);
+		// if another thread is still hashing the dictionary, hash this vector directly instead of waiting
+		auto cached_hashes = DictionaryVector::TryGetCachedHashes(input);
+		if (cached_hashes) {
+			Vector input_hashes(*cached_hashes, DictionaryVector::SelVector(input), count);
+			TemplatedLoopHash<true, hash_t, true>(input_hashes, result, &sel, count);
+			return;
+		}
 	}
+	HashTypeSwitch<true>(input, result, &sel, count);
 }
 
 void VectorOperations::Hash(const Vector &input, Vector &result) {
@@ -525,11 +533,15 @@ void VectorOperations::Hash(const Vector &input, Vector &result) {
 
 void VectorOperations::CombineHash(Vector &hashes, const Vector &input, idx_t count) {
 	if (input.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::CanCacheHashes(input)) {
-		Vector input_hashes(DictionaryVector::GetCachedHashes(input), DictionaryVector::SelVector(input), count);
-		TemplatedLoopCombineHash<false, hash_t, true>(input_hashes, hashes, nullptr, count);
-	} else {
-		CombineHashTypeSwitch<false>(hashes, input, nullptr, count);
+		// if another thread is still hashing the dictionary, hash this vector directly instead of waiting
+		auto cached_hashes = DictionaryVector::TryGetCachedHashes(input);
+		if (cached_hashes) {
+			Vector input_hashes(*cached_hashes, DictionaryVector::SelVector(input), count);
+			TemplatedLoopCombineHash<false, hash_t, true>(input_hashes, hashes, nullptr, count);
+			return;
+		}
 	}
+	CombineHashTypeSwitch<false>(hashes, input, nullptr, count);
 }
 
 void VectorOperations::CombineHash(Vector &hashes, const Vector &input) {
@@ -544,11 +556,15 @@ void VectorOperations::CombineHash(Vector &hashes, const Vector &input) {
 
 void VectorOperations::CombineHash(Vector &hashes, const Vector &input, const SelectionVector &rsel, idx_t count) {
 	if (input.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::CanCacheHashes(input)) {
-		Vector input_hashes(DictionaryVector::GetCachedHashes(input), DictionaryVector::SelVector(input), count);
-		TemplatedLoopCombineHash<true, hash_t, true>(input_hashes, hashes, &rsel, count);
-	} else {
-		CombineHashTypeSwitch<true>(hashes, input, &rsel, count);
+		// if another thread is still hashing the dictionary, hash this vector directly instead of waiting
+		auto cached_hashes = DictionaryVector::TryGetCachedHashes(input);
+		if (cached_hashes) {
+			Vector input_hashes(*cached_hashes, DictionaryVector::SelVector(input), count);
+			TemplatedLoopCombineHash<true, hash_t, true>(input_hashes, hashes, &rsel, count);
+			return;
+		}
 	}
+	CombineHashTypeSwitch<true>(hashes, input, &rsel, count);
 }
 
 } // namespace duckdb
