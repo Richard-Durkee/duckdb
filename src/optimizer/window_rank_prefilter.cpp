@@ -5,6 +5,7 @@
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -20,17 +21,42 @@ namespace duckdb {
 
 namespace {
 
+//! Whether the prefilter pays off, decided once for all threads and tasks of the query
+struct RankPrefilterDecision {
+	//! Decide after this many rows, more when the heaps need longer to fill
+	static constexpr idx_t MIN_WARMUP_ROWS = 32768;
+	static constexpr idx_t MAX_WARMUP_ROWS = 262144;
+
+	atomic<idx_t> rows_seen {0};
+	atomic<idx_t> rows_kept {0};
+	atomic<bool> disabled {false};
+
+	//! Called after each chunk: stops filtering once most rows survive although the heaps could have filled
+	void Update(idx_t seen, idx_t kept, idx_t limit, idx_t partitions) {
+		const auto total_seen = rows_seen.fetch_add(seen) + seen;
+		const auto total_kept = rows_kept.fetch_add(kept) + kept;
+		const auto fill_rows = 4 * limit * MaxValue<idx_t>(partitions, 1);
+		const auto warmup = MinValue<idx_t>(MaxValue<idx_t>(MIN_WARMUP_ROWS, fill_rows), MAX_WARMUP_ROWS);
+		if (total_seen >= warmup && total_kept * 2 > total_seen) {
+			disabled = true;
+		}
+	}
+};
+
 struct RankPrefilterBindData : public FunctionData {
-	RankPrefilterBindData(idx_t limit_p, vector<OrderModifiers> order_modifiers_p, idx_t partition_count_p)
-	    : limit(limit_p), order_modifiers(std::move(order_modifiers_p)), partition_count(partition_count_p) {
+	RankPrefilterBindData(idx_t limit_p, vector<OrderModifiers> order_modifiers_p, idx_t partition_count_p,
+	                      shared_ptr<RankPrefilterDecision> decision_p)
+	    : limit(limit_p), order_modifiers(std::move(order_modifiers_p)), partition_count(partition_count_p),
+	      decision(std::move(decision_p)) {
 	}
 
 	idx_t limit;
 	vector<OrderModifiers> order_modifiers;
 	idx_t partition_count;
+	shared_ptr<RankPrefilterDecision> decision;
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<RankPrefilterBindData>(limit, order_modifiers, partition_count);
+		return make_uniq<RankPrefilterBindData>(limit, order_modifiers, partition_count, decision);
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<RankPrefilterBindData>();
@@ -39,15 +65,23 @@ struct RankPrefilterBindData : public FunctionData {
 	}
 };
 
+struct RankPrefilterHeap {
+	//! The partition's sort key
+	string partition_key;
+	//! A max-heap of the N best (smallest) order keys of the partition seen by this thread
+	std::priority_queue<string> keys;
+};
+
 struct RankPrefilterLocalState : public FunctionLocalState {
 	//! Stop tracking new partitions beyond this many, and let their rows through
 	static constexpr idx_t MAX_PARTITIONS = 16384;
-
-	//! Per partition key, a max-heap of the N best (smallest) order keys seen by this thread
-	unordered_map<string, std::priority_queue<string>> heaps;
+	//! The partitions seen by this thread, by the hash of their sort key
+	unordered_map<hash_t, vector<RankPrefilterHeap>> partitions;
+	idx_t partition_count = 0;
 	DataChunk order_chunk;
 	DataChunk partition_chunk;
 	DataChunk keys;
+	Vector hashes {LogicalType::HASH};
 	vector<OrderModifiers> partition_modifiers;
 };
 
@@ -71,10 +105,65 @@ unique_ptr<FunctionLocalState> RankPrefilterInit(ExpressionState &state, const B
 	return std::move(result);
 }
 
+//! Compares a sort key to a stored one byte-wise, as sort keys are ordered
+int CompareKeys(const string_t &key, const string &stored) {
+	const auto key_size = key.GetSize();
+	auto cmp = memcmp(key.GetData(), stored.data(), MinValue<idx_t>(key_size, stored.size()));
+	if (cmp != 0) {
+		return cmp;
+	}
+	return key_size < stored.size() ? -1 : (key_size > stored.size() ? 1 : 0);
+}
+
+bool KeysEqual(const string_t &key, const string &stored) {
+	return key.GetSize() == stored.size() && memcmp(key.GetData(), stored.data(), stored.size()) == 0;
+}
+
+//! Whether a row can still rank N or better: false once N rows of its partition seen here are strictly better
+bool KeepRow(std::priority_queue<string> &heap, const string_t &key, idx_t limit) {
+	if (heap.size() < limit) {
+		heap.push(key.GetString());
+		return true;
+	}
+	const auto cmp = CompareKeys(key, heap.top());
+	if (cmp > 0) {
+		return false;
+	}
+	if (cmp < 0) {
+		heap.pop();
+		heap.push(key.GetString());
+	}
+	return true;
+}
+
+optional_ptr<RankPrefilterHeap> FindPartition(RankPrefilterLocalState &lstate, RankPrefilterDecision &decision,
+                                              hash_t hash, const string_t &key) {
+	auto &bucket = lstate.partitions[hash];
+	for (auto &partition : bucket) {
+		if (KeysEqual(key, partition.partition_key)) {
+			return &partition;
+		}
+	}
+	if (lstate.partition_count >= RankPrefilterLocalState::MAX_PARTITIONS) {
+		// too many partitions to keep heaps for: the rows per partition are too few to prune
+		decision.disabled = true;
+		return nullptr;
+	}
+	lstate.partition_count++;
+	bucket.emplace_back();
+	bucket.back().partition_key = key.GetString();
+	return &bucket.back();
+}
+
 void RankPrefilterFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &info = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<RankPrefilterBindData>();
 	auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<RankPrefilterLocalState>();
 	const auto count = args.size();
+	if (info.decision->disabled) {
+		result.Reference(Value::BOOLEAN(true), count_t(count));
+		return;
+	}
+	auto writer = FlatVector::Writer<bool>(result, count);
 	const auto order_count = info.order_modifiers.size();
 
 	lstate.keys.Reset();
@@ -84,59 +173,39 @@ void RankPrefilterFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	lstate.order_chunk.SetChildCardinality(count);
 	auto &order_keys = lstate.keys.data[0];
 	CreateSortKeyHelpers::CreateSortKey(lstate.order_chunk, info.order_modifiers, order_keys);
-	auto &partition_keys = lstate.keys.data[1];
-	if (info.partition_count > 0) {
+	auto order_values = order_keys.Values<string_t>();
+
+	idx_t kept = 0;
+	if (info.partition_count == 0) {
+		if (lstate.partitions.empty()) {
+			lstate.partitions[0].emplace_back();
+		}
+		auto &heap = lstate.partitions[0][0].keys;
+		for (idx_t row = 0; row < count; row++) {
+			const auto keep = KeepRow(heap, order_values[row].GetValue(), info.limit);
+			kept += keep;
+			writer.WriteValue(keep);
+		}
+	} else {
 		for (idx_t i = 0; i < info.partition_count; i++) {
 			lstate.partition_chunk.data[i].Reference(args.data[order_count + i]);
 		}
 		lstate.partition_chunk.SetChildCardinality(count);
+		auto &partition_keys = lstate.keys.data[1];
 		CreateSortKeyHelpers::CreateSortKey(lstate.partition_chunk, lstate.partition_modifiers, partition_keys);
+		VectorOperations::Hash(partition_keys, lstate.hashes, count);
+		auto partition_values = partition_keys.Values<string_t>();
+		auto hash_values = lstate.hashes.Values<hash_t>();
+		for (idx_t row = 0; row < count; row++) {
+			auto partition =
+			    FindPartition(lstate, *info.decision, hash_values[row].GetValue(), partition_values[row].GetValue());
+			const auto keep = !partition || KeepRow(partition->keys, order_values[row].GetValue(), info.limit);
+			kept += keep;
+			writer.WriteValue(keep);
+		}
 	}
 
-	auto order_values = order_keys.Values<string_t>();
-	auto writer = FlatVector::Writer<bool>(result, count);
-	// a row is dropped when N rows of its partition seen by this thread are strictly better
-	auto keep = [&](std::priority_queue<string> &heap, const string_t &order_key) {
-		if (heap.size() < info.limit) {
-			heap.push(order_key.GetString());
-			return true;
-		}
-		const auto &worst = heap.top();
-		// sort keys compare byte-wise
-		const auto key_size = order_key.GetSize();
-		auto cmp = memcmp(order_key.GetData(), worst.data(), MinValue<idx_t>(key_size, worst.size()));
-		if (cmp == 0) {
-			cmp = key_size < worst.size() ? -1 : (key_size > worst.size() ? 1 : 0);
-		}
-		if (cmp > 0) {
-			return false;
-		}
-		if (cmp < 0) {
-			heap.pop();
-			heap.push(order_key.GetString());
-		}
-		return true;
-	};
-	if (info.partition_count == 0) {
-		auto &heap = lstate.heaps[string()];
-		for (idx_t row = 0; row < count; row++) {
-			writer.WriteValue(keep(heap, order_values[row].GetValue()));
-		}
-		return;
-	}
-	auto partition_values = partition_keys.Values<string_t>();
-	for (idx_t row = 0; row < count; row++) {
-		auto partition_key = partition_values[row].GetValue().GetString();
-		auto entry = lstate.heaps.find(partition_key);
-		if (entry == lstate.heaps.end()) {
-			if (lstate.heaps.size() >= RankPrefilterLocalState::MAX_PARTITIONS) {
-				writer.WriteValue(true);
-				continue;
-			}
-			entry = lstate.heaps.emplace(std::move(partition_key), std::priority_queue<string>()).first;
-		}
-		writer.WriteValue(keep(entry->second, order_values[row].GetValue()));
-	}
+	info.decision->Update(count, kept, info.limit, lstate.partition_count);
 }
 
 ScalarFunction GetRankPrefilterFunction(const vector<LogicalType> &argument_types) {
@@ -261,8 +330,9 @@ bool WindowRankPrefilter::TryInsert(LogicalOperator &filter_op) {
 			argument_types.push_back(argument->GetReturnType());
 		}
 		BoundScalarFunction bound_function(GetRankPrefilterFunction(argument_types));
-		auto bind_data = make_uniq<RankPrefilterBindData>(NumericCast<idx_t>(limit), std::move(order_modifiers),
-		                                                  window_expr.Partitions().size());
+		auto bind_data =
+		    make_uniq<RankPrefilterBindData>(NumericCast<idx_t>(limit), std::move(order_modifiers),
+		                                     window_expr.Partitions().size(), make_shared_ptr<RankPrefilterDecision>());
 		auto predicate =
 		    make_uniq<BoundFunctionExpression>(std::move(bound_function), std::move(arguments), std::move(bind_data));
 		auto prefilter = make_uniq<LogicalFilter>(std::move(predicate));
