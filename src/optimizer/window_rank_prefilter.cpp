@@ -108,6 +108,9 @@ struct RankPrefilterPartition {
 struct RankPrefilterLocalState : public FunctionLocalState {
 	//! Stop tracking new partitions beyond this many, and let their rows through
 	static constexpr idx_t MAX_PARTITIONS = 16384;
+	//! Hold at most this many order keys over all heaps; a heap that is not full yet stops growing beyond it
+	static constexpr idx_t MAX_KEYS = 262144;
+	idx_t key_count = 0;
 	//! The partitions seen by this task, by the hash of their sort key
 	unordered_map<hash_t, vector<unique_ptr<RankPrefilterPartition>>> partitions;
 	idx_t partition_count = 0;
@@ -179,6 +182,10 @@ bool KeepRow(RankPrefilterLocalState &lstate, RankPrefilterPartition &partition,
 		counts.kept_bounded++;
 	}
 	if (!full) {
+		if (lstate.key_count >= RankPrefilterLocalState::MAX_KEYS) {
+			return true;
+		}
+		lstate.key_count++;
 		heap.push(key.GetString());
 	} else if (CompareKeys(key, heap.top()) < 0) {
 		heap.pop();
