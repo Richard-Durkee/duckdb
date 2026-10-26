@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/topn_window_elimination.hpp"
+#include "duckdb/optimizer/window_rank_limit.hpp"
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -226,7 +227,7 @@ unique_ptr<LogicalOperator> TopNWindowElimination::Optimize(unique_ptr<LogicalOp
 	if (!replacer.replacement_bindings.empty()) {
 		replacer.VisitOperator(*op);
 	}
-	return op;
+	return WindowRankLimit(context, stats).Optimize(std::move(op));
 }
 
 unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<LogicalOperator> op,

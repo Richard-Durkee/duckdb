@@ -27,6 +27,8 @@ public:
 	}
 
 	TableIndex window_index;
+	//! When the window is filtered by rank <= N: N (an optimizer hint that is not serialized)
+	idx_t rank_limit = 0;
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;

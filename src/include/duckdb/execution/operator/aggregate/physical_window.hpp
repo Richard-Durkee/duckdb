@@ -34,6 +34,8 @@ public:
 	bool is_order_dependent;
 	//! The partitions over which this is grouped (if any)
 	OperatorPartitionInfo partition_info;
+	//! When the window is filtered by rank <= N: N, so the rows that cannot rank N or better are dropped while sinking
+	idx_t rank_limit = 0;
 
 public:
 	// Source interface

@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/aggregate/physical_window.hpp"
+#include "duckdb/function/window/window_rank_pruner.hpp"
 
 #include "duckdb/common/once_flag.hpp"
 #include "duckdb/common/sorting/sort_strategy.hpp"
@@ -228,6 +229,9 @@ public:
 	Executors executors;
 	//! The shared expressions library
 	WindowSharedExpressions shared;
+	//! Drops the rows that cannot rank rank_limit or better (if any)
+	unique_ptr<WindowRankPruner> rank_pruner;
+	unique_ptr<WindowRankPrunerGlobalState> rank_state;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -237,6 +241,9 @@ public:
 		// The sort strategy, executors, and shared expression layout are iteration-invariant. Only the
 		// sort sink holds per-iteration materialized data, so replace that while preserving the setup.
 		strategy_sink = sort_strategy->GetGlobalSinkState(context);
+		if (rank_pruner) {
+			rank_state = rank_pruner->GetGlobalState();
+		}
 		count = 0;
 		sink_progress.Reset();
 		GlobalSinkState::Reset(context);
@@ -251,9 +258,13 @@ public:
 
 	WindowLocalSinkState(ExecutionContext &context, const WindowGlobalSinkState &gstate)
 	    : local_group(gstate.sort_strategy->GetLocalSinkState(context)) {
+		if (gstate.rank_pruner) {
+			rank_state = gstate.rank_pruner->GetLocalState(context.client);
+		}
 	}
 
 	LocalStatePtr local_group;
+	unique_ptr<WindowRankPrunerLocalState> rank_state;
 
 	bool SupportsReuse() const override {
 		return true;
@@ -262,6 +273,9 @@ public:
 	void Reset(ExecutionContext &context, GlobalSinkState &gstate_p) override {
 		auto &gstate = gstate_p.Cast<WindowGlobalSinkState>();
 		local_group = gstate.sort_strategy->GetLocalSinkState(context);
+		if (gstate.rank_pruner) {
+			rank_state = gstate.rank_pruner->GetLocalState(context.client);
+		}
 	}
 };
 
@@ -321,6 +335,10 @@ WindowGlobalSinkState::WindowGlobalSinkState(const PhysicalWindow &op, ClientCon
 	sort_strategy = SortStrategy::Factory(client, wexpr.Partitions(), wexpr.OrderBy(), op.children[0].get().GetTypes(),
 	                                      wexpr.PartitionsStats(), op.partition_info, op.estimated_cardinality);
 	strategy_sink = sort_strategy->GetGlobalSinkState(client);
+	if (op.rank_limit) {
+		rank_pruner = make_uniq<WindowRankPruner>(wexpr, op.rank_limit);
+		rank_state = rank_pruner->GetGlobalState();
+	}
 }
 
 OperatorPartitionInfo PhysicalWindow::RequiredPartitionInfo() const {
@@ -353,8 +371,12 @@ SinkResultType PhysicalWindow::Sink(ExecutionContext &context, DataChunk &chunk,
 	auto &lstate = sink.local_state.Cast<WindowLocalSinkState>();
 	gstate.count += chunk.size();
 
+	auto &input = gstate.rank_pruner ? gstate.rank_pruner->Prune(*gstate.rank_state, *lstate.rank_state, chunk) : chunk;
+	if (input.size() == 0) {
+		return SinkResultType::NEED_MORE_INPUT;
+	}
 	OperatorSinkInput hsink {*gstate.strategy_sink, *lstate.local_group, sink.interrupt_state};
-	return gstate.sort_strategy->Sink(context, chunk, hsink);
+	return gstate.sort_strategy->Sink(context, input, hsink);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1222,6 +1244,9 @@ InsertionOrderPreservingMap<string> PhysicalWindow::ParamsToString() const {
 		projections += select_list[i]->GetName();
 	}
 	result["Projections"] = projections;
+	if (rank_limit) {
+		result["Rank Limit"] = to_string(rank_limit);
+	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }

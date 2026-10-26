@@ -359,6 +359,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalWindow &op) {
 		// Chain the new window operator on top of the plan
 		if (i >= special_count) {
 			auto &window = Make<PhysicalWindow>(types, std::move(select_list), op.estimated_cardinality);
+			window.Cast<PhysicalWindow>().rank_limit = op.rank_limit;
 			window.children.push_back(plan);
 			plan = window;
 		} else if (has_streaming) {
@@ -370,6 +371,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalWindow &op) {
 			auto &partitions = partitioned_columns[expr_idx];
 			auto &window =
 			    Make<PhysicalWindow>(types, std::move(select_list), op.estimated_cardinality, std::move(partitions));
+			window.Cast<PhysicalWindow>().rank_limit = op.rank_limit;
 			window.children.push_back(plan);
 			plan = window;
 		}
