@@ -1,0 +1,2249 @@
+# name: test/sql/window/test_window_rank_limit.test
+# description: A window filtered by rank() <= N drops the rows that cannot rank N or better before sorting
+# group: [window]
+
+statement ok
+CREATE TABLE t AS SELECT (range % 7)::INTEGER AS p, (range % 3)::VARCHAR AS q, CASE WHEN range % 11 = 0 THEN NULL ELSE (hash(range) % 50)::INTEGER END AS v, (hash(range * 7) % 5)::INTEGER AS w, range AS id FROM range(60000);
+
+# 15,000 rows of each partition tie for the best value
+statement ok
+CREATE TABLE ties AS SELECT range % 4 AS p, CASE WHEN range < 60000 THEN 1 ELSE range END AS v, range AS id FROM range(80000);
+
+statement ok
+CREATE TABLE empty_t AS SELECT * FROM t LIMIT 0;
+
+# the window is marked with its limit
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+----
+physical_plan	<REGEX>:.*Rank Limit: 5.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 5;
+----
+physical_plan	<REGEX>:.*Rank Limit: 4.*
+
+# not marked: dense_rank() differs on ties
+query II
+EXPLAIN SELECT * FROM (SELECT *, dense_rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+----
+physical_plan	<!REGEX>:.*Rank Limit.*
+
+# not marked: another window function needs every row
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, sum(v) OVER (PARTITION BY p) AS s FROM t) WHERE rk <= 5;
+----
+physical_plan	<!REGEX>:.*Rank Limit.*
+
+# not marked: a lower bound keeps rows of any rank
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk >= 5;
+----
+physical_plan	<!REGEX>:.*Rank Limit.*
+
+# not marked: the limit is too large
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100000;
+----
+physical_plan	<!REGEX>:.*Rank Limit.*
+
+# the results match those of the unmarked window, with one thread and with several
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3)));
+----
+0
+
+statement ok
+SET threads=8;
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v ASC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY v DESC, w ASC) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER ( ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk < 10)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p, q ORDER BY w ASC, v DESC NULLS FIRST) AS rk FROM t) WHERE rk <= 100)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 3)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk, rk2 FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk2 FROM t) WHERE rk <= 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id FROM t QUALIFY rank() OVER (PARTITION BY p ORDER BY v DESC) <= 3)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM t WHERE id % 3 = 0) WHERE rk <= 2 AND p < 5)));
+----
+0
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3)));
+----
+0
+
+# every row tied for the best value is kept
+query II
+SELECT p, count(*) FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM ties) WHERE rk <= 1 GROUP BY p ORDER BY p;
+----
+0	15000
+1	15000
+2	15000
+3	15000

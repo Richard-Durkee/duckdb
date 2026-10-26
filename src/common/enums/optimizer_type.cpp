@@ -61,6 +61,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"redundant_order_keys", OptimizerType::REDUNDANT_ORDER_KEYS},
     {"disjunctive_join_rewriter", OptimizerType::DISJUNCTIVE_JOIN_REWRITER},
     {"redundant_order", OptimizerType::REDUNDANT_ORDER},
+    {"window_rank_limit", OptimizerType::WINDOW_RANK_LIMIT},
     {nullptr, OptimizerType::INVALID}};
 
 string OptimizerTypeToString(OptimizerType type) {
