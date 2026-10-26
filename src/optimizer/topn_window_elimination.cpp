@@ -227,7 +227,7 @@ unique_ptr<LogicalOperator> TopNWindowElimination::Optimize(unique_ptr<LogicalOp
 	if (!replacer.replacement_bindings.empty()) {
 		replacer.VisitOperator(*op);
 	}
-	return WindowRankPrefilter(context).Optimize(std::move(op));
+	return WindowRankPrefilter(context, stats).Optimize(std::move(op));
 }
 
 unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<LogicalOperator> op,

@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/logical_operator.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
 
@@ -18,7 +20,7 @@ class ClientContext;
 //! partition, so the window sorts only the rows that can be ranked N or better
 class WindowRankPrefilter {
 public:
-	explicit WindowRankPrefilter(ClientContext &context);
+	WindowRankPrefilter(ClientContext &context, optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats);
 
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
@@ -28,9 +30,12 @@ public:
 private:
 	void Visit(unique_ptr<LogicalOperator> &op);
 	bool TryInsert(LogicalOperator &filter_op);
+	//! Whether the statistics show too few rows per partition for any row to be dropped
+	bool PartitionsTooSmall(LogicalOperator &input, const vector<unique_ptr<Expression>> &partitions, idx_t limit);
 
 private:
 	ClientContext &context;
+	optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats;
 };
 
 } // namespace duckdb
