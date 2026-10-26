@@ -61,16 +61,16 @@ bool KeepRow(WindowRankPrunerLocalState &lstate, WindowRankPrunerPartition &part
 	} else {
 		return true;
 	}
-	if (heap.size() >= limit && !partition.dirty &&
-	    (!partition.has_boundary || heap.front() < partition.boundary)) {
+	if (heap.size() >= limit && !partition.dirty && (!partition.has_boundary || heap.front() < partition.boundary)) {
 		partition.dirty = true;
 		lstate.dirty.push_back(partition);
 	}
 	return true;
 }
 
-optional_ptr<WindowRankPrunerPartition> FindPartition(WindowRankPrunerLocalState &lstate, WindowRankPrunerGlobalState &shared,
-                                                   hash_t hash, const string_t &key) {
+optional_ptr<WindowRankPrunerPartition> FindPartition(WindowRankPrunerLocalState &lstate,
+                                                      WindowRankPrunerGlobalState &shared, hash_t hash,
+                                                      const string_t &key) {
 	auto &bucket = lstate.partitions[hash];
 	for (auto &partition : bucket) {
 		if (KeysEqual(key, partition->partition_key)) {

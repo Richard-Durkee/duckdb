@@ -42,12 +42,12 @@ optional_ptr<LogicalWindow> FindWindow(LogicalOperator &start, ColumnBinding bin
 } // namespace
 
 WindowRankLimit::WindowRankLimit(ClientContext &context_p,
-                                         optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats_p)
+                                 optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats_p)
     : context(context_p), stats(stats_p) {
 }
 
 bool WindowRankLimit::PartitionsTooSmall(LogicalOperator &input, const vector<unique_ptr<Expression>> &partitions,
-                                             idx_t limit) {
+                                         idx_t limit) {
 	if (partitions.empty() || !stats) {
 		return false;
 	}
@@ -89,8 +89,7 @@ bool WindowRankLimit::TryMark(LogicalOperator &filter_op) {
 	auto &filter = filter_op.Cast<LogicalFilter>();
 	for (auto &filter_expr : filter.expressions) {
 		const auto comparison = filter_expr->GetExpressionType();
-		if (comparison != ExpressionType::COMPARE_LESSTHANOREQUALTO &&
-		    comparison != ExpressionType::COMPARE_LESSTHAN) {
+		if (comparison != ExpressionType::COMPARE_LESSTHANOREQUALTO && comparison != ExpressionType::COMPARE_LESSTHAN) {
 			continue;
 		}
 		auto &compare = filter_expr->Cast<BoundFunctionExpression>();
