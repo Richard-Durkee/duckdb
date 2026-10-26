@@ -43,6 +43,7 @@
 #include "duckdb/optimizer/late_materialization.hpp"
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/optimizer/partitioned_execution.hpp"
+#include "duckdb/optimizer/scalar_aggregate_merge.hpp"
 #include "duckdb/optimizer/window_self_join.hpp"
 #include "duckdb/optimizer/row_number_rewriter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
@@ -215,6 +216,13 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::CTE_INLINING, [&]() {
 		CTEInlining cte_inlining(*this);
 		plan = cte_inlining.Optimize(std::move(plan));
+	});
+
+	// merge scalar subqueries aggregating the same table into one scan, before their filters are pushed into the scans
+	// and before their AVGs are rewritten, which would double the aggregates the merged scan filters
+	RunOptimizer(OptimizerType::SCALAR_AGGREGATE_MERGE, [&]() {
+		ScalarAggregateMerge scalar_aggregate_merge(*this);
+		plan = scalar_aggregate_merge.Optimize(std::move(plan));
 	});
 
 	// Rewrites AVG(x) -> SUM(x)/COUNT(x) and SUM(x+C) -> SUM(x) + C*COUNT(x)

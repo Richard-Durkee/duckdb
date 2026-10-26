@@ -59,6 +59,7 @@ add_library_unity(
   topn_optimizer.cpp
   topn_window_elimination.cpp
   unnest_rewriter.cpp
+  scalar_aggregate_merge.cpp
   window_self_join.cpp
   row_number_rewriter.cpp
   sampling_pushdown.cpp

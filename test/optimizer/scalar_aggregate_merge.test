@@ -1,0 +1,117 @@
+# name: test/optimizer/scalar_aggregate_merge.test
+# description: Scalar subqueries aggregating the same table are answered from one scan
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT i AS a, i % 10 AS b, i * 1.5 AS c FROM range(100) r(i);
+
+statement ok
+CREATE TABLE u AS SELECT i AS a FROM range(10) r(i);
+
+statement ok
+PRAGMA explain_output = 'optimized_only'
+
+# three subqueries over t, each with its own filter: one scan of t
+query III
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT sum(c) FROM t WHERE a BETWEEN 10 AND 19), (SELECT avg(a) FROM t WHERE b = 3);
+----
+10	217.5	48.0
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT sum(c) FROM t WHERE a BETWEEN 10 AND 19), (SELECT avg(a) FROM t WHERE b = 3);
+----
+logical_opt	<!REGEX>:[\s\S]*Sequential Scan[\s\S]*Sequential Scan[\s\S]*
+
+# a subquery no row of which passes its filter: count is zero and avg NULL, as with separate scans
+query III
+SELECT (SELECT count(*) FROM t WHERE a > 1000), (SELECT avg(c) FROM t WHERE a > 1000), (SELECT max(b) FROM t);
+----
+0	NULL	9
+
+# a subquery without a filter reads every row, so the merged scan keeps every row
+query II
+SELECT (SELECT count(*) FROM t), (SELECT count(*) FROM t WHERE b = 0);
+----
+100	10
+
+# DISTINCT aggregates and aggregates with a FILTER of their own
+query III
+SELECT (SELECT count(DISTINCT b) FROM t WHERE a < 50), (SELECT count(*) FILTER (WHERE b = 1) FROM t WHERE a >= 50), (SELECT sum(a) FILTER (WHERE b < 5) FROM t WHERE a < 20);
+----
+10	5	70
+
+# NULLs: a filter that is NULL for a row keeps it out, as in WHERE
+statement ok
+CREATE TABLE n AS SELECT CASE WHEN i % 4 = 0 THEN NULL ELSE i END AS x FROM range(20) r(i);
+
+query III
+SELECT (SELECT count(*) FROM n WHERE x < 10), (SELECT count(x) FROM n WHERE x >= 10), (SELECT count(*) FROM n);
+----
+7	8	20
+
+# the subqueries used in an expression and next to another table, as in TPC-DS q9
+query II
+SELECT CASE WHEN (SELECT count(*) FROM t WHERE a BETWEEN 1 AND 20) > 15 THEN (SELECT avg(c) FROM t WHERE a BETWEEN 1 AND 20) ELSE (SELECT avg(a) FROM t WHERE a BETWEEN 1 AND 20) END, max(u.a)
+FROM u WHERE u.a > 2;
+----
+15.75	9
+
+# ranges of one column: the merged scan keeps the range covering them, each aggregate its own range
+query IIII
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT count(*) FROM t WHERE a > 90), (SELECT sum(a) FROM t WHERE a BETWEEN 40 AND 42), (SELECT count(*) FROM t WHERE a = 50);
+----
+10	9	123	1
+
+query III
+SELECT (SELECT count(*) FROM t WHERE a > 10 AND a <= 20), (SELECT count(*) FROM t WHERE a >= 10 AND a < 20), (SELECT count(*) FROM t WHERE a > 10 AND a < 20);
+----
+10	10	9
+
+# the ranges of q9, which together leave out only NULLs
+query III
+SELECT (SELECT count(*) FROM n WHERE x BETWEEN 0 AND 9), (SELECT count(*) FROM n WHERE x BETWEEN 10 AND 19), (SELECT count(x) FROM n WHERE x >= 0);
+----
+7	8	15
+
+# conditions on different columns keep the rows of either
+query III
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT count(*) FROM t WHERE b = 9), (SELECT sum(c) FROM t WHERE a < 10 AND b = 9);
+----
+10	10	13.5
+
+# subqueries over different tables are not merged
+query II
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT count(*) FROM u WHERE a < 5);
+----
+10	5
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT count(*) FROM u WHERE a < 5);
+----
+logical_opt	<REGEX>:[\s\S]*Sequential Scan[\s\S]*Sequential Scan[\s\S]*
+
+# a volatile filter is evaluated per subquery: not merged
+query II
+EXPLAIN SELECT (SELECT count(*) FROM t WHERE random() < 2), (SELECT count(*) FROM t WHERE a < 5);
+----
+logical_opt	<REGEX>:[\s\S]*Sequential Scan[\s\S]*Sequential Scan[\s\S]*
+
+# a grouped subquery is not an ungrouped aggregate: not merged
+query II
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT max(a) FROM t WHERE a < 10 GROUP BY b ORDER BY 1 DESC LIMIT 1);
+----
+10	9
+
+# merged results are the same with the optimizer off
+statement ok
+SET disabled_optimizers TO 'scalar_aggregate_merge';
+
+query III
+SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT sum(c) FROM t WHERE a BETWEEN 10 AND 19), (SELECT avg(a) FROM t WHERE b = 3);
+----
+10	217.5	48.0
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM t WHERE a < 10), (SELECT sum(c) FROM t WHERE a BETWEEN 10 AND 19);
+----
+logical_opt	<REGEX>:[\s\S]*Sequential Scan[\s\S]*Sequential Scan[\s\S]*
