@@ -41,7 +41,7 @@ bool KeepRow(WindowRankPrunerLocalState &lstate, WindowRankPrunerPartition &part
 	const bool full = heap.size() >= limit;
 	if (full || partition.has_boundary) {
 		counts.bounded++;
-		if ((full && CompareKeys(key, heap.top()) > 0) ||
+		if ((full && CompareKeys(key, heap.front()) > 0) ||
 		    (partition.has_boundary && CompareKeys(key, partition.boundary) > 0)) {
 			return false;
 		}
@@ -52,15 +52,17 @@ bool KeepRow(WindowRankPrunerLocalState &lstate, WindowRankPrunerPartition &part
 			return true;
 		}
 		lstate.key_count++;
-		heap.push(key.GetString());
-	} else if (CompareKeys(key, heap.top()) < 0) {
-		heap.pop();
-		heap.push(key.GetString());
+		heap.emplace_back(key.GetData(), key.GetSize());
+		std::push_heap(heap.begin(), heap.end());
+	} else if (CompareKeys(key, heap.front()) < 0) {
+		std::pop_heap(heap.begin(), heap.end());
+		heap.back().assign(key.GetData(), key.GetSize());
+		std::push_heap(heap.begin(), heap.end());
 	} else {
 		return true;
 	}
 	if (heap.size() >= limit && !partition.dirty &&
-	    (!partition.has_boundary || heap.top() < partition.boundary)) {
+	    (!partition.has_boundary || heap.front() < partition.boundary)) {
 		partition.dirty = true;
 		lstate.dirty.push_back(partition);
 	}
@@ -100,7 +102,7 @@ void PublishBoundaries(WindowRankPrunerLocalState &lstate) {
 		auto &partition = partition_ref.get();
 		partition.dirty = false;
 		auto &boundary = *partition.shared;
-		const auto &key = partition.keys.top();
+		const auto &key = partition.keys.front();
 		lock_guard<mutex> guard(boundary.lock);
 		if (boundary.version == 0 || key < boundary.key) {
 			boundary.key = key;

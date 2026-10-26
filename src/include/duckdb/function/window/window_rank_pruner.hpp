@@ -15,7 +15,7 @@
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 
-#include <queue>
+#include <algorithm>
 
 namespace duckdb {
 
@@ -70,7 +70,9 @@ struct WindowRankPrunerPartition {
 	//! The partition's sort key
 	string partition_key;
 	//! A max-heap of the N best (smallest) order keys of the partition kept by this task
-	std::priority_queue<string> keys;
+	//! A max-heap (std::push_heap order) of the N best order keys kept by this task; a replaced key reuses the
+	//! buffer of the one it evicts
+	vector<string> keys;
 	//! The partition's shared boundary, and the copy of it this task last read
 	optional_ptr<WindowRankPrunerBoundary> shared;
 	idx_t version = 0;
