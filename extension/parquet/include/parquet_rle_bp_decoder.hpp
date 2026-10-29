@@ -41,15 +41,27 @@ public:
 		repeat_count_ -= batch_size;
 	}
 
+	//! Short repeated runs are written with a fixed number of stores, so that the varying run lengths do not cause
+	//! branch mispredictions. This writes up to SHORT_RUN_LENGTH values past the batch, so it is only done while the
+	//! target has room for them (target_capacity).
+	static constexpr uint32_t SHORT_RUN_LENGTH = 16;
+
 	template <typename T>
-	void GetBatch(data_ptr_t values_target_ptr, const uint32_t batch_size) {
+	void GetBatch(data_ptr_t values_target_ptr, const uint32_t batch_size, const uint32_t target_capacity = 0) {
 		auto values = reinterpret_cast<T *>(values_target_ptr);
 		uint32_t values_read = 0;
 
 		while (values_read < batch_size) {
 			if (repeat_count_ > 0) {
 				auto repeat_batch = MinValue<uint32_t>(batch_size - values_read, repeat_count_);
-				std::fill_n(values + values_read, repeat_batch, static_cast<T>(current_value_));
+				if (repeat_count_ <= SHORT_RUN_LENGTH && values_read + SHORT_RUN_LENGTH <= target_capacity) {
+					const auto value = static_cast<T>(current_value_);
+					for (uint32_t i = 0; i < SHORT_RUN_LENGTH; i++) {
+						values[values_read + i] = value;
+					}
+				} else {
+					std::fill_n(values + values_read, repeat_batch, static_cast<T>(current_value_));
+				}
 				repeat_count_ -= repeat_batch;
 				values_read += repeat_batch;
 			} else if (literal_count_ > 0) {

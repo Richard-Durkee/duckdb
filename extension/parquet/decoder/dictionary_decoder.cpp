@@ -114,7 +114,7 @@ idx_t DictionaryDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result
 	if (valid_count == read_count) {
 		// all values are valid - we can directly decompress the offsets into the selection vector
 		dict_decoder->GetBatch<uint32_t>(data_ptr_cast(dictionary_selection_vector.data()),
-		                                 NumericCast<uint32_t>(valid_count));
+		                                 NumericCast<uint32_t>(valid_count), STANDARD_VECTOR_SIZE);
 		// we do still need to verify the offsets though
 		uint32_t max_index = 0;
 		for (idx_t idx = 0; idx < valid_count; idx++) {
@@ -125,8 +125,10 @@ idx_t DictionaryDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result
 		}
 	} else if (valid_count > 0) {
 		// for the valid entries - decode the offsets
-		offset_buffer.resize(reader.reader.allocator, sizeof(uint32_t) * valid_count);
-		dict_decoder->GetBatch<uint32_t>(offset_buffer.ptr, NumericCast<uint32_t>(valid_count));
+		// leave room for the short runs that GetBatch writes past the end
+		const auto offset_capacity = NumericCast<uint32_t>(valid_count) + RleBpDecoder::SHORT_RUN_LENGTH;
+		offset_buffer.resize(reader.reader.allocator, sizeof(uint32_t) * offset_capacity);
+		dict_decoder->GetBatch<uint32_t>(offset_buffer.ptr, NumericCast<uint32_t>(valid_count), offset_capacity);
 		ConvertDictToSelVec(reinterpret_cast<uint32_t *>(offset_buffer.ptr), valid_sel, valid_count);
 	}
 #ifdef DEBUG

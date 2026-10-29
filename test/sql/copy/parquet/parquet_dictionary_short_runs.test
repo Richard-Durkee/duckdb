@@ -1,0 +1,44 @@
+# name: test/sql/copy/parquet/parquet_dictionary_short_runs.test
+# description: Read dictionary-encoded Parquet columns made of short runs of varying length, with and without NULLs
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE runs AS
+SELECT row_number() OVER (ORDER BY k, j) - 1 AS i, k % 997 AS v, CASE WHEN k % 13 = 0 THEN NULL ELSE k % 991 END AS n
+FROM (SELECT k, unnest(range((k * 7919) % 33 + 1)) AS j FROM range(30000) t(k))
+
+statement ok
+COPY runs TO '__TEST_DIR__/dictionary_short_runs.parquet' (FORMAT parquet, ROW_GROUP_SIZE 100000)
+
+query II
+SELECT path_in_schema, bool_and(encodings LIKE '%DICTIONARY%')
+FROM parquet_metadata('__TEST_DIR__/dictionary_short_runs.parquet') WHERE path_in_schema IN ('v', 'n')
+GROUP BY ALL ORDER BY ALL
+----
+n	true
+v	true
+
+query I
+SELECT count(*) > 500000 FROM runs
+----
+true
+
+# every row read back matches the table
+query I
+SELECT count(*) FROM runs FULL OUTER JOIN read_parquet('__TEST_DIR__/dictionary_short_runs.parquet') p USING (i)
+WHERE runs.v IS DISTINCT FROM p.v OR runs.n IS DISTINCT FROM p.n
+----
+0
+
+# filters evaluated on the dictionary
+query I
+SELECT (SELECT count(*) FROM read_parquet('__TEST_DIR__/dictionary_short_runs.parquet') WHERE n = 17) = (SELECT count(*) FROM runs WHERE n = 17)
+----
+true
+
+query I
+SELECT (SELECT list(i ORDER BY i) FROM read_parquet('__TEST_DIR__/dictionary_short_runs.parquet') WHERE n < 5 AND v > 3) = (SELECT list(i ORDER BY i) FROM runs WHERE n < 5 AND v > 3)
+----
+true
