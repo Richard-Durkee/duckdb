@@ -312,6 +312,38 @@ struct RLEScanState : public SegmentScanState {
 			return entry_capacity;
 		}
 
+		//! Validate the runs from entry_index on until they cover row_count rows, so that they can be read without
+		//! further checks. Validates exactly the runs that reading those rows reaches.
+		void ValidateCovering(idx_t entry_index, idx_t row_count) {
+			auto validated = validated_entry_count;
+			auto unvalidated_rows = unvalidated_row_count;
+			idx_t covered_rows = 0;
+			for (idx_t entry = entry_index; covered_rows < row_count; entry++) {
+				if (entry >= validated) {
+					if (validated >= entry_capacity) {
+						ThrowRLERunCountArrayExhausted();
+					}
+					auto run_count = run_counts[validated];
+					if (run_count > unvalidated_rows) {
+						ThrowRLERunCountExceedsRemaining(run_count, unvalidated_rows);
+					}
+					unvalidated_rows -= run_count;
+					validated++;
+				}
+				covered_rows += run_counts[entry];
+			}
+			validated_entry_count = validated;
+			unvalidated_row_count = unvalidated_rows;
+		}
+
+		T GetValue(idx_t entry_index) const {
+			return values[entry_index];
+		}
+
+		rle_count_t GetRunCount(idx_t entry_index) const {
+			return run_counts[entry_index];
+		}
+
 	private:
 		//! Validate through entry_index without advancing the scan.
 		void ValidateThrough(idx_t entry_index) {
@@ -480,27 +512,56 @@ void RLEScanPartialInternal(ColumnSegment &segment, ColumnScanState &state, idx_
 
 	auto result_data = FlatVector::GetDataMutable<T>(result);
 
+	// Validate the runs this scan reads up front, in one pass, instead of one run at a time while writing
+	auto &layout = scan_state.layout;
+	idx_t entry_pos = scan_state.entry_pos;
+	idx_t position_in_entry = scan_state.position_in_entry;
+	layout.ValidateCovering(entry_pos, position_in_entry + scan_count);
 	const idx_t result_end = result_offset + scan_count;
-	while (result_offset < result_end) {
-		auto run = scan_state.ValidateAndGetCurrentRun();
-		auto run_count = run.length - scan_state.position_in_entry;
-		idx_t remaining_scan_count = result_end - result_offset;
-		T element = run.value;
-		if (DUCKDB_UNLIKELY(run_count > remaining_scan_count)) {
-			for (idx_t i = 0; i < remaining_scan_count; i++) {
-				result_data[result_offset + i] = element;
+	if (ENTIRE_VECTOR) {
+		// A short run is written with a fixed number of stores, so that the varying run lengths do not cause branch
+		// mispredictions. The values written past the run are overwritten by the next runs, which is possible while
+		// there is room for them in the vector: a scan of an entire vector does not keep values past its end.
+		static constexpr idx_t SHORT_RUN_LENGTH = 16;
+		const auto capacity = FlatVector::GetCapacity(result);
+		while (result_offset < result_end && result_offset + SHORT_RUN_LENGTH <= capacity) {
+			const idx_t run_length = layout.GetRunCount(entry_pos);
+			const T element = layout.GetValue(entry_pos);
+			const idx_t remaining_in_run = run_length - position_in_entry;
+			const idx_t write_count = MinValue<idx_t>(remaining_in_run, result_end - result_offset);
+			if (DUCKDB_LIKELY(remaining_in_run <= SHORT_RUN_LENGTH)) {
+				for (idx_t i = 0; i < SHORT_RUN_LENGTH; i++) {
+					result_data[result_offset + i] = element;
+				}
+			} else {
+				for (idx_t i = 0; i < write_count; i++) {
+					result_data[result_offset + i] = element;
+				}
 			}
-			scan_state.position_in_entry += remaining_scan_count;
-			break;
+			result_offset += write_count;
+			position_in_entry += write_count;
+			const bool exhausted = position_in_entry >= run_length;
+			entry_pos += exhausted;
+			position_in_entry = exhausted ? 0 : position_in_entry;
 		}
-
-		for (idx_t i = 0; i < run_count; i++) {
+	}
+	while (result_offset < result_end) {
+		const idx_t run_length = layout.GetRunCount(entry_pos);
+		const T element = layout.GetValue(entry_pos);
+		const idx_t write_count = MinValue<idx_t>(run_length - position_in_entry, result_end - result_offset);
+		for (idx_t i = 0; i < write_count; i++) {
 			result_data[result_offset + i] = element;
 		}
-
-		result_offset += run_count;
-		scan_state.ForwardToNextRun();
+		result_offset += write_count;
+		position_in_entry += write_count;
+		if (position_in_entry >= run_length) {
+			// empty runs do not represent rows and are skipped here as well
+			entry_pos++;
+			position_in_entry = 0;
+		}
 	}
+	scan_state.entry_pos = entry_pos;
+	scan_state.position_in_entry = position_in_entry;
 }
 
 template <class T>

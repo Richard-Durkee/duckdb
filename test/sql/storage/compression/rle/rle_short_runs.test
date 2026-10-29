@@ -1,0 +1,62 @@
+# name: test/sql/storage/compression/rle/rle_short_runs.test
+# description: Scan RLE columns made of short runs of varying length, compared row by row against uncompressed copies
+# group: [rle]
+
+load __TEST_DIR__/rle_short_runs.db
+
+statement ok
+CREATE TABLE runs AS
+SELECT row_number() OVER (ORDER BY k, j) - 1 AS i, CASE WHEN k % 13 = 0 THEN NULL ELSE k END AS k
+FROM (SELECT k, unnest(range((k * 7919) % 33 + 1)) AS j FROM range(30000) t(k))
+
+statement ok
+PRAGMA force_compression = 'rle'
+
+statement ok
+CREATE TABLE rle AS
+SELECT i, k::BIGINT AS b, k::INTEGER AS n, (k % 30000)::SMALLINT AS s, k::HUGEINT AS h, k::DOUBLE AS d FROM runs
+
+statement ok
+CHECKPOINT
+
+statement ok
+PRAGMA force_compression = 'uncompressed'
+
+statement ok
+CREATE TABLE plain AS
+SELECT i, k::BIGINT AS b, k::INTEGER AS n, (k % 30000)::SMALLINT AS s, k::HUGEINT AS h, k::DOUBLE AS d FROM runs
+
+statement ok
+CHECKPOINT
+
+statement ok
+PRAGMA force_compression = 'auto'
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('rle') WHERE segment_type IN ('BIGINT', 'INTEGER', 'SMALLINT', 'HUGEINT', 'DOUBLE')
+----
+RLE
+
+query I
+SELECT count(*) > 500000 FROM rle
+----
+true
+
+# every row of the RLE table matches the uncompressed one
+query I
+SELECT count(*) FROM rle FULL OUTER JOIN plain USING (i)
+WHERE rle.b IS DISTINCT FROM plain.b OR rle.n IS DISTINCT FROM plain.n OR rle.s IS DISTINCT FROM plain.s
+   OR rle.h IS DISTINCT FROM plain.h OR rle.d IS DISTINCT FROM plain.d
+----
+0
+
+# scans that start in the middle of a run and end before the end of the table
+query I
+SELECT (SELECT sum(hash(i, b, n, s, h, d)) FROM rle WHERE i BETWEEN 1001 AND 400003) = (SELECT sum(hash(i, b, n, s, h, d)) FROM plain WHERE i BETWEEN 1001 AND 400003)
+----
+true
+
+query I
+SELECT (SELECT list(b ORDER BY i) FROM rle WHERE i >= 2040 AND i < 2060) = (SELECT list(b ORDER BY i) FROM plain WHERE i >= 2040 AND i < 2060)
+----
+true
