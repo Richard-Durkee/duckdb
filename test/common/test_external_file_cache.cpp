@@ -1446,4 +1446,30 @@ TEST_CASE("Request sizing can make every read cover exactly the requested bytes"
 	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{BLOCK_SIZE + 10, 100}});
 }
 
+TEST_CASE("Exact request sizing reads only the requested bytes of a file that fits in one block",
+          "[external_file_cache]") {
+	DuckDB db = MakeCacheLocalFilesDB();
+	auto &db_instance = *db.instance;
+	auto recording_fs = make_uniq<EFCTrackingFileSystem>();
+
+	Connection con(db);
+	con.Query("SET external_file_cache_request_sizing='EXACT'");
+
+	const idx_t FILE_SIZE = 3000;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard test_file("test_efc_request_sizing_exact_small.bin", content);
+
+	// the footer read of a small Parquet file: a reader that sizes its own requests asks for the tail only
+	CachingFileSystem cfs(*recording_fs, db_instance);
+	auto handle = cfs.OpenFile(MakeTestOpenFileInfo(test_file.GetPath()), ReaderSizedFlags());
+	recording_fs->TakeReads();
+
+	REQUIRE(ReadFull(*handle, 100, 2800) == content.substr(2800, 100));
+	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{2800, 100}});
+
+	// the bytes read are cached
+	REQUIRE(ReadFull(*handle, 50, 2850) == content.substr(2850, 50));
+	REQUIRE(recording_fs->TakeReads().empty());
+}
+
 } // namespace duckdb
