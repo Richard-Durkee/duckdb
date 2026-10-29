@@ -568,6 +568,20 @@ void StringValueResult::Reset() {
 }
 
 void StringValueResult::AddQuotedValue(StringValueResult &result, const idx_t buffer_pos) {
+	auto &state_machine_options = result.state_machine.dialect_options.state_machine_options;
+	if (!state_machine_options.quoted_newlines.GetValue() &&
+	    (result.states.states[0] == CSVState::QUOTED || result.states.states[0] == CSVState::ESCAPE)) {
+		// The line ended inside quotes: the value is everything after the opening quote
+		if (state_machine_options.strict_mode.GetValue()) {
+			result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
+			                             result.last_position);
+		}
+		const idx_t length = buffer_pos - result.quoted_position - 1;
+		AddPossiblyEscapedValue(result, buffer_pos, result.buffer_ptr + result.quoted_position + 1, length,
+		                        length == 0);
+		result.quoted = false;
+		return;
+	}
 	if (!result.unquoted) {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
@@ -1539,8 +1553,21 @@ void StringValueScanner::ProcessOverBufferValue() {
 		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
 		const idx_t extra_delimiter_bytes = states.IsDelimiter() && !delimiter.empty() ? delimiter.size() - 1 : 0;
 		bool removed_extra_delimiter_bytes = false;
+		// The line ended inside quotes: the value is everything after the opening quote
+		const bool open_quote = !state_machine->dialect_options.state_machine_options.quoted_newlines.GetValue() &&
+		                        states.NewRow() &&
+		                        (states.states[0] == CSVState::QUOTED || states.states[0] == CSVState::ESCAPE);
+		if (open_quote) {
+			if (state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
+				result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
+				                             result.last_position);
+			}
+			if (!result.quoted) {
+				result.SetQuoted(result, over_buffer_string.size());
+			}
+		}
 		if (result.quoted && !result.comment) {
-			idx_t length = over_buffer_string.size() - 1 - result.quoted_position;
+			idx_t length = over_buffer_string.size() - result.quoted_position - (open_quote ? 0 : 1);
 			while (length > 0 && result.ignore_empty_values &&
 			       over_buffer_string.c_str()[result.quoted_position + length] == ' ') {
 				length--;

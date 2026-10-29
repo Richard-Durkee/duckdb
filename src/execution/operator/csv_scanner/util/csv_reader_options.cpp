@@ -484,6 +484,8 @@ bool CSVReaderOptions::SetBaseOption(const Identifier &loption, const Value &val
 		SetCompression(ParseString(value, loption));
 	} else if (loption == "strict_mode") {
 		SetRFC4180(ParseBoolean(value, loption));
+	} else if (loption == "quoted_newlines") {
+		dialect_options.state_machine_options.quoted_newlines.Set(ParseBoolean(value, loption));
 	} else {
 		// unrecognized option in base CSV
 		return false;
@@ -880,6 +882,9 @@ void CSVReaderOptions::ToNamedParameters(named_parameter_map_t &named_params) co
 	}
 	if (strict_mode.IsSetByUser()) {
 		named_params["strict_mode"] = Value(GetRFC4180());
+	}
+	if (dialect_options.state_machine_options.quoted_newlines.IsSetByUser()) {
+		named_params["quoted_newlines"] = Value(dialect_options.state_machine_options.quoted_newlines.GetValue());
 	}
 	named_params["max_line_size"] = Value::BIGINT(NumericCast<int64_t>(maximum_line_size.GetValue()));
 	if (dialect_options.skip_rows.IsSetByUser()) {

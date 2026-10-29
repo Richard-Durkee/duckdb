@@ -254,6 +254,14 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 	    state_machine_options.escape.GetValue() != '\0') {
 		transition_array[escape][static_cast<uint8_t>(CSVState::QUOTED)] = CSVState::ESCAPE;
 	}
+	if (!state_machine_options.quoted_newlines.GetValue()) {
+		// Every new line ends the record, also one inside quotes or right after an escape
+		for (const auto state : {CSVState::QUOTED, CSVState::ESCAPE}) {
+			transition_array[static_cast<uint8_t>('\n')][static_cast<uint8_t>(state)] = CSVState::RECORD_SEPARATOR;
+			transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(state)] =
+			    new_line_id == NewLineIdentifier::CARRY_ON ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
+		}
+	}
 	// 6) Unquoted State
 	transition_array[static_cast<uint8_t>('\n')][static_cast<uint8_t>(CSVState::UNQUOTED)] = CSVState::RECORD_SEPARATOR;
 	if (new_line_id == NewLineIdentifier::CARRY_ON) {

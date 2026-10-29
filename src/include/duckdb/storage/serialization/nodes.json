@@ -1224,6 +1224,13 @@
         "type": "idx_t",
         "property": "options.rejects_line_size_limit",
         "default": "10000"
+      },
+      {
+        "id": 145,
+        "name": "quoted_newlines",
+        "type": "CSVOption<bool>",
+        "property": "options.dialect_options.state_machine_options.quoted_newlines",
+        "default": "true"
       }
     ],
     "constructor": [
