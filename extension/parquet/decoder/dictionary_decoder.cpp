@@ -113,18 +113,15 @@ idx_t DictionaryDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result
 	idx_t valid_count = GetValidValues(defines, read_count, result_offset);
 	if (valid_count == read_count) {
 		// all values are valid - we can directly decompress the offsets into the selection vector
-		dict_decoder->GetBatch<uint32_t>(data_ptr_cast(dictionary_selection_vector.data()),
-		                                 NumericCast<uint32_t>(valid_count));
-		// we do still need to verify the offsets though
-		uint32_t max_index = 0;
-		for (idx_t idx = 0; idx < valid_count; idx++) {
-			max_index = MaxValue(max_index, dictionary_selection_vector[idx]);
-		}
-		if (max_index >= dictionary_size) {
+		// the offsets are verified while decoding
+		if (!dict_decoder->GetBatchBelow<uint32_t>(data_ptr_cast(dictionary_selection_vector.data()),
+		                                           NumericCast<uint32_t>(valid_count), dictionary_size)) {
 			throw std::runtime_error("Parquet file is likely corrupted, dictionary offset out of range");
 		}
 	} else if (valid_count > 0) {
 		// for the valid entries - decode the offsets
+		// the buffer is shared with other decoders, which may have advanced it
+		offset_buffer.reset();
 		offset_buffer.resize(reader.reader.allocator, sizeof(uint32_t) * valid_count);
 		dict_decoder->GetBatch<uint32_t>(offset_buffer.ptr, NumericCast<uint32_t>(valid_count));
 		ConvertDictToSelVec(reinterpret_cast<uint32_t *>(offset_buffer.ptr), valid_sel, valid_count);

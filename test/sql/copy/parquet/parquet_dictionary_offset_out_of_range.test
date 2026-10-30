@@ -1,0 +1,28 @@
+# name: test/sql/copy/parquet/parquet_dictionary_offset_out_of_range.test
+# description: Reject dictionary indices past the end of the dictionary, in repeated runs and in bit-packed values
+# group: [parquet]
+
+require parquet
+
+# a repeated run of index 3 in a dictionary of 3 entries
+statement error
+SELECT count(DISTINCT v) FROM 'data/parquet-testing/corrupt_dictionary_offset_rle.parquet'
+----
+dictionary offset out of range
+
+# a bit-packed index 3 in a dictionary of 3 entries
+statement error
+SELECT count(DISTINCT v) FROM 'data/parquet-testing/corrupt_dictionary_offset_bitpacked.parquet'
+----
+dictionary offset out of range
+
+statement error
+SELECT * FROM 'data/parquet-testing/corrupt_dictionary_offset_bitpacked.parquet' WHERE v = 'a'
+----
+dictionary offset out of range
+
+# the indices themselves are not needed to count the rows
+query I
+SELECT count(*) FROM 'data/parquet-testing/corrupt_dictionary_offset_rle.parquet'
+----
+300

@@ -43,25 +43,14 @@ public:
 
 	template <typename T>
 	void GetBatch(data_ptr_t values_target_ptr, const uint32_t batch_size) {
-		auto values = reinterpret_cast<T *>(values_target_ptr);
-		uint32_t values_read = 0;
+		GetBatchInternal<T, false>(values_target_ptr, batch_size, 0);
+	}
 
-		while (values_read < batch_size) {
-			if (repeat_count_ > 0) {
-				auto repeat_batch = MinValue<uint32_t>(batch_size - values_read, repeat_count_);
-				std::fill_n(values + values_read, repeat_batch, static_cast<T>(current_value_));
-				repeat_count_ -= repeat_batch;
-				values_read += repeat_batch;
-			} else if (literal_count_ > 0) {
-				auto literal_batch = MinValue<uint32_t>(batch_size - values_read, literal_count_);
-				ParquetDecodeUtils::BitUnpack<T>(buffer_, bitpack_pos, values + values_read, literal_batch, bit_width_);
-				literal_count_ -= literal_batch;
-				values_read += literal_batch;
-			} else {
-				NextCounts();
-			}
-		}
-		D_ASSERT(values_read == batch_size);
+	//! Like GetBatch, but returns false if a value is not below value_limit. A repeated run is checked once, and
+	//! bit-packed values only when the bit width allows values of value_limit or more
+	template <typename T>
+	bool GetBatchBelow(data_ptr_t values_target_ptr, const uint32_t batch_size, const uint64_t value_limit) {
+		return GetBatchInternal<T, true>(values_target_ptr, batch_size, value_limit);
 	}
 
 	void Skip(uint32_t batch_size) {
@@ -108,6 +97,48 @@ public:
 	}
 
 private:
+	template <typename T, bool CHECK_LIMIT>
+	bool GetBatchInternal(data_ptr_t values_target_ptr, const uint32_t batch_size, const uint64_t value_limit) {
+		auto values = reinterpret_cast<T *>(values_target_ptr);
+		const bool check_literals = CHECK_LIMIT && max_val >= value_limit;
+		uint64_t max_value = 0;
+		bool has_literals = false;
+		uint32_t values_read = 0;
+
+		while (values_read < batch_size) {
+			if (repeat_count_ > 0) {
+				if (CHECK_LIMIT) {
+					max_value = MaxValue(max_value, current_value_);
+				}
+				auto repeat_batch = MinValue<uint32_t>(batch_size - values_read, repeat_count_);
+				std::fill_n(values + values_read, repeat_batch, static_cast<T>(current_value_));
+				repeat_count_ -= repeat_batch;
+				values_read += repeat_batch;
+			} else if (literal_count_ > 0) {
+				auto literal_batch = MinValue<uint32_t>(batch_size - values_read, literal_count_);
+				ParquetDecodeUtils::BitUnpack<T>(buffer_, bitpack_pos, values + values_read, literal_batch, bit_width_);
+				has_literals = true;
+				literal_count_ -= literal_batch;
+				values_read += literal_batch;
+			} else {
+				NextCounts();
+			}
+		}
+		D_ASSERT(values_read == batch_size);
+		if (!CHECK_LIMIT) {
+			return true;
+		}
+		if (check_literals && has_literals) {
+			// checking the whole batch in one pass is cheaper than checking each literal run
+			T batch_max = 0;
+			for (uint32_t i = 0; i < batch_size; i++) {
+				batch_max = MaxValue(batch_max, values[i]);
+			}
+			max_value = MaxValue<uint64_t>(max_value, batch_max);
+		}
+		return max_value < value_limit;
+	}
+
 	ByteBuffer buffer_;
 
 	/// Number of bits needed to encode the value. Must be between 0 and 64.
