@@ -46,6 +46,10 @@ public:
 	virtual void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) {
 		QueryEnd(context);
 	}
+	//! Called when a statement ends, after its transaction commits or rolls back and before its profile is finished.
+	//! An extension can count in its own state while the statement runs, and set the totals as metrics here.
+	virtual void QueryProfileEnd(ClientContext &context) {
+	}
 	virtual void TransactionBegin(MetaTransaction &transaction, ClientContext &context) {
 	}
 	virtual void TransactionCommit(MetaTransaction &transaction, ClientContext &context) {

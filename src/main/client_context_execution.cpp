@@ -133,6 +133,16 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
+	// let the registered state set its metrics for the statement before its profile is finished
+	try {
+		for (auto const &s : registered_state->States()) {
+			s->QueryProfileEnd(*this);
+		}
+	} catch (std::exception &ex) {
+		if (!error.HasError()) {
+			error = ErrorData(ex);
+		}
+	}
 	EndQueryProfiling(error);
 
 	// Refresh the logger

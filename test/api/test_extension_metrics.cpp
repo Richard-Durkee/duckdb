@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
@@ -197,4 +198,44 @@ TEST_CASE("A metric can be set while the query binds", "[api]") {
 	REQUIRE(!tracked_while_binding);
 	REQUIRE(GetProfiledMetric(con, "test.set_if_tracked").IsNull());
 	REQUIRE(GetProfiledMetric(con, "test.set_always").IsNull());
+}
+
+// Counts rows in its own counter on any thread while the statement runs, and sets the total as a metric once, when the
+// statement's profile is about to be finished.
+class RowCountState : public ClientContextState {
+public:
+	void QueryProfileEnd(ClientContext &context) override {
+		auto total = rows.exchange(0);
+		auto &profiler = QueryProfiler::Get(context);
+		if (profiler.MetricIsTracked("test.rows_at_profile_end")) {
+			profiler.SetMetric("test.rows_at_profile_end", Value::UBIGINT(total));
+		}
+	}
+
+	atomic<idx_t> rows {0};
+};
+
+static void CountRowsInStateExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto row_count_state = state.GetContext().registered_state->Get<RowCountState>("test_row_count_state");
+	row_count_state->rows += args.size();
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("A metric can be set when the statement's profile is about to be finished", "[api][intraquery]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("count_rows_in_state", {LogicalType::BIGINT}, LogicalType::BIGINT, CountRowsInStateExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	con.context->registered_state->GetOrCreate<RowCountState>("test_row_count_state");
+	MetricsManager::Get(*con.context)
+	    .RegisterMetric({"test.rows_at_profile_end", "uint64", "Rows counted while the statement ran", "rows"});
+	SetUpParallelScan(con, "test_profile_end_output.txt");
+
+	REQUIRE_NO_FAIL(con.Query("SELECT max(count_rows_in_state(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.rows_at_profile_end") == Value::UBIGINT(ROW_COUNT));
+
+	// each statement reports its own rows
+	REQUIRE_NO_FAIL(con.Query("SELECT max(count_rows_in_state(i)) FROM numbers WHERE i < 1000"));
+	REQUIRE(GetProfiledMetric(con, "test.rows_at_profile_end") == Value::UBIGINT(1000));
 }
