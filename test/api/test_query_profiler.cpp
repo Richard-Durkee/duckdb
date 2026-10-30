@@ -3,6 +3,9 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <iostream>
 #include <thread>
@@ -269,4 +272,50 @@ TEST_CASE("Test bytes scanned by a LIMIT with read-ahead", "[api][parquet]") {
 	// the row groups read ahead are never scanned, so only the first counts
 	REQUIRE_NO_FAIL(con.Query("SELECT * FROM read_parquet('" + path + "') LIMIT 10"));
 	REQUIRE(QueryProfiler::Get(*con.context).GetBytesScanned() == first_row_group);
+}
+
+// Adds the rows of every chunk to a counter shared by all threads, and to one of 64 counters picked by the chunk's
+// first value, so the threads also add new keys to the counters while others are adding to them.
+static void CountRowsExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &profiler = QueryProfiler::Get(state.GetContext());
+	auto first = args.data[0].GetValue(0).GetValue<int64_t>();
+	profiler.AddToMetricCounter("test.rows_counted", args.size());
+	profiler.AddToMetricCounter("test.rows_counted_by_chunk_" + to_string(first / STANDARD_VECTOR_SIZE % 64),
+	                            args.size());
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Metric counters can be added to from several threads at once", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("count_rows", {LogicalType::BIGINT}, LogicalType::BIGINT, CountRowsExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	CreateScalarFunctionInfo info(fn);
+	con.context->RunFunctionInTransaction(
+	    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
+
+	// a table, not range(), so that the scan, and with it count_rows, runs on several threads
+	const idx_t row_count = 10000000;
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(" + to_string(row_count) + ")"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
+	con.EnableProfiling();
+	con.context->config.profiler_save_location = TestCreatePath("test_metric_counters_output.txt");
+	REQUIRE_NO_FAIL(con.Query("SELECT max(count_rows(i)) FROM numbers"));
+
+	idx_t total = 0;
+	idx_t total_by_chunk = 0;
+	QueryProfiler::Get(*con.context)
+	    .GetFinalizedProfileUnderLock(
+	        [&](optional_ptr<const GatheredMetrics> metrics, optional_ptr<const ProfilingNode>) {
+		        REQUIRE(metrics);
+		        for (auto &entry : metrics->GetMetrics()) {
+			        if (entry.first == "test.rows_counted") {
+				        total = entry.second.GetValue<idx_t>();
+			        } else if (StringUtil::StartsWith(entry.first, "test.rows_counted_by_chunk_")) {
+				        total_by_chunk += entry.second.GetValue<idx_t>();
+			        }
+		        }
+	        });
+	REQUIRE(total == row_count);
+	REQUIRE(total_by_chunk == row_count);
 }

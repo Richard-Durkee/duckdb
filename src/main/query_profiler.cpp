@@ -310,9 +310,12 @@ void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 }
 
 void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
-	if (IsEnabled()) {
-		query_metrics.UpdateMetricCounter(key, amount);
+	if (!IsEnabled()) {
+		return;
 	}
+	// the counters are a map that operators and extensions can add to from any thread
+	lock_guard<std::mutex> guard(lock);
+	query_metrics.UpdateMetricCounter(key, amount);
 }
 
 void QueryProfiler::SetMetric(const string &key, Value new_value) {
