@@ -126,9 +126,10 @@ public:
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 
-	//! Set an arbitrary metric value (profiling-only; no-op when profiling is disabled).
+	//! Set an arbitrary metric value of the running query (profiling-only; no-op when profiling is disabled).
+	//! Thread-safe, and may be called at any point of the query, binding included.
 	DUCKDB_API void SetMetric(const string &key, Value new_value);
-	//! Returns true if the given metric is currently being tracked.
+	//! Returns true if the given metric is currently being tracked, at any point of the query.
 	//! Always returns false when profiling is disabled.
 	DUCKDB_API bool MetricIsTracked(const string &key) const;
 

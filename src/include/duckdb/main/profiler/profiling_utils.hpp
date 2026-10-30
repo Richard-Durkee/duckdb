@@ -65,6 +65,10 @@ public:
 		string_counters[key] += addition;
 	}
 
+	void SetMetricValue(const string &key, Value value) {
+		string_values[key] = std::move(value);
+	}
+
 	void UpdateBytesRead(idx_t n, idx_t elapsed_us) {
 		bytes_read += n;
 		read_operations++;
@@ -164,6 +168,7 @@ public:
 		latency_timer.reset();
 		string_timings.clear();
 		string_counters.clear();
+		string_values.clear();
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -184,6 +189,9 @@ public:
 		for (const auto &entry : other.string_counters) {
 			string_counters[entry.first] += entry.second;
 		}
+		for (const auto &entry : other.string_values) {
+			string_values[entry.first] = entry.second;
+		}
 		bytes_read += other.bytes_read.load();
 		read_operations += other.read_operations.load();
 		read_time_us += other.read_time_us.load();
@@ -200,6 +208,8 @@ private:
 	unordered_map<string, MetricTiming> string_timings;
 	// String-keyed counters for storage counter metrics (e.g. "storage.wal_replay_entry_count")
 	unordered_map<string, idx_t> string_counters;
+	// Values set by QueryProfiler::SetMetric, kept until the query's metrics are gathered
+	profiler_metrics_t string_values;
 
 public:
 	// Declared after string_timings so it is destroyed first; its destructor writes to string_timings.

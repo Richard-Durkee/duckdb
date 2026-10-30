@@ -11,6 +11,9 @@ void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
 	for (const auto &[key, count] : string_counters) {
 		info.SetMetric(key, count);
 	}
+	for (const auto &[key, value] : string_values) {
+		info.SetMetric(key, value);
+	}
 	for (auto &entry : GetLiveMetrics()) {
 		info.SetMetric(entry.first, std::move(entry.second));
 	}

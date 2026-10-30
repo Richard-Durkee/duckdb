@@ -319,14 +319,21 @@ void QueryProfiler::SetMetric(const string &key, Value new_value) {
 	if (!IsEnabled()) {
 		return;
 	}
-	metrics->SetMetric(key, std::move(new_value));
+	// the query's metrics are only gathered once its plan is built, so the value is kept with the query until then:
+	// an extension may set it while the query binds
+	lock_guard<std::mutex> guard(lock);
+	query_metrics.SetMetricValue(key, std::move(new_value));
 }
 
 bool QueryProfiler::MetricIsTracked(const string &key) const {
 	if (!IsEnabled()) {
 		return false;
 	}
-	return metrics->MetricIsTracked(key);
+	if (metrics) {
+		return metrics->MetricIsTracked(key);
+	}
+	// before the plan is built there are no gathered metrics to ask: match the configured patterns directly
+	return GatheredMetrics(ClientConfig::GetConfig(context).tracked_metrics).MetricIsTracked(key);
 }
 
 idx_t QueryProfiler::GetBytesRead() const {

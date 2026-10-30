@@ -3,6 +3,9 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <iostream>
 #include <thread>
@@ -269,4 +272,56 @@ TEST_CASE("Test bytes scanned by a LIMIT with read-ahead", "[api][parquet]") {
 	// the row groups read ahead are never scanned, so only the first counts
 	REQUIRE_NO_FAIL(con.Query("SELECT * FROM read_parquet('" + path + "') LIMIT 10"));
 	REQUIRE(QueryProfiler::Get(*con.context).GetBytesScanned() == first_row_group);
+}
+
+// Sets a metric while the query binds, before its plan is built.
+static unique_ptr<FunctionData> SetMetricBind(BindScalarFunctionInput &input) {
+	auto &profiler = QueryProfiler::Get(input.GetClientContext());
+	if (profiler.MetricIsTracked("test.set_while_binding")) {
+		profiler.SetMetric("test.set_while_binding", Value::UBIGINT(42));
+	}
+	return nullptr;
+}
+
+static void SetMetricExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("A metric can be set while the query binds", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("set_metric_while_binding", {LogicalType::BIGINT}, LogicalType::BIGINT, SetMetricExec);
+	fn.SetBindCallback(SetMetricBind);
+	CreateScalarFunctionInfo info(fn);
+	con.context->RunFunctionInTransaction(
+	    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(10)"));
+
+	con.EnableProfiling();
+	con.context->config.profiler_save_location = TestCreatePath("test_set_metric_output.txt");
+	REQUIRE_NO_FAIL(con.Query("SELECT max(set_metric_while_binding(i)) FROM numbers"));
+
+	Value value;
+	QueryProfiler::Get(*con.context)
+	    .GetFinalizedProfileUnderLock(
+	        [&](optional_ptr<const GatheredMetrics> metrics, optional_ptr<const ProfilingNode>) {
+		        REQUIRE(metrics);
+		        auto entry = metrics->GetMetrics().find("test.set_while_binding");
+		        if (entry != metrics->GetMetrics().end()) {
+			        value = entry->second;
+		        }
+	        });
+	REQUIRE(value == Value::UBIGINT(42));
+
+	// and is left out when it is not tracked
+	REQUIRE_NO_FAIL(con.Query("SET tracked_metrics = ['query.*']"));
+	REQUIRE_NO_FAIL(con.Query("SELECT max(set_metric_while_binding(i)) FROM numbers"));
+	bool found = true;
+	QueryProfiler::Get(*con.context)
+	    .GetFinalizedProfileUnderLock(
+	        [&](optional_ptr<const GatheredMetrics> metrics, optional_ptr<const ProfilingNode>) {
+		        REQUIRE(metrics);
+		        found = metrics->GetMetrics().count("test.set_while_binding") > 0;
+	        });
+	REQUIRE(!found);
 }
