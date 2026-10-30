@@ -1014,6 +1014,13 @@
         "struct": "GeometryMinimumShreddingSize"
     },
     {
+        "name": "hidden_extensions",
+        "description": "List of extensions whose functions, types, settings and other entries are left out of the system catalog views and error suggestions. Their entries can still be used.",
+        "type": "VARCHAR[]",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "home_directory",
         "description": "Sets the home directory of the database instance.",
         "type": "VARCHAR",

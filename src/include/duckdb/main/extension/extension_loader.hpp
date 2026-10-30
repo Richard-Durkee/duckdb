@@ -30,6 +30,22 @@ struct CreateTableFunctionInfo;
 struct CreatePragmaFunctionInfo;
 struct CreateWindowFunctionInfo;
 
+//! Marks the extension whose load runs on this thread, so that what it registers directly with the database (such
+//! as settings) can be attributed to it
+class ExtensionLoadScope {
+public:
+	explicit ExtensionLoadScope(const Identifier &extension_name);
+	~ExtensionLoadScope();
+	ExtensionLoadScope(const ExtensionLoadScope &) = delete;
+	ExtensionLoadScope &operator=(const ExtensionLoadScope &) = delete;
+
+	//! The extension whose load runs on this thread, if any
+	DUCKDB_API static optional_ptr<const Identifier> CurrentExtension();
+
+private:
+	optional_ptr<const Identifier> previous;
+};
+
 struct ExtensionLoaderInfo {
 	Identifier extension_name;
 	Identifier extension_alias;

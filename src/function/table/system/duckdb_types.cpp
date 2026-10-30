@@ -83,8 +83,11 @@ unique_ptr<GlobalTableFunctionState> DuckDBTypesInit(ClientContext &context, Tab
 	auto result = make_uniq<DuckDBTypesData>();
 	auto schemas = Catalog::GetAllSchemas(context);
 	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::TYPE_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry.Cast<TypeCatalogEntry>()); });
+		schema.get().Scan(context, CatalogType::TYPE_ENTRY, [&](CatalogEntry &entry) {
+			if (!Catalog::IsHiddenEntry(context, entry, schema.get())) {
+				result->entries.push_back(entry.Cast<TypeCatalogEntry>());
+			}
+		});
 	};
 	return std::move(result);
 }

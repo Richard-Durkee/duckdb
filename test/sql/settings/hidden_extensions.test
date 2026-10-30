@@ -1,0 +1,89 @@
+# name: test/sql/settings/hidden_extensions.test
+# description: Leave the entries of hidden extensions out of the system catalog views and error suggestions
+# group: [settings]
+
+require parquet
+
+require json
+
+query I
+SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'read_parquet'
+----
+true
+
+statement ok
+SET hidden_extensions = ['Parquet', 'json']
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE extension_name IN ('parquet', 'json')
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('read_parquet', 'json_extract')
+----
+0
+
+query I
+SELECT count(*) FROM pg_catalog.pg_proc WHERE proname IN ('read_parquet', 'json_extract')
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_types() WHERE extension_name IN ('parquet', 'json')
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name IN ('parquet', 'json')
+----
+0
+
+# the setting does not list the hidden extensions
+query I
+SELECT current_setting('hidden_extensions')
+----
+[]
+
+# hidden entries can still be used
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/hidden_extensions.parquet'
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/hidden_extensions.parquet')
+----
+42
+
+query I
+SELECT json_extract('{"a": 1}', '$.a')
+----
+1
+
+# hidden entries are not suggested
+statement error
+SELECT * FROM read_parque('{TEST_DIR}/hidden_extensions.parquet')
+----
+<!REGEX>:.*read_parquet.*
+
+statement error
+SET hidden_extensions = NULL
+----
+cannot be NULL
+
+statement ok
+RESET hidden_extensions
+
+query I
+SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'read_parquet'
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'parquet'
+----
+1
+
+statement error
+SELECT * FROM read_parque('{TEST_DIR}/hidden_extensions.parquet')
+----
+<REGEX>:.*read_parquet.*

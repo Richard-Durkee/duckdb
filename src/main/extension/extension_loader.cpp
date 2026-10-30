@@ -26,6 +26,20 @@
 
 namespace duckdb {
 
+static thread_local optional_ptr<const Identifier> current_loading_extension;
+
+ExtensionLoadScope::ExtensionLoadScope(const Identifier &extension_name) : previous(current_loading_extension) {
+	current_loading_extension = &extension_name;
+}
+
+ExtensionLoadScope::~ExtensionLoadScope() {
+	current_loading_extension = previous;
+}
+
+optional_ptr<const Identifier> ExtensionLoadScope::CurrentExtension() {
+	return current_loading_extension;
+}
+
 ExtensionLoader::ExtensionLoader(const ExtensionActiveLoad &load_info)
     : db(load_info.db), extension_info(load_info.info) {
 	loader_info.extension_name = load_info.extension_name;

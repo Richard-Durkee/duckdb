@@ -1,4 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include "duckdb/main/capi_v2/extension_api_v2.hpp"
 #include "duckdb/main/capi_v2/extension_load_v2.hpp"
@@ -134,7 +135,11 @@ void CallEntrypoint(DuckDBExtensionLoadStateV2 &load_state, const string &extens
 	input.context = capiv2::Convert(&callback_context);
 	input.err = &err_handle;
 
-	(*init_fun)(&input);
+	{
+		Identifier load_extension_name(extension_name);
+		ExtensionLoadScope load_scope(load_extension_name);
+		(*init_fun)(&input);
+	}
 
 	if (!err_handle) {
 		// The extension destroyed the slot; ownership went with it.

@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/main/config.hpp"
 
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/map.hpp"
@@ -194,8 +195,12 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		}
 	}
 
+	auto &config = DBConfig::GetConfig(context);
 	result->entries.reserve(installed_extensions.size());
 	for (auto &kv : installed_extensions) {
+		if (config.IsHiddenExtension(Identifier(kv.first))) {
+			continue;
+		}
 		result->entries.push_back(std::move(kv.second));
 	}
 	return std::move(result);

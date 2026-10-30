@@ -150,6 +150,8 @@ struct ExtensionOption {
 	optional_idx setting_index;
 	bool is_debug = false;
 	bool is_deprecated = false;
+	//! The extension that registered the option, if any
+	Identifier extension_name;
 	//! Whether the option can be set globally, and per session
 	bool supports_global = true;
 	bool supports_session = true;

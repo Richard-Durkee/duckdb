@@ -184,6 +184,7 @@ bool DuckSchemaEntry::DropEntryInternal(CatalogTransaction transaction, CatalogE
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) {
 	auto table = make_uniq<DuckTableEntry>(catalog, *this, info);
+	table->extension_name = info.Base().extension_name;
 	auto &dependencies = info.Base().dependencies;
 
 	vector<unique_ptr<AlterForeignKeyInfo>> fk_arrays;
@@ -263,6 +264,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntry(CatalogTransaction transact
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) {
 	auto sequence = make_uniq<SequenceCatalogEntry>(catalog, *this, info);
+	sequence->extension_name = info.extension_name;
 	return AddEntry(transaction, std::move(sequence), info.on_conflict);
 }
 
@@ -273,6 +275,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateType(CatalogTransaction transa
 
 optional_ptr<CatalogEntry> DuckSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
 	auto view = make_uniq<ViewCatalogEntry>(catalog, *this, info);
+	view->extension_name = info.extension_name;
 	return AddEntry(transaction, std::move(view), info.on_conflict);
 }
 
@@ -282,6 +285,7 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateIndex(CatalogTransaction trans
 	info.dependencies.AddDependency(table, DependencyDependentFlags());
 
 	auto index = make_uniq<DuckIndexEntry>(catalog, *this, info, table);
+	index->extension_name = info.extension_name;
 	auto dependencies = index->dependencies;
 	return AddEntryInternal(transaction, std::move(index), info.on_conflict, dependencies);
 }

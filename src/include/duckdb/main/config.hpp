@@ -167,6 +167,8 @@ struct DBConfigOptions {
 	set<string> allowed_directories;
 	//! Additional configuration options that are allowed to be changed even when the configuration is locked
 	identifier_set_t allowed_configs;
+	//! Extensions whose entries are left out of the system catalog views and error suggestions
+	identifier_set_t hidden_extensions;
 	//! The log configuration
 	LogConfig log_config = LogConfig();
 	//! Memory limit for the write buffer per row group (optional)
@@ -373,6 +375,8 @@ public:
 	//! The opener (if any) is used to expand "~" using the connection-specific home_directory
 	bool CanAccessFile(const string &path, FileType type, optional_ptr<FileOpener> opener = nullptr);
 	void AddAllowedConfig(const Identifier &config_name);
+	//! Whether entries registered by the given extension are left out of the system catalog views
+	DUCKDB_API bool IsHiddenExtension(const Identifier &extension_name) const;
 	void AddAllowedDirectory(const string &path);
 	void AddAllowedPath(const string &path);
 	//! Replace / reset the allowed directories and paths as a whole (under the lock that guards them)

@@ -70,8 +70,11 @@ unique_ptr<GlobalTableFunctionState> DuckDBViewsInit(ClientContext &context, Tab
 	// scan the surviving schemas for views and collect them
 	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::VIEW_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
+		schema.get().Scan(context, CatalogType::VIEW_ENTRY, [&](CatalogEntry &entry) {
+			if (!Catalog::IsHiddenEntry(context, entry, schema.get())) {
+				result->entries.push_back(entry);
+			}
+		});
 	};
 	result->column_ids = input.column_indexes;
 	return std::move(result);

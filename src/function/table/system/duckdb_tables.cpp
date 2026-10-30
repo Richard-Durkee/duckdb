@@ -82,8 +82,11 @@ unique_ptr<GlobalTableFunctionState> DuckDBTablesInit(ClientContext &context, Ta
 	// scan the surviving schemas for tables and collect them
 	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
+		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+			if (!Catalog::IsHiddenEntry(context, entry, schema.get())) {
+				result->entries.push_back(entry);
+			}
+		});
 	};
 	return std::move(result);
 }

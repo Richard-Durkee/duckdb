@@ -868,6 +868,15 @@ bool Catalog::AutoLoadExtensionByCatalogEntry(DatabaseInstance &db, CatalogType 
 	return false;
 }
 
+bool Catalog::IsHiddenEntry(ClientContext &context, const CatalogEntry &entry,
+                            optional_ptr<const SchemaCatalogEntry> schema) {
+	auto &config = DBConfig::GetConfig(context);
+	if (config.IsHiddenExtension(entry.extension_name)) {
+		return true;
+	}
+	return schema && config.IsHiddenExtension(schema->extension_name);
+}
+
 CatalogException Catalog::UnrecognizedConfigurationError(ClientContext &context, const Identifier &name) {
 	// check if the setting exists in any extensions
 	auto extension_name = ExtensionHelper::FindExtensionInEntries(name, EXTENSION_SETTINGS);
@@ -880,8 +889,11 @@ CatalogException Catalog::UnrecognizedConfigurationError(ClientContext &context,
 	// the setting is not in an extension
 	// get a list of all options
 	vector<Identifier> potential_names = DBConfig::GetOptionNames();
-	for (auto &entry : DBConfig::GetConfig(context).GetExtensionSettings()) {
-		potential_names.push_back(entry.first);
+	auto &config = DBConfig::GetConfig(context);
+	for (auto &entry : config.GetExtensionSettings()) {
+		if (!config.IsHiddenExtension(entry.second.extension_name)) {
+			potential_names.push_back(entry.first);
+		}
 	}
 	throw CatalogException::MissingEntry("configuration parameter", name, potential_names);
 }

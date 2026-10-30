@@ -319,6 +319,28 @@ Value AllowedConfigsSetting::GetSetting(const ClientContext &context) {
 }
 
 //===----------------------------------------------------------------------===//
+// Hidden Extensions
+//===----------------------------------------------------------------------===//
+void HiddenExtensionsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
+	if (input.IsNull()) {
+		throw InvalidInputException("%s setting cannot be NULL", HiddenExtensionsSetting::Name);
+	}
+	config.options.hidden_extensions.clear();
+	for (auto &val : ListValue::GetChildren(input)) {
+		config.options.hidden_extensions.insert(val.GetValue<Identifier>());
+	}
+}
+
+void HiddenExtensionsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
+	config.options.hidden_extensions = DBConfigOptions().hidden_extensions;
+}
+
+Value HiddenExtensionsSetting::GetSetting(const ClientContext &context) {
+	// listing the hidden extensions would reveal them
+	return Value::LIST(LogicalType::VARCHAR, vector<Value>());
+}
+
+//===----------------------------------------------------------------------===//
 // Allowed Directories
 //===----------------------------------------------------------------------===//
 void AllowedDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {

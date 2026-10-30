@@ -1,4 +1,7 @@
 #include "duckdb/catalog/catalog_set.hpp"
+
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -201,6 +204,13 @@ bool CatalogSet::CreateEntry(CatalogTransaction transaction, const Identifier &n
                              const LogicalDependencyList &dependencies) {
 	CheckCatalogEntryInvariants(*value, name);
 
+	// Attribute what an extension creates while it loads to that extension
+	if (value->extension_name.empty()) {
+		auto loading_extension = ExtensionLoadScope::CurrentExtension();
+		if (loading_extension) {
+			value->extension_name = *loading_extension;
+		}
+	}
 	// Mark this entry as being created by the current active transaction
 	value->timestamp = transaction.GetTransactionId();
 	value->set = this;
@@ -559,7 +569,11 @@ SimilarCatalogEntry CatalogSet::SimilarEntry(CatalogTransaction transaction, con
 	// view parses and binds its SQL, which is far more work than an error suggestion needs.
 	// The candidates are visited in map order, so ties resolve as they would if the defaults had been created.
 	set<Identifier, IdentifierCompare> candidates;
+	optional_ptr<DBConfig> config = transaction.db ? &DBConfig::GetConfig(*transaction.db) : nullptr;
 	for (auto &kv : map.Entries()) {
+		if (config && config->IsHiddenExtension(kv.second->extension_name)) {
+			continue;
+		}
 		candidates.insert(kv.first);
 	}
 	if (defaults && !defaults->created_all_entries) {

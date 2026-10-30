@@ -203,6 +203,7 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "extension_repository_directory", // trust anchor, cant change while db is running (unless unsigned allowed)
 	    "external_threads",               // tested in test_threads.cpp
 	    "force_variant_shredding",
+	    "hidden_extensions", // does not report its value
 	    "index_scan_max_count",
 	    "index_scan_percentage",
 	    "lock_configuration", // cant change this while db is running

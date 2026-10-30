@@ -1,4 +1,5 @@
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -192,6 +193,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(ForceCompressionSetting),
     DUCKDB_SETTING_CALLBACK(FsyncModeSetting),
     DUCKDB_SETTING(GeometryMinimumShreddingSize),
+    DUCKDB_GLOBAL(HiddenExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(HomeDirectorySetting),
     DUCKDB_GLOBAL(HTTPClientPoolCapacitySetting),
     DUCKDB_GLOBAL(HTTPProxySetting),
@@ -618,6 +620,12 @@ void DBConfig::AddExtensionOption(const Identifier &name, string description, Lo
 }
 
 void DBConfig::AddExtensionOption(const Identifier &name, ExtensionOption extension_option) {
+	if (extension_option.extension_name.empty()) {
+		auto loading_extension = ExtensionLoadScope::CurrentExtension();
+		if (loading_extension) {
+			extension_option.extension_name = *loading_extension;
+		}
+	}
 	auto default_value = extension_option.default_value;
 	auto setting_index = user_settings.AddExtensionOption(name, std::move(extension_option));
 	// copy over unrecognized options, if they match the new extension option
@@ -966,6 +974,13 @@ string DBConfig::SanitizeAllowedPath(const string &path_p, optional_ptr<FileOpen
 		result = StringUtil::Replace(result, path_sep, "/");
 	}
 	return result;
+}
+
+bool DBConfig::IsHiddenExtension(const Identifier &extension_name) const {
+	if (options.hidden_extensions.empty() || extension_name.empty()) {
+		return false;
+	}
+	return options.hidden_extensions.find(extension_name) != options.hidden_extensions.end();
 }
 
 void DBConfig::AddAllowedConfig(const Identifier &config_name) {

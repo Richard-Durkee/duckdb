@@ -45,8 +45,13 @@ static unique_ptr<FunctionData> DuckDBGrammarExtensionsBind(ClientContext &conte
 static unique_ptr<GlobalTableFunctionState> DuckDBGrammarExtensionsInit(ClientContext &context,
                                                                         TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBGrammarExtensionsData>();
+	auto &config = DBConfig::GetConfig(context);
 	auto &callback_manager = ExtensionCallbackManager::Get(context);
 	for (auto &[name, extension] : callback_manager.GrammarExtensions()) {
+		// grammar extensions do not record the extension that registered them, so they are matched by their name
+		if (config.IsHiddenExtension(Identifier(name))) {
+			continue;
+		}
 		GrammarExtensionData data;
 		data.name = name;
 		data.description = extension->Description();

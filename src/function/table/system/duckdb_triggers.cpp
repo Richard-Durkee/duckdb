@@ -74,7 +74,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBTriggersInit(ClientContext &context, 
 	vector<reference<TableCatalogEntry>> tables;
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
-			if (entry.type != CatalogType::TABLE_ENTRY) {
+			if (entry.type != CatalogType::TABLE_ENTRY || Catalog::IsHiddenEntry(context, entry, schema.get())) {
 				return;
 			}
 			tables.push_back(entry.Cast<TableCatalogEntry>());

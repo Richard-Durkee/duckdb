@@ -32,8 +32,13 @@ static unique_ptr<FunctionData> DuckDBSecretTypesBind(ClientContext &context, Ta
 unique_ptr<GlobalTableFunctionState> DuckDBSecretTypesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSecretTypesData>();
 
+	auto &config = DBConfig::GetConfig(context);
 	auto &secret_manager = SecretManager::Get(context);
-	result->types = secret_manager.AllSecretTypes();
+	for (auto &type : secret_manager.AllSecretTypes()) {
+		if (!config.IsHiddenExtension(Identifier(type.extension))) {
+			result->types.push_back(std::move(type));
+		}
+	}
 
 	return std::move(result);
 }

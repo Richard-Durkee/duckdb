@@ -178,7 +178,10 @@ void DuckDB::LoadStaticExtension(duckdb_extension_describe_t describe) {
 	}
 
 	ExtensionLoader loader(*load_info);
-	(*reinterpret_cast<ext_init_cpp_fun_t>(descriptor.entry_cpp))(loader);
+	{
+		ExtensionLoadScope load_scope(loader.GetRegisteredExtensionName());
+		(*reinterpret_cast<ext_init_cpp_fun_t>(descriptor.entry_cpp))(loader);
+	}
 	loader.FinalizeLoad();
 
 	ExtensionInstallInfo install_info;
@@ -811,7 +814,10 @@ void ExtensionHelper::LoadExternalExtensionInternal(DatabaseInstance &db, FileSy
 
 		try {
 			ExtensionLoader loader(info);
-			(*init_fun)(loader);
+			{
+				ExtensionLoadScope load_scope(loader.GetRegisteredExtensionName());
+				(*init_fun)(loader);
+			}
 			loader.FinalizeLoad();
 		} catch (std::exception &e) {
 			ErrorData error(e);

@@ -133,7 +133,8 @@ unique_ptr<GlobalTableFunctionState> DuckDBSettingsInit(ClientContext &context, 
 		result->settings.push_back(std::move(value));
 	}
 	for (auto &ext_param : config.GetExtensionSettings()) {
-		if (!bind_data.Includes(ext_param.second.is_debug, ext_param.second.is_deprecated)) {
+		if (!bind_data.Includes(ext_param.second.is_debug, ext_param.second.is_deprecated) ||
+		    config.IsHiddenExtension(ext_param.second.extension_name)) {
 			continue;
 		}
 		Value setting_val;

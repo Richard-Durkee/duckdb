@@ -71,6 +71,7 @@ optional_ptr<CatalogEntry> DuckCatalog::CreateSchemaInternal(CatalogTransaction 
 			return nullptr;
 		}
 		auto entry = make_uniq<DuckSchemaEntry>(*this, info);
+		entry->extension_name = info.extension_name;
 		auto result = entry.get();
 		if (!schemas->CreateEntry(transaction, info.SchemaName(), std::move(entry), dependencies)) {
 			return nullptr;

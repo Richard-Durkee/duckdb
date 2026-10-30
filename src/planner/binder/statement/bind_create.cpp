@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
@@ -878,6 +879,13 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 	result.names = {"Count"};
 	result.types = {LogicalType::BIGINT};
 
+	if (stmt.info->extension_name.empty()) {
+		// the statement may run on another thread, so attribute it to the loading extension while binding
+		auto loading_extension = ExtensionLoadScope::CurrentExtension();
+		if (loading_extension) {
+			stmt.info->extension_name = *loading_extension;
+		}
+	}
 	auto catalog_type = stmt.info->type;
 	auto return_type = StatementReturnType::NOTHING;
 	auto &properties = GetStatementProperties();

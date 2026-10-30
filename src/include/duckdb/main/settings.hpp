@@ -1678,6 +1678,20 @@ struct GeometryMinimumShreddingSize {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct HiddenExtensionsSetting {
+	using RETURN_TYPE = vector<string>;
+	static constexpr const char *Name = "hidden_extensions";
+	static constexpr const char *Description =
+	    "List of extensions whose functions, types, settings and other entries are left out of the system catalog "
+	    "views and error suggestions. Their entries can still be used.";
+	static constexpr const char *InputType = "VARCHAR[]";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
+	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
+	static Value GetSetting(const ClientContext &context);
+};
+
 struct HomeDirectorySetting {
 	using RETURN_TYPE = string;
 	static constexpr const char *Name = "home_directory";

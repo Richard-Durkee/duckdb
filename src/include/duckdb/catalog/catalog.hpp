@@ -497,6 +497,9 @@ public:
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetSchemas(CatalogEntryRetriever &retriever,
 	                                                                   const string &catalog_name);
 	DUCKDB_API static vector<reference<SchemaCatalogEntry>> GetAllSchemas(ClientContext &context);
+	//! Whether the entry, or the schema it lives in, was registered by an extension in hidden_extensions
+	DUCKDB_API static bool IsHiddenEntry(ClientContext &context, const CatalogEntry &entry,
+	                                     optional_ptr<const SchemaCatalogEntry> schema = nullptr);
 
 	static vector<reference<CatalogEntry>> GetAllEntries(ClientContext &context, CatalogType catalog_type);
 
