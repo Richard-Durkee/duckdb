@@ -3,8 +3,12 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/statement_iterator.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/function/scalar_function.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <iostream>
+#include <atomic>
 #include <thread>
 
 using namespace duckdb;
@@ -269,4 +273,44 @@ TEST_CASE("Test bytes scanned by a LIMIT with read-ahead", "[api][parquet]") {
 	// the row groups read ahead are never scanned, so only the first counts
 	REQUIRE_NO_FAIL(con.Query("SELECT * FROM read_parquet('" + path + "') LIMIT 10"));
 	REQUIRE(QueryProfiler::Get(*con.context).GetBytesScanned() == first_row_group);
+}
+
+// Adds one millisecond to a timing metric for every chunk, from every thread that runs the scan.
+static std::atomic<idx_t> add_timing_calls {0};
+static void AddTimingExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	QueryProfiler::Get(state.GetContext()).AddToMetricTiming("test.time_added", 1000000);
+	add_timing_calls++;
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Time measured elsewhere can be added to a timing metric", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("add_timing", {LogicalType::BIGINT}, LogicalType::BIGINT, AddTimingExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	CreateScalarFunctionInfo info(fn);
+	con.context->RunFunctionInTransaction(
+	    [&]() { Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info); });
+	// a table, not range(), so that the scan, and with it add_timing, runs on several threads
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(10000000)"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
+
+	con.EnableProfiling();
+	con.context->config.profiler_save_location = TestCreatePath("test_metric_timing_output.txt");
+	add_timing_calls = 0;
+	REQUIRE_NO_FAIL(con.Query("SELECT max(add_timing(i)) FROM numbers"));
+
+	double seconds = -1;
+	QueryProfiler::Get(*con.context)
+	    .GetFinalizedProfileUnderLock(
+	        [&](optional_ptr<const GatheredMetrics> metrics, optional_ptr<const ProfilingNode>) {
+		        REQUIRE(metrics);
+		        auto entry = metrics->GetMetrics().find("test.time_added");
+		        if (entry != metrics->GetMetrics().end()) {
+			        seconds = entry->second.GetValue<double>();
+		        }
+	        });
+	// one millisecond for each call
+	REQUIRE(add_timing_calls > 1);
+	REQUIRE(seconds == Approx(static_cast<double>(add_timing_calls.load()) / 1000.0));
 }

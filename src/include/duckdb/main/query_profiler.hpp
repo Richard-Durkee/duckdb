@@ -123,6 +123,9 @@ public:
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
 	//! Add to a metric counter (profiling-only).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
+	//! Add time measured elsewhere, in nanoseconds, to a timing metric, which is reported in seconds (profiling-only,
+	//! thread-safe). For time that a MetricsTimer cannot measure, e.g. requests made on other threads.
+	DUCKDB_API void AddToMetricTiming(const string &key, idx_t elapsed_ns);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 
