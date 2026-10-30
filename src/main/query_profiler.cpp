@@ -122,6 +122,7 @@ QueryProfiler &QueryProfiler::Get(ClientContext &context) {
 void QueryProfiler::Start(const string &query) {
 	Reset();
 	tracked_metric_patterns = make_uniq<GatheredMetrics>(ClientConfig::GetConfig(context).tracked_metrics);
+	query_metrics.InitializeRegisteredMetrics(MetricsManager::Get(context).GetRegisteredMetrics());
 	running = true;
 	query_metrics.query_sql = query;
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
@@ -321,6 +322,18 @@ void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
 void QueryProfiler::AddToMetricTiming(const string &key, const idx_t elapsed_ns) {
 	if (IsEnabled() && running) {
 		query_metrics.UpdateMetric(key, elapsed_ns);
+	}
+}
+
+void QueryProfiler::AddToMetric(MetricIndex index, const idx_t amount) {
+	if (index.IsValid() && IsEnabled() && running) {
+		query_metrics.AddToRegisteredMetric(index.GetIndex(), amount);
+	}
+}
+
+void QueryProfiler::SetMetric(MetricIndex index, const Value &value) {
+	if (index.IsValid() && IsEnabled() && running) {
+		query_metrics.SetRegisteredMetric(index.GetIndex(), value);
 	}
 }
 

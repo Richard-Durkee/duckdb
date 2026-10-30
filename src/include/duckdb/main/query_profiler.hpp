@@ -132,6 +132,12 @@ public:
 	//! thread-safe). Unlike a timer it records no start and end time. For time a timer cannot measure, e.g. requests
 	//! that were made on other threads.
 	DUCKDB_API void AddToMetricTiming(const string &key, idx_t elapsed_ns);
+	//! Add to a metric an extension registered, by the index RegisterMetric returned: a counter's count, or a timing's
+	//! nanoseconds (profiling-only). Lock-free and thread-safe; an invalid index does nothing.
+	DUCKDB_API void AddToMetric(MetricIndex index, idx_t amount);
+	//! Set a metric an extension registered, by its index, to a value of its type (profiling-only). Lock-free and
+	//! thread-safe; an invalid index does nothing.
+	DUCKDB_API void SetMetric(MetricIndex index, const Value &value);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 

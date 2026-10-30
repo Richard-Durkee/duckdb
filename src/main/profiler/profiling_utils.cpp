@@ -1,12 +1,62 @@
 #include "duckdb/main/profiler/profiling_utils.hpp"
+
+#include <cstring>
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
+void QueryMetrics::InitializeRegisteredMetrics(vector<MetricInfo> metrics) {
+	registered_metrics = std::move(metrics);
+	registered_metric_count = registered_metrics.size();
+	registered_metric_values = make_unsafe_uniq_array<atomic<uint64_t>>(registered_metric_count);
+	registered_metric_set = make_unsafe_uniq_array<atomic<bool>>(registered_metric_count);
+}
+
+void QueryMetrics::SetRegisteredMetric(idx_t index, const Value &value) {
+	if (index >= registered_metric_count || value.IsNull()) {
+		return;
+	}
+	uint64_t bits;
+	if (registered_metrics[index].metric_type == "double") {
+		auto double_value = value.GetValue<double>();
+		memcpy(&bits, &double_value, sizeof(bits));
+	} else {
+		bits = value.GetValue<uint64_t>();
+	}
+	registered_metric_values[index].store(bits, std::memory_order_relaxed);
+	registered_metric_set[index].store(true, std::memory_order_relaxed);
+}
+
+// A metric an extension registered, as its kind and type report it.
+static Value RegisteredMetricValue(const MetricInfo &metric, uint64_t bits) {
+	switch (metric.kind) {
+	case MetricKind::COUNTER:
+		return Value::UBIGINT(bits);
+	case MetricKind::TIMING:
+		return Value::DOUBLE(static_cast<double>(bits) / 1e9);
+	case MetricKind::VALUE:
+		if (metric.metric_type == "double") {
+			double value;
+			memcpy(&value, &bits, sizeof(value));
+			return Value::DOUBLE(value);
+		}
+		return Value::UBIGINT(bits);
+	}
+	throw InternalException("Unrecognized MetricKind");
+}
+
 void QueryMetrics::FinalizeMetricValues(GatheredMetrics &info) {
-	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-	for (const auto &[key, value] : string_values) {
-		info.SetMetric(key, value);
+	{
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+		for (const auto &[key, value] : string_values) {
+			info.SetMetric(key, value);
+		}
+	}
+	for (idx_t i = 0; i < registered_metric_count; i++) {
+		if (registered_metric_set[i].load(std::memory_order_relaxed)) {
+			auto bits = registered_metric_values[i].load(std::memory_order_relaxed);
+			info.SetMetric(registered_metrics[i].name, RegisteredMetricValue(registered_metrics[i], bits));
+		}
 	}
 }
 

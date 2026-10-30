@@ -12,6 +12,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
+#include "duckdb/main/profiler/metric_info.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
 #include "duckdb/common/profiler.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -68,6 +69,17 @@ public:
 		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		string_counters[key] += addition;
 	}
+
+	//! Add to a metric an extension registered, by its index: a counter's count, or a timing's nanoseconds. Lock-free.
+	void AddToRegisteredMetric(idx_t index, idx_t amount) {
+		if (index < registered_metric_count) {
+			registered_metric_values[index].fetch_add(amount, std::memory_order_relaxed);
+			registered_metric_set[index].store(true, std::memory_order_relaxed);
+		}
+	}
+
+	//! Set a metric an extension registered, by its index, to a value of its type. Lock-free.
+	void SetRegisteredMetric(idx_t index, const Value &value);
 
 	void SetMetricValue(const string &key, Value value) {
 		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
@@ -183,6 +195,10 @@ public:
 			string_counters.clear();
 			string_values.clear();
 		}
+		registered_metrics.clear();
+		registered_metric_values.reset();
+		registered_metric_set.reset();
+		registered_metric_count = 0;
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -191,8 +207,11 @@ public:
 		blocked_thread_time = 0;
 	}
 
-	//! Write the values set with QueryProfiler::SetMetric into the given GatheredMetrics, before the metrics the
-	//! profiler computes itself, which take precedence.
+	//! Make room for the metrics extensions registered, for the query that starts. A metric registered while the query
+	//! runs is only reported from the next query on, so the room never has to grow while it is updated.
+	void InitializeRegisteredMetrics(vector<MetricInfo> metrics);
+	//! Write the values set with QueryProfiler::SetMetric and the metrics extensions updated by index into the given
+	//! GatheredMetrics, before the metrics the profiler computes itself, which take precedence.
 	void FinalizeMetricValues(GatheredMetrics &info);
 	//! Write all query-level metrics into the given GatheredMetrics.
 	void FinalizeMetrics(GatheredMetrics &info);
@@ -231,6 +250,12 @@ private:
 	unordered_map<string, idx_t> string_counters DUCKDB_GUARDED_BY(string_metrics_lock);
 	// Values set by QueryProfiler::SetMetric, kept until the query's metrics are gathered
 	profiler_metrics_t string_values DUCKDB_GUARDED_BY(string_metrics_lock);
+	// The metrics extensions registered, when the query started, and the values they were updated to by index. Only
+	// replaced between queries, so they are read and updated without a lock.
+	vector<MetricInfo> registered_metrics;
+	unsafe_unique_array<atomic<uint64_t>> registered_metric_values;
+	unsafe_unique_array<atomic<bool>> registered_metric_set;
+	idx_t registered_metric_count = 0;
 
 public:
 	// Declared after string_timings and string_metrics_lock so it is destroyed first; its destructor writes to

@@ -144,17 +144,23 @@ static bool IsInternalMetric(const string &name) {
 	return false;
 }
 
-void MetricsManager::RegisterMetric(MetricInfo info) {
+MetricIndex MetricsManager::RegisterMetric(MetricInfo info) {
 	if (IsInternalMetric(info.name)) {
-		return; // the profiler's own metrics are already known, and are not set by extensions
+		return MetricIndex(); // the profiler's own metrics are already known, and are not set by extensions
 	}
 	lock_guard<mutex> guard(registered_metrics_lock);
-	for (const auto &existing : registered_metrics) {
-		if (existing.name == info.name) {
-			return; // silently ignore duplicate
+	for (idx_t i = 0; i < registered_metrics.size(); i++) {
+		if (registered_metrics[i].name == info.name) {
+			return MetricIndex(i);
 		}
 	}
 	registered_metrics.push_back(std::move(info));
+	return MetricIndex(registered_metrics.size() - 1);
+}
+
+vector<MetricInfo> MetricsManager::GetRegisteredMetrics() const {
+	lock_guard<mutex> guard(registered_metrics_lock);
+	return registered_metrics;
 }
 
 bool MetricsManager::IsRegisteredMetric(const string &name) const {
