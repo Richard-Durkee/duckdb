@@ -2,33 +2,102 @@
 
 #include <cstring>
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/profiler/metrics_manager.hpp"
 
 namespace duckdb {
 
-void QueryMetrics::InitializeRegisteredMetrics(vector<MetricInfo> metrics) {
-	registered_metrics = std::move(metrics);
-	registered_metric_count = registered_metrics.size();
-	registered_metric_values = make_unsafe_uniq_array<atomic<uint64_t>>(registered_metric_count);
-	registered_metric_set = make_unsafe_uniq_array<atomic<bool>>(registered_metric_count);
+void QueryMetrics::InitializeIndexedMetrics(shared_ptr<const vector<MetricInfo>> metrics) {
+	auto count = metrics->size();
+	if (indexed_metric_capacity < count) {
+		indexed_metric_values = make_unsafe_uniq_array<IndexedMetric>(count);
+		indexed_metric_capacity = count;
+	} else {
+		for (idx_t i = 0; i < count; i++) {
+			auto &metric = indexed_metric_values[i];
+			metric.value.store(0, std::memory_order_relaxed);
+			metric.start.store(NumericLimits<int64_t>::Maximum(), std::memory_order_relaxed);
+			metric.end.store(NumericLimits<int64_t>::Minimum(), std::memory_order_relaxed);
+			metric.set.store(false, std::memory_order_relaxed);
+		}
+	}
+	indexed_metrics = std::move(metrics);
+	indexed_metric_count.store(count, std::memory_order_relaxed);
 }
 
-void QueryMetrics::SetRegisteredMetric(idx_t index, const Value &value) {
-	if (index >= registered_metric_count || value.IsNull()) {
+void QueryMetrics::AddTimingToIndexedMetric(idx_t index, idx_t elapsed_ns, timestamp_t start_time,
+                                            timestamp_t end_time) {
+	if (index >= indexed_metric_count.load(std::memory_order_relaxed)) {
+		return;
+	}
+	auto &metric = indexed_metric_values[index];
+	metric.value.fetch_add(elapsed_ns, std::memory_order_relaxed);
+	auto start = start_time.value;
+	auto current_start = metric.start.load(std::memory_order_relaxed);
+	while (start < current_start && !metric.start.compare_exchange_weak(current_start, start)) {
+	}
+	auto end = end_time.value;
+	auto current_end = metric.end.load(std::memory_order_relaxed);
+	while (end > current_end && !metric.end.compare_exchange_weak(current_end, end)) {
+	}
+	metric.set.store(true, std::memory_order_relaxed);
+}
+
+void QueryMetrics::SetIndexedMetric(idx_t index, const Value &value) {
+	if (index >= indexed_metric_count.load(std::memory_order_relaxed) || value.IsNull()) {
 		return;
 	}
 	uint64_t bits;
-	if (registered_metrics[index].metric_type == "double") {
+	if ((*indexed_metrics)[index].metric_type == "double") {
 		auto double_value = value.GetValue<double>();
 		memcpy(&bits, &double_value, sizeof(bits));
 	} else {
 		bits = value.GetValue<uint64_t>();
 	}
-	registered_metric_values[index].store(bits, std::memory_order_relaxed);
-	registered_metric_set[index].store(true, std::memory_order_relaxed);
+	indexed_metric_values[index].value.store(bits, std::memory_order_relaxed);
+	indexed_metric_values[index].set.store(true, std::memory_order_relaxed);
 }
 
-// A metric an extension registered, as its kind and type report it.
-static Value RegisteredMetricValue(const MetricInfo &metric, uint64_t bits) {
+// The index of the metric `key`, when it has one and the running query has room for it.
+static optional_idx IndexOfMetric(const string &key, idx_t indexed_metric_count) {
+	auto index = MetricsManager::FindFixedMetric(key);
+	if (!index.IsValid() || index.GetIndex() >= indexed_metric_count) {
+		return optional_idx();
+	}
+	return index.GetIndex();
+}
+
+void QueryMetrics::UpdateMetric(const string &key, idx_t addition) {
+	auto index = IndexOfMetric(key, indexed_metric_count.load(std::memory_order_relaxed));
+	if (index.IsValid()) {
+		AddToIndexedMetric(index.GetIndex(), addition);
+		return;
+	}
+	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+	string_timings[key].Add(addition);
+}
+
+void QueryMetrics::UpdateMetric(const string &key, idx_t addition, timestamp_t start_time, timestamp_t end_time) {
+	auto index = IndexOfMetric(key, indexed_metric_count.load(std::memory_order_relaxed));
+	if (index.IsValid()) {
+		AddTimingToIndexedMetric(index.GetIndex(), addition, start_time, end_time);
+		return;
+	}
+	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+	string_timings[key].Add(addition, start_time, end_time);
+}
+
+void QueryMetrics::UpdateMetricCounter(const string &key, idx_t addition) {
+	auto index = IndexOfMetric(key, indexed_metric_count.load(std::memory_order_relaxed));
+	if (index.IsValid()) {
+		AddToIndexedMetric(index.GetIndex(), addition);
+		return;
+	}
+	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+	string_counters[key] += addition;
+}
+
+// A metric with an index, as its kind and type report it.
+static Value IndexedMetricValue(const MetricInfo &metric, uint64_t bits) {
 	switch (metric.kind) {
 	case MetricKind::COUNTER:
 		return Value::UBIGINT(bits);
@@ -45,6 +114,86 @@ static Value RegisteredMetricValue(const MetricInfo &metric, uint64_t bits) {
 	throw InternalException("Unrecognized MetricKind");
 }
 
+double QueryMetrics::GetStringMetricInSeconds(const string &key) const {
+	auto index = IndexOfMetric(key, indexed_metric_count.load(std::memory_order_relaxed));
+	if (index.IsValid()) {
+		return static_cast<double>(indexed_metric_values[index.GetIndex()].value.load(std::memory_order_relaxed)) / 1e9;
+	}
+	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+	auto it = string_timings.find(key);
+	if (it == string_timings.end()) {
+		return 0.0;
+	}
+	return static_cast<double>(it->second.duration) / 1e9;
+}
+
+idx_t QueryMetrics::GetStringCounter(const string &key) const {
+	auto index = IndexOfMetric(key, indexed_metric_count.load(std::memory_order_relaxed));
+	if (index.IsValid()) {
+		return indexed_metric_values[index.GetIndex()].value.load(std::memory_order_relaxed);
+	}
+	annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+	auto it = string_counters.find(key);
+	if (it == string_counters.end()) {
+		return 0;
+	}
+	return it->second;
+}
+
+unordered_map<string, MetricTiming> QueryMetrics::GetMetricTimings() const {
+	unordered_map<string, MetricTiming> result;
+	{
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+		result = string_timings;
+	}
+	auto count = indexed_metric_count.load(std::memory_order_relaxed);
+	for (idx_t i = 0; i < count; i++) {
+		auto &metric = indexed_metric_values[i];
+		if ((*indexed_metrics)[i].kind != MetricKind::TIMING || !metric.set.load(std::memory_order_relaxed)) {
+			continue;
+		}
+		auto &timing = result[(*indexed_metrics)[i].name];
+		auto duration = metric.value.load(std::memory_order_relaxed);
+		auto start = metric.start.load(std::memory_order_relaxed);
+		auto end = metric.end.load(std::memory_order_relaxed);
+		if (start <= end) {
+			timing.Add(duration, timestamp_t(start), timestamp_t(end));
+		} else {
+			timing.Add(duration);
+		}
+	}
+	return result;
+}
+
+unordered_map<string, idx_t> QueryMetrics::GetMetricCounters() const {
+	unordered_map<string, idx_t> result;
+	{
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+		result = string_counters;
+	}
+	auto count = indexed_metric_count.load(std::memory_order_relaxed);
+	for (idx_t i = 0; i < count; i++) {
+		auto &metric = indexed_metric_values[i];
+		if ((*indexed_metrics)[i].kind == MetricKind::COUNTER && metric.set.load(std::memory_order_relaxed)) {
+			result[(*indexed_metrics)[i].name] += metric.value.load(std::memory_order_relaxed);
+		}
+	}
+	return result;
+}
+
+// Writes the metrics with an index from `begin` to `end` that the query updated into `info`.
+void QueryMetrics::FinalizeIndexedMetrics(GatheredMetrics &info, idx_t begin, idx_t end) const {
+	end = MinValue<idx_t>(end, indexed_metric_count.load(std::memory_order_relaxed));
+	for (idx_t i = begin; i < end; i++) {
+		auto &metric = indexed_metric_values[i];
+		if (metric.set.load(std::memory_order_relaxed)) {
+			auto &metric_info = (*indexed_metrics)[i];
+			info.SetMetric(metric_info.name,
+			               IndexedMetricValue(metric_info, metric.value.load(std::memory_order_relaxed)));
+		}
+	}
+}
+
 void QueryMetrics::FinalizeMetricValues(GatheredMetrics &info) {
 	{
 		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
@@ -52,12 +201,8 @@ void QueryMetrics::FinalizeMetricValues(GatheredMetrics &info) {
 			info.SetMetric(key, value);
 		}
 	}
-	for (idx_t i = 0; i < registered_metric_count; i++) {
-		if (registered_metric_set[i].load(std::memory_order_relaxed)) {
-			auto bits = registered_metric_values[i].load(std::memory_order_relaxed);
-			info.SetMetric(registered_metrics[i].name, RegisteredMetricValue(registered_metrics[i], bits));
-		}
-	}
+	// the metrics extensions registered
+	FinalizeIndexedMetrics(info, MetricsManager::FixedMetricCount(), NumericLimits<idx_t>::Maximum());
 }
 
 void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
@@ -71,6 +216,8 @@ void QueryMetrics::FinalizeMetrics(GatheredMetrics &info) {
 			info.SetMetric(key, count);
 		}
 	}
+	// the profiler's own timings and counters, and the optimizers' timings
+	FinalizeIndexedMetrics(info, 0, MetricsManager::FixedMetricCount());
 	for (auto &entry : GetLiveMetrics()) {
 		info.SetMetric(entry.first, std::move(entry.second));
 	}

@@ -153,9 +153,12 @@ public:
 	//! Start a timer for a metric identified by its struct type.
 	template <class METRIC>
 	MetricsTimer StartTimer() {
-		return StartTimerInternal(METRIC::Name);
+		return StartTimer(MetricIndex(METRIC::Index));
 	}
-	//! Start a timer for a string-keyed metric (use the template overload when possible).
+	//! Start a scoped timer for a metric with an index, such as a timing an extension registered (profiling-only).
+	//! Lock-free and thread-safe; an invalid index does nothing.
+	DUCKDB_API MetricsTimer StartTimer(MetricIndex index);
+	//! Start a timer for a string-keyed metric (use an index when possible).
 	DUCKDB_API MetricsTimer StartTimerInternal(const string &key);
 
 	DUCKDB_API void StartExplainAnalyze();

@@ -274,3 +274,87 @@ TEST_CASE("Registering a metric returns its index", "[api]") {
 	// nor does updating while no query is profiled
 	profiler.AddToMetric(first, 1);
 }
+
+TEST_CASE("The profiler's own timings are kept by index, with their start and end", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(1000)"));
+	con.EnableProfiling();
+	con.context->config.profiler_save_location = TestCreatePath("test_core_indexed_output.txt");
+	REQUIRE_NO_FAIL(con.Query("SELECT max(i) FROM numbers WHERE i % 7 = 0"));
+
+	// reported as before
+	auto planner_time = GetProfiledMetric(con, "planner.total_time");
+	REQUIRE(!planner_time.IsNull());
+	REQUIRE(planner_time.GetValue<double>() > 0);
+	REQUIRE(!GetProfiledMetric(con, "query.total_time").IsNull());
+	REQUIRE(!GetProfiledMetric(con, "optimizer.filter_pushdown").IsNull());
+
+	// and read back by name, with the bounds the metrics log uses
+	auto &query_metrics = QueryProfiler::Get(*con.context).GetQueryMetrics();
+	REQUIRE(query_metrics.GetStringMetricInSeconds("planner.total_time") == Approx(planner_time.GetValue<double>()));
+	auto timings = query_metrics.GetMetricTimings();
+	REQUIRE(timings.count("planner.total_time") == 1);
+	REQUIRE(timings["planner.total_time"].has_bounds);
+	REQUIRE(timings["planner.total_time"].start_time <= timings["planner.total_time"].end_time);
+}
+
+// Registers a metric the first time it runs, while the query is running, and counts by it.
+static atomic<bool> registered_while_running {false};
+static MetricIndex late_index;
+static void RegisterWhileRunningExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &context = state.GetContext();
+	if (!registered_while_running.exchange(true)) {
+		late_index = MetricsManager::Get(context).RegisterMetric(
+		    {"test.registered_while_running", "uint64", "Registered while a query ran", "rows", MetricKind::COUNTER});
+	}
+	QueryProfiler::Get(context).AddToMetric(late_index, args.size());
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("A metric registered while a query runs is reported from the next query on", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("register_while_running", {LogicalType::BIGINT}, LogicalType::BIGINT, RegisterWhileRunningExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(100)"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 1"));
+	con.EnableProfiling();
+	con.context->config.profiler_save_location = TestCreatePath("test_late_registration_output.txt");
+
+	registered_while_running = false;
+	REQUIRE_NO_FAIL(con.Query("SELECT max(register_while_running(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.registered_while_running").IsNull());
+
+	REQUIRE_NO_FAIL(con.Query("SELECT max(register_while_running(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.registered_while_running") == Value::UBIGINT(100));
+}
+
+// Times every chunk with a scoped timer for a registered timing, by its index, from every thread that runs the scan.
+static MetricIndex chunk_timer_index;
+static void TimeByIndexExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto timer = QueryProfiler::Get(state.GetContext()).StartTimer(chunk_timer_index);
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Scoped timers of registered timings can end on several threads at once", "[api][intraquery]") {
+	if (STANDARD_VECTOR_SIZE < 1024) {
+		// hundreds of thousands of chunks would take too long
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	chunk_timer_index = MetricsManager::Get(*con.context)
+	                        .RegisterMetric({"test.chunk_time_by_index", "double", "Time spent per chunk", "seconds",
+	                                         MetricKind::TIMING});
+	ScalarFunction fn("time_by_index", {LogicalType::BIGINT}, LogicalType::BIGINT, TimeByIndexExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	SetUpParallelScan(con, "test_index_timers_output.txt");
+
+	REQUIRE_NO_FAIL(con.Query("SELECT max(time_by_index(i)) FROM numbers"));
+	auto seconds = GetProfiledMetric(con, "test.chunk_time_by_index");
+	REQUIRE(!seconds.IsNull());
+	REQUIRE(seconds.GetValue<double>() > 0);
+}

@@ -89,9 +89,89 @@ MetricsManager &MetricsManager::Get(DatabaseInstance &db) {
 	return db.GetMetricsManager();
 }
 
-// The name of an optimizer's timing, `optimizer.<type>`, as Optimizer::StartProfiler names it.
-static string OptimizerMetricName(const string &optimizer) {
-	return "optimizer." + StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
+// The kind of one of the profiler's own metrics, as its type suggests: its timings are doubles, its counters uint64s.
+static MetricKind FixedMetricKind(const string &metric_type) {
+	if (metric_type == "double") {
+		return MetricKind::TIMING;
+	}
+	if (metric_type == "uint64") {
+		return MetricKind::COUNTER;
+	}
+	return MetricKind::VALUE;
+}
+
+namespace {
+
+//! The metrics with a fixed index, built once: the profiler's own metrics in the order of their Index, then the
+//! optimizers' timings.
+struct FixedMetrics {
+	FixedMetrics() {
+		for (idx_t i = 0; internal_metrics[i].name; i++) {
+			MetricInfo info;
+			info.name = internal_metrics[i].name;
+			info.metric_type = internal_metrics[i].metric_type;
+			info.description = internal_metrics[i].description;
+			info.unit = internal_metrics[i].unit;
+			info.kind = FixedMetricKind(info.metric_type);
+			metrics.push_back(std::move(info));
+		}
+		D_ASSERT(metrics.size() == CORE_METRIC_COUNT);
+		for (auto &optimizer : ListAllOptimizers()) {
+			auto type = OptimizerTypeFromString(optimizer);
+			string opt_name = StringUtil::Lower(EnumUtil::ToString(type));
+			MetricInfo info;
+			info.name = "optimizer." + opt_name;
+			info.metric_type = "double";
+			info.description = "Time spent in the " + opt_name + " optimizer";
+			info.unit = "seconds";
+			info.kind = MetricKind::TIMING;
+			auto type_value = static_cast<idx_t>(type);
+			if (optimizer_indexes.size() <= type_value) {
+				optimizer_indexes.resize(type_value + 1);
+			}
+			optimizer_indexes[type_value] = MetricIndex(metrics.size());
+			metrics.push_back(std::move(info));
+		}
+		for (idx_t i = 0; i < metrics.size(); i++) {
+			indexes[metrics[i].name] = i;
+		}
+	}
+
+	vector<MetricInfo> metrics;
+	unordered_map<string, idx_t> indexes;
+	//! By the value of the OptimizerType
+	vector<MetricIndex> optimizer_indexes;
+};
+
+const FixedMetrics &GetFixedMetrics() {
+	static const FixedMetrics fixed_metrics;
+	return fixed_metrics;
+}
+
+} // namespace
+
+MetricsManager::MetricsManager() : indexed_metrics(make_shared_ptr<vector<MetricInfo>>(GetFixedMetrics().metrics)) {
+}
+
+idx_t MetricsManager::FixedMetricCount() {
+	return GetFixedMetrics().metrics.size();
+}
+
+MetricIndex MetricsManager::OptimizerMetricIndex(OptimizerType type) {
+	auto &optimizer_indexes = GetFixedMetrics().optimizer_indexes;
+	auto type_value = static_cast<idx_t>(type);
+	return type_value < optimizer_indexes.size() ? optimizer_indexes[type_value] : MetricIndex();
+}
+
+MetricIndex MetricsManager::FindFixedMetric(const string &name) {
+	auto &indexes = GetFixedMetrics().indexes;
+	auto entry = indexes.find(name);
+	return entry == indexes.end() ? MetricIndex() : MetricIndex(entry->second);
+}
+
+shared_ptr<const vector<MetricInfo>> MetricsManager::GetIndexedMetrics() const {
+	lock_guard<mutex> guard(registered_metrics_lock);
+	return indexed_metrics;
 }
 
 idx_t MetricsManager::GetMetricCount() const {
@@ -104,58 +184,29 @@ idx_t MetricsManager::GetMetricCount() const {
 
 vector<MetricInfo> MetricsManager::GetAllMetrics() const {
 	lock_guard<mutex> guard(registered_metrics_lock);
-	vector<MetricInfo> result;
-	for (idx_t i = 0; internal_metrics[i].name; i++) {
-		MetricInfo info;
-		info.name = internal_metrics[i].name;
-		info.metric_type = internal_metrics[i].metric_type;
-		info.description = internal_metrics[i].description;
-		info.unit = internal_metrics[i].unit;
-		result.push_back(std::move(info));
-	}
-	// Optimizer metrics are generated at runtime from the list of optimizers.
-	for (auto &optimizer : ListAllOptimizers()) {
-		string opt_name = StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
-		MetricInfo info;
-		info.name = "optimizer." + opt_name;
-		info.metric_type = "double";
-		info.description = "Time spent in the " + opt_name + " optimizer";
-		info.unit = "seconds";
-		result.push_back(std::move(info));
-	}
-	// Extension-registered metrics.
+	// the profiler's own metrics and the optimizers' timings, then the metrics extensions registered
+	vector<MetricInfo> result = GetFixedMetrics().metrics;
 	for (const auto &m : registered_metrics) {
 		result.push_back(m);
 	}
 	return result;
 }
 
-static bool IsInternalMetric(const string &name) {
-	for (idx_t i = 0; internal_metrics[i].name; i++) {
-		if (name == internal_metrics[i].name) {
-			return true;
-		}
-	}
-	for (auto &optimizer : ListAllOptimizers()) {
-		if (name == OptimizerMetricName(optimizer)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 MetricIndex MetricsManager::RegisterMetric(MetricInfo info) {
-	if (IsInternalMetric(info.name)) {
+	if (FindFixedMetric(info.name).IsValid()) {
 		return MetricIndex(); // the profiler's own metrics are already known, and are not set by extensions
 	}
 	lock_guard<mutex> guard(registered_metrics_lock);
 	for (idx_t i = 0; i < registered_metrics.size(); i++) {
 		if (registered_metrics[i].name == info.name) {
-			return MetricIndex(i);
+			return MetricIndex(FixedMetricCount() + i);
 		}
 	}
-	registered_metrics.push_back(std::move(info));
-	return MetricIndex(registered_metrics.size() - 1);
+	registered_metrics.push_back(info);
+	auto metrics = make_shared_ptr<vector<MetricInfo>>(*indexed_metrics);
+	metrics->push_back(std::move(info));
+	indexed_metrics = std::move(metrics);
+	return MetricIndex(FixedMetricCount() + registered_metrics.size() - 1);
 }
 
 vector<MetricInfo> MetricsManager::GetRegisteredMetrics() const {

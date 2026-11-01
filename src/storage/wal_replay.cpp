@@ -519,7 +519,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 		auto client_context = context.GetClientContext();
 		if (client_context) {
 			auto &profiler = *client_context->client_data->profiler;
-			profiler.AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
+			profiler.AddToMetric(MetricIndex(MetricStorageWALReplayEntryCount::Index), replay_entry_count);
 		}
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);
