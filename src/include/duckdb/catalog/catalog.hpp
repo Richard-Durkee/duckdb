@@ -74,6 +74,7 @@ struct SimilarCatalogEntry;
 class Binder;
 class LogicalOperator;
 class LogicalMergeInto;
+class LogicalVacuum;
 class PhysicalOperator;
 class PhysicalPlanGenerator;
 class LogicalCreateIndex;
@@ -388,6 +389,8 @@ public:
 	virtual PhysicalOperator &PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op);
 	virtual PhysicalOperator &PlanMergeInto(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                        LogicalMergeInto &op, PhysicalOperator &plan);
+	//! VACUUM or ANALYZE of a table of this catalog; op.children holds the scan of the analyzed columns, if any
+	virtual PhysicalOperator &PlanVacuum(ClientContext &context, PhysicalPlanGenerator &planner, LogicalVacuum &op);
 	virtual unique_ptr<LogicalOperator> BindCreateIndex(Binder &binder, CreateStatement &stmt, TableCatalogEntry &table,
 	                                                    unique_ptr<LogicalOperator> plan);
 	virtual unique_ptr<LogicalOperator> BindAlterAddIndex(Binder &binder, TableCatalogEntry &table_entry,

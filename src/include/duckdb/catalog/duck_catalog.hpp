@@ -61,6 +61,8 @@ public:
 	                                        PhysicalOperator &plan) override;
 	DUCKDB_API PhysicalOperator &PlanMergeInto(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                           LogicalMergeInto &op, PhysicalOperator &plan) override;
+	DUCKDB_API PhysicalOperator &PlanVacuum(ClientContext &context, PhysicalPlanGenerator &planner,
+	                                        LogicalVacuum &op) override;
 	DUCKDB_API unique_ptr<LogicalOperator> BindCreateIndex(Binder &binder, CreateStatement &stmt,
 	                                                       TableCatalogEntry &table,
 	                                                       unique_ptr<LogicalOperator> plan) override;
