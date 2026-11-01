@@ -98,8 +98,7 @@ struct FieldIdMapper : public ColumnMapper {
 		for (idx_t col_idx = 0; col_idx < columns.size(); col_idx++) {
 			auto &column = columns[col_idx];
 			if (column.identifier.IsNull()) {
-				// Extra columns at the end will not have a field_id
-				break;
+				continue;
 			}
 			auto field_id = column.GetIdentifierFieldId();
 			field_id_map.emplace(field_id, MultiFileLocalIndex(col_idx));
