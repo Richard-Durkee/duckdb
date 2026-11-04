@@ -16,6 +16,7 @@ namespace duckdb {
 // STANDARD means the catalog lookups are performed in a regular manner (i.e. according to the users' search path)
 // LOWER_PRIORITY means the catalog lookups are de-prioritized and we do lookups in other catalogs first
 // NEVER_LOOKUP means we never do lookups for this specific type in this catalog
-enum class CatalogLookupBehavior : uint8_t { STANDARD = 0, LOWER_PRIORITY = 1, NEVER_LOOKUP = 2 };
+// HIGHER_PRIORITY means the catalog lookups are done before those in any other catalog, including the built-in entries
+enum class CatalogLookupBehavior : uint8_t { STANDARD = 0, LOWER_PRIORITY = 1, NEVER_LOOKUP = 2, HIGHER_PRIORITY = 3 };
 
 } // namespace duckdb

@@ -1103,6 +1103,7 @@ CatalogEntryLookup Catalog::TryLookupEntryAcrossCatalogs(CatalogEntryRetriever &
 		return TryLookupEntry(retriever, lookups, lookup_info, if_not_found, false);
 	}
 	auto entries = GetCatalogEntries(retriever, catalog, schema, lookup_info.GetCatalogType());
+	vector<CatalogLookup> first_lookups;
 	vector<CatalogLookup> final_lookups;
 	lookups.reserve(entries.size());
 	for (auto &entry : entries) {
@@ -1125,9 +1126,17 @@ CatalogEntryLookup Catalog::TryLookupEntryAcrossCatalogs(CatalogEntryRetriever &
 			lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		} else if (lookup_behavior == CatalogLookupBehavior::LOWER_PRIORITY) {
 			final_lookups.emplace_back(*catalog_entry, entry, lookup_info);
+		} else if (lookup_behavior == CatalogLookupBehavior::HIGHER_PRIORITY) {
+			first_lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		}
 	}
 
+	if (!first_lookups.empty()) {
+		for (auto &lookup : lookups) {
+			first_lookups.emplace_back(std::move(lookup));
+		}
+		lookups = std::move(first_lookups);
+	}
 	for (auto &lookup : final_lookups) {
 		lookups.emplace_back(std::move(lookup));
 	}

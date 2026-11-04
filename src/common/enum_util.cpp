@@ -1210,19 +1210,20 @@ const StringUtil::EnumStringLiteral *GetCatalogLookupBehaviorValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(CatalogLookupBehavior::STANDARD), "STANDARD" },
 		{ static_cast<uint32_t>(CatalogLookupBehavior::LOWER_PRIORITY), "LOWER_PRIORITY" },
-		{ static_cast<uint32_t>(CatalogLookupBehavior::NEVER_LOOKUP), "NEVER_LOOKUP" }
+		{ static_cast<uint32_t>(CatalogLookupBehavior::NEVER_LOOKUP), "NEVER_LOOKUP" },
+		{ static_cast<uint32_t>(CatalogLookupBehavior::HIGHER_PRIORITY), "HIGHER_PRIORITY" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<CatalogLookupBehavior>(CatalogLookupBehavior value) {
-	return StringUtil::EnumToString(GetCatalogLookupBehaviorValues(), 3, "CatalogLookupBehavior", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetCatalogLookupBehaviorValues(), 4, "CatalogLookupBehavior", static_cast<uint32_t>(value));
 }
 
 template<>
 CatalogLookupBehavior EnumUtil::FromString<CatalogLookupBehavior>(const char *value) {
-	return static_cast<CatalogLookupBehavior>(StringUtil::StringToEnum(GetCatalogLookupBehaviorValues(), 3, "CatalogLookupBehavior", value));
+	return static_cast<CatalogLookupBehavior>(StringUtil::StringToEnum(GetCatalogLookupBehaviorValues(), 4, "CatalogLookupBehavior", value));
 }
 
 const StringUtil::EnumStringLiteral *GetCatalogTypeValues() {
