@@ -1207,6 +1207,9 @@ Bool:
     - WithOrdinality
     - Asof
     - ApproxOrExact
+    - CharacterType
+    - VaryingCharacterType
+    - FixedCharacterType
     - NearestApprox
     - NearestExact
     - Materialized
@@ -2044,7 +2047,6 @@ excluded_rules:
   - StarSymbol
   - PlainIdentifier
   - QuotedIdentifier
-  - CharacterType
   - IntervalNumber
   - AtTimeZoneOperator
   - ConstraintNameClause

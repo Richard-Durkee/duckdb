@@ -280,14 +280,23 @@ PEGTransformerFactory::TransformTypeModifiers(PEGTransformer &transformer,
 	return std::move(*expression);
 }
 
+bool PEGTransformerFactory::TransformVaryingCharacterType(PEGTransformer &transformer) {
+	return false;
+}
+
+bool PEGTransformerFactory::TransformFixedCharacterType(PEGTransformer &transformer) {
+	return true;
+}
+
 unique_ptr<ParsedExpression>
-PEGTransformerFactory::TransformCharacterSimpleType(PEGTransformer &transformer,
+PEGTransformerFactory::TransformCharacterSimpleType(PEGTransformer &transformer, const bool &fixed_length,
                                                     optional<vector<unique_ptr<ParsedExpression>>> type_modifiers) {
 	vector<unique_ptr<ParsedExpression>> modifiers;
 	if (type_modifiers) {
 		modifiers = std::move(*type_modifiers);
 	}
-	return make_uniq<TypeExpression>(Identifier("VARCHAR"), std::move(modifiers));
+	// CHAR(n) binds to VARCHAR like VARCHAR(n) does, but keeps its own name so a catalog can tell the two apart
+	return make_uniq<TypeExpression>(Identifier(fixed_length ? "BPCHAR" : "VARCHAR"), std::move(modifiers));
 }
 
 unique_ptr<ParsedExpression>

@@ -108,6 +108,8 @@ enum class PEGRuleId : uint32_t {
 	CharacterSimpleType,
 	QualifiedSimpleType,
 	CharacterType,
+	VaryingCharacterType,
+	FixedCharacterType,
 	IntervalType,
 	IntervalInterval,
 	IntervalWithSpecifier,

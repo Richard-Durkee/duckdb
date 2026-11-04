@@ -1,0 +1,58 @@
+# name: test/sql/types/string/test_character_type_names.test
+# description: every spelling of the SQL character types binds to VARCHAR, with or without a length
+# group: [string]
+
+statement ok
+CREATE TABLE character_types (
+	a CHAR,
+	b CHAR(3),
+	c CHARACTER(3),
+	d NCHAR(3),
+	e NATIONAL CHAR(3),
+	f NATIONAL CHARACTER(3),
+	g VARCHAR,
+	h VARCHAR(3),
+	i CHAR VARYING(3),
+	j CHARACTER VARYING(3),
+	k NCHAR VARYING(3),
+	l NATIONAL CHAR VARYING(3),
+	m NATIONAL CHARACTER VARYING(3)
+);
+
+query II
+SELECT column_name, data_type FROM duckdb_columns() WHERE table_name = 'character_types' ORDER BY column_index;
+----
+a	VARCHAR
+b	VARCHAR
+c	VARCHAR
+d	VARCHAR
+e	VARCHAR
+f	VARCHAR
+g	VARCHAR
+h	VARCHAR
+i	VARCHAR
+j	VARCHAR
+k	VARCHAR
+l	VARCHAR
+m	VARCHAR
+
+# the length is not enforced
+statement ok
+INSERT INTO character_types (b, h) VALUES ('abcdef', 'abcdef');
+
+query II
+SELECT b, h FROM character_types;
+----
+abcdef	abcdef
+
+query III
+SELECT typeof('x'::CHAR(2)), typeof(CAST('x' AS CHARACTER VARYING(2))), 'B' = 'b'::CHAR('nocase');
+----
+VARCHAR	VARCHAR	true
+
+# CHAR keeps its own name, BPCHAR, in the parsed statement
+query I
+SELECT column_name FROM (DESCRIBE SELECT '1'::CHAR(3), '1'::VARCHAR(3));
+----
+CAST('1' AS BPCHAR(3))
+CAST('1' AS VARCHAR(3))

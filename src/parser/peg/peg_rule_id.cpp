@@ -107,6 +107,8 @@ static const char *const PEG_RULE_NAMES[] = {
     "CharacterSimpleType",
     "QualifiedSimpleType",
     "CharacterType",
+    "VaryingCharacterType",
+    "FixedCharacterType",
     "IntervalType",
     "IntervalInterval",
     "IntervalWithSpecifier",

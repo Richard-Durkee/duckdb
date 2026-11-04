@@ -963,6 +963,10 @@ public:
 	                                                                             GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeQualifiedSimpleTypeTrampoline(PEGTransformer &transformer,
 	                                                                             GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeVaryingCharacterTypeTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeFixedCharacterTypeTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeIntervalWithRangeSpecifierTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -2830,11 +2834,13 @@ public:
 	static LogicalType TransformType(PEGTransformer &transformer, unique_ptr<ParsedExpression> type_variations,
 	                                 const optional<vector<int64_t>> &array_bounds);
 	static unique_ptr<ParsedExpression>
-	TransformCharacterSimpleType(PEGTransformer &transformer,
+	TransformCharacterSimpleType(PEGTransformer &transformer, const bool &fixed_length,
 	                             optional<vector<unique_ptr<ParsedExpression>>> type_modifiers);
 	static unique_ptr<ParsedExpression>
 	TransformQualifiedSimpleType(PEGTransformer &transformer, const QualifiedName &qualified_type_name,
 	                             optional<vector<unique_ptr<ParsedExpression>>> type_modifiers);
+	static bool TransformVaryingCharacterType(PEGTransformer &transformer);
+	static bool TransformFixedCharacterType(PEGTransformer &transformer);
 	static unique_ptr<ParsedExpression>
 	TransformIntervalWithRangeSpecifier(PEGTransformer &transformer,
 	                                    const DatePartSpecifier &interval_to_interval_as_type);
