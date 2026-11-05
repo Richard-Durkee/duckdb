@@ -160,6 +160,20 @@ BoundStatement Binder::Bind(UpdateStatement &stmt) {
 BoundStatement Binder::BindNode(UpdateQueryNode &node) {
 	unique_ptr<LogicalOperator> root;
 
+	if (BindsReferencesOnly()) {
+		vector<reference<TableRef>> refs {*node.table};
+		if (node.from_table) {
+			refs.push_back(*node.from_table);
+		}
+		vector<reference<unique_ptr<ParsedExpression>>> expressions;
+		if (node.set_info) {
+			expressions.push_back(node.set_info->condition);
+			for (auto &expr : node.set_info->expressions) {
+				expressions.push_back(expr);
+			}
+		}
+		return BindDMLReferences(refs, expressions);
+	}
 	// visit the table reference
 	auto bound_table = Bind(*node.table);
 	if (bound_table.plan->type != LogicalOperatorType::LOGICAL_GET) {

@@ -22,17 +22,28 @@ EntryLookupInfo::EntryLookupInfo(CatalogType catalog_type_p, Identifier name_p, 
 
 EntryLookupInfo::EntryLookupInfo(const EntryLookupInfo &parent, QualifiedName name_p)
     : catalog_type(parent.catalog_type), name(std::move(name_p)), at_clause(parent.at_clause),
-      error_context(parent.error_context) {
+      error_context(parent.error_context), can_defer_load(parent.can_defer_load) {
 }
 
 EntryLookupInfo::EntryLookupInfo(const EntryLookupInfo &parent, optional_ptr<BoundAtClause> at_clause)
     : EntryLookupInfo(parent.catalog_type, parent.name, parent.at_clause ? parent.at_clause : at_clause,
                       parent.error_context) {
+	can_defer_load = parent.can_defer_load;
+}
+
+bool EntryLookupInfo::CanDeferLoad() const {
+	return can_defer_load;
+}
+
+void EntryLookupInfo::SetCanDeferLoad(bool can_defer_load_p) {
+	can_defer_load = can_defer_load_p;
 }
 
 EntryLookupInfo EntryLookupInfo::SchemaLookup(const EntryLookupInfo &parent, vector<Identifier> schema_path) {
-	return EntryLookupInfo(CatalogType::SCHEMA_ENTRY, QualifiedName::FromPath(std::move(schema_path)), parent.at_clause,
+	EntryLookupInfo result(CatalogType::SCHEMA_ENTRY, QualifiedName::FromPath(std::move(schema_path)), parent.at_clause,
 	                       parent.error_context);
+	result.can_defer_load = parent.can_defer_load;
+	return result;
 }
 
 CatalogType EntryLookupInfo::GetCatalogType() const {

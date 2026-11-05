@@ -10,6 +10,9 @@
 namespace duckdb {
 
 BindResult ExpressionBinder::BindExpression(ParameterExpression &expr, idx_t depth) {
+	if (binder.BindsReferencesOnly()) {
+		return BindResult(make_uniq<BoundConstantExpression>(Value(LogicalType::SQLNULL)));
+	}
 	auto parameters = binder.GetParameters();
 	auto parameter_id = expr.Identifier();
 

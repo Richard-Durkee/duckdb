@@ -687,8 +687,7 @@ void BindContext::GenerateAllColumnExpressions(StarExpression &expr,
 		}
 	}
 
-	if (binder.GetBindingMode() == BindingMode::EXTRACT_NAMES ||
-	    binder.GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
+	if (binder.BindsReferencesOnly()) {
 		//! We only care about extracting the names of the referenced columns
 		//! remove the exclude + replace lists
 		expr.ExcludeListMutable().clear();
@@ -777,15 +776,15 @@ static Identifier AddColumnNameToBinding(const Identifier &base_name, identifier
 }
 
 vector<Identifier> BindContext::AliasColumnNames(const Identifier &table_name, const vector<Identifier> &names,
-                                                 const vector<Identifier> &column_aliases) {
+                                                 const vector<Identifier> &column_aliases, bool allow_extra_aliases) {
 	vector<Identifier> result;
-	if (column_aliases.size() > names.size()) {
+	if (column_aliases.size() > names.size() && !allow_extra_aliases) {
 		throw BinderException("table %s has %lld columns available but %lld columns specified", table_name,
 		                      names.size(), column_aliases.size());
 	}
 	identifier_set_t current_names;
 	// use any provided column aliases first
-	for (idx_t i = 0; i < column_aliases.size(); i++) {
+	for (idx_t i = 0; i < column_aliases.size() && i < names.size(); i++) {
 		result.push_back(AddColumnNameToBinding(column_aliases[i], current_names));
 	}
 	// if not enough aliases were provided, use the default names for remaining columns
@@ -796,7 +795,7 @@ vector<Identifier> BindContext::AliasColumnNames(const Identifier &table_name, c
 }
 
 void BindContext::AddSubquery(TableIndex index, const Identifier &alias, SubqueryRef &ref, BoundStatement &subquery) {
-	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias);
+	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias, binder.BindsReferencesOnly());
 	AddGenericBinding(index, alias, names, subquery.types);
 }
 
@@ -807,13 +806,13 @@ void BindContext::AddEntryBinding(TableIndex index, const Identifier &alias, con
 
 void BindContext::AddView(TableIndex index, const Identifier &alias, SubqueryRef &ref, BoundStatement &subquery,
                           ViewCatalogEntry &view) {
-	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias);
+	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias, binder.BindsReferencesOnly());
 	AddEntryBinding(index, alias, names, subquery.types, view.Cast<StandardEntry>());
 }
 
 void BindContext::AddSubquery(TableIndex index, const Identifier &alias, TableFunctionRef &ref,
                               BoundStatement &subquery) {
-	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias);
+	auto names = AliasColumnNames(alias, subquery.names, ref.column_name_alias, binder.BindsReferencesOnly());
 	AddGenericBinding(index, alias, names, subquery.types);
 }
 

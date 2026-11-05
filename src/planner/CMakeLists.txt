@@ -26,6 +26,7 @@ add_library_unity(
   logical_operator.cpp
   logical_operator_repeatability.cpp
   binder.cpp
+  extract_catalog_lookups.cpp
   bind_context.cpp
   planner.cpp
   statement_preprocessor.cpp

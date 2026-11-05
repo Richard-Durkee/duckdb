@@ -112,6 +112,22 @@ unique_ptr<BoundAtClause> Binder::BindAtClause(optional_ptr<AtClause> at_clause)
 	if (!at_clause) {
 		return nullptr;
 	}
+	if (GetBindingMode() == BindingMode::EXTRACT_CATALOG_LOOKUPS) {
+		// functions bind to placeholders in this mode: a constant AT value is bound with a regular binder
+		try {
+			auto regular_binder = Binder::CreateBinder(context);
+			ConstantBinder regular_constant_binder(*regular_binder, context, "AT clause");
+			auto copy = at_clause->Expression()->Copy();
+			auto expr = regular_constant_binder.Bind(copy);
+			if (expr->IsFoldable()) {
+				auto val = ExpressionExecutor::EvaluateScalar(context, *expr);
+				return make_uniq<BoundAtClause>(at_clause->Unit(), std::move(val));
+			}
+		} catch (std::exception &ex) {
+			// e.g. a prepared parameter: use the placeholder value
+			RethrowIfInvalidatesTransaction(ErrorData(ex));
+		}
+	}
 	ConstantBinder binder(*this, context, "AT clause");
 	auto expr = binder.Bind(at_clause->ExpressionMutable());
 	auto val = ExpressionExecutor::EvaluateScalar(context, *expr);
@@ -161,7 +177,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		auto index = GenerateTableIndex();
 
 		auto alias = ref.alias.empty() ? ref.Table() : ref.alias;
-		auto names = BindContext::AliasColumnNames(alias, ctebinding->GetColumnNames(), ref.column_name_alias);
+		auto names = BindContext::AliasColumnNames(alias, ctebinding->GetColumnNames(), ref.column_name_alias,
+		                                           BindsReferencesOnly());
 
 		bind_context.AddGenericBinding(index, alias, names, ctebinding->GetColumnTypes());
 
@@ -179,33 +196,26 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	auto at_clause = BindAtClause(ref.at_clause);
 	auto entry_at_clause = at_clause ? at_clause.get() : entry_retriever.GetAtClause();
 	EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, QualifiedName(ref.Table()), entry_at_clause, error_context);
+	// an AT value that is not known (the NULL placeholder) leaves the load to the real bind
+	auto at_value_known = !entry_at_clause || !entry_at_clause->GetValue().IsNull();
+	table_lookup.SetCanDeferLoad(GetBindingMode() == BindingMode::EXTRACT_CATALOG_LOOKUPS && at_value_known);
 	// resolve the catalog/schema qualification for the lookup only - the reference itself keeps the name as written,
 	// which is what name extraction and replacement scans report
 	auto bound_name = BindTableName(entry_retriever, ref.GetQualifiedName());
 	auto table_or_view =
 	    entry_retriever.GetEntry(EntryLookupInfo(table_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
 	// we still didn't find the table
-	if (GetBindingMode() == BindingMode::EXTRACT_NAMES || GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
+	if (BindsReferencesOnly()) {
 		if (!table_or_view || table_or_view->type == CatalogType::TABLE_ENTRY) {
-			// if we are in EXTRACT_NAMES or EXTRACT_QUALIFIED_NAMES, we create a dummy table ref
+			// when only finding references, we create a dummy table ref
 			if (GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
 				AddTableName(ref.ToString());
 			} else {
 				AddTableName(ref.Table().GetIdentifierName());
 			}
 
-			// add a bind context entry
-			auto table_index = GenerateTableIndex();
 			auto ref_alias = ref.alias.empty() ? ref.Table() : ref.alias;
-			vector<LogicalType> types {LogicalType::INTEGER};
-			vector<Identifier> names {Identifier("__dummy_col" + to_string(table_index.index))};
-			bind_context.AddGenericBinding(table_index, ref_alias, names, types);
-
-			BoundStatement result;
-			result.types = std::move(types);
-			result.names = std::move(names);
-			result.plan = make_uniq<LogicalDummyScan>(table_index);
-			return result;
+			return BindDummyScan(ref_alias);
 		}
 	}
 	if (!table_or_view) {
@@ -349,8 +359,10 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		if (!view_binder->correlated_columns.empty()) {
 			throw BinderException("Contents of view were altered - view bound correlated columns");
 		}
-		// update the view binding with the bound view information
-		view_catalog_entry.UpdateBinding(bound_child.types, bound_child.names);
+		if (!BindsReferencesOnly()) {
+			// update the view binding with the bound view information
+			view_catalog_entry.UpdateBinding(bound_child.types, bound_child.names);
+		}
 		auto root_index = bound_child.plan->GetRootIndex();
 		if (view_catalog_entry.security_type == ViewSecurityType::SECURE_VIEW) {
 			// wrap the plan of a secure view - this prevents the optimizer from pushing into the view

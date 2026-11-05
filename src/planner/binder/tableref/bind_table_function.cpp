@@ -10,6 +10,7 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
+#include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/window/rows_functions.hpp"
@@ -291,7 +292,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	if (table_function.bind || table_function.bind_replace || table_function.bind_operator) {
 		TableFunctionBindInput bind_input(parameters, named_parameters, input_table_types, input_table_names,
 		                                  table_function.function_info.get(), this, table_function, ref, input_plan);
-		if (table_function.bind_operator) {
+		if (table_function.bind_operator && !BindsReferencesOnly()) {
 			auto new_plan = table_function.bind_operator(context, bind_input, bind_index, return_names);
 			if (new_plan) {
 				if (!PlanSupportsStatementCache(*new_plan)) {
@@ -329,6 +330,9 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 				}
 				return Bind(*new_plan);
 			}
+		}
+		if (BindsReferencesOnly()) {
+			return BindDummyScan(Identifier(function_name));
 		}
 		if (!table_function.bind) {
 			throw BinderException("Failed to bind %s: nullptr returned from bind_replace without bind function",
@@ -517,6 +521,18 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	                                 subquery, table_in_out, error)) {
 		error.AddQueryLocation(ref);
 		error.Throw();
+	}
+
+	if (BindsReferencesOnly()) {
+		// binding the function can do I/O: only a bind_replace, which rewrites the call to a query, is bound
+		bool has_bind_replace = false;
+		for (idx_t i = 0; i < function.functions.Size(); i++) {
+			has_bind_replace = has_bind_replace || function.functions.GetFunctionByOffset(i)->bind_replace;
+		}
+		if (!has_bind_replace) {
+			auto ref_alias = ref.alias.empty() ? fexpr.FunctionName() : ref.alias;
+			return BindDummyScan(ref_alias);
+		}
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder

@@ -834,6 +834,19 @@ void Binder::BindCopyOptions(CopyInfo &info, const CopyFunction &function) {
 }
 
 BoundStatement Binder::Bind(CopyStatement &stmt, CopyToType copy_to_type) {
+	if (BindsReferencesOnly()) {
+		// bind only the table or query: binding the copy function can read or write files
+		auto &info = *stmt.info;
+		if (info.select_statement) {
+			auto query_binder = Binder::CreateBinder(context, this);
+			query_binder->BindNode(*info.select_statement);
+		} else {
+			BaseTableRef table;
+			table.SetQualifiedName(info.GetQualifiedName());
+			Bind(table);
+		}
+		return BindDummyScan();
+	}
 	BindCopyFormat(*stmt.info);
 	if (stmt.info->is_from && stmt.info->parsed_options.find("partition_path") != stmt.info->parsed_options.end()) {
 		throw InvalidInputException("Option partition_path is not supported for reading - only for writing");

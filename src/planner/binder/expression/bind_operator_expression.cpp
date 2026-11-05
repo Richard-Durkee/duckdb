@@ -107,8 +107,7 @@ BindResult ExpressionBinder::BindGroupingFunction(OperatorExpression &op, idx_t 
 //! it is reported rather than invoked.
 BindResult ExpressionBinder::BindOperatorAsFunction(OperatorExpression &op, const Identifier &function_name,
                                                     vector<unique_ptr<Expression>> children) {
-	if (binder.GetBindingMode() == BindingMode::EXTRACT_NAMES ||
-	    binder.GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
+	if (binder.BindsReferencesOnly()) {
 		return BindResult(make_uniq<BoundConstantExpression>(Value(LogicalType::SQLNULL)));
 	}
 	FunctionExpression lookup(function_name, vector<unique_ptr<ParsedExpression>>());

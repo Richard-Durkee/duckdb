@@ -1303,6 +1303,7 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 
 		EntryLookupInfo info(CatalogType::TABLE_ENTRY,
 		                     QualifiedName(catalog_by_name->GetName(), table_schema, table_name), at_clause, context);
+		info.SetCanDeferLoad(lookup_info.CanDeferLoad());
 		return catalog_by_name->TryLookupEntryInternal(transaction, info);
 	}
 

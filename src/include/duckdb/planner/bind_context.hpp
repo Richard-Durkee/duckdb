@@ -152,9 +152,10 @@ public:
 	string GetActualColumnName(Binding &binding, const Identifier &column_name);
 
 	//! Alias a set of column names for the specified table, using the original names if there are not enough aliases
-	//! specified.
+	//! specified. Extra aliases are an error unless allow_extra_aliases is set.
 	static vector<Identifier> AliasColumnNames(const Identifier &table_name, const vector<Identifier> &names,
-	                                           const vector<Identifier> &column_aliases);
+	                                           const vector<Identifier> &column_aliases,
+	                                           bool allow_extra_aliases = false);
 
 	//! Add all the bindings from a BindContext to this BindContext. The other BindContext is destroyed in the process.
 	void AddContext(BindContext other);

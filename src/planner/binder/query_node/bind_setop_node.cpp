@@ -345,6 +345,12 @@ BoundStatement Binder::BindNode(SetOperationNode &statement) {
 		BuildUnionByNameInfo(result);
 	} else {
 		// UNION ALL BY POSITION - the columns of both sides must match exactly
+		for (auto &child : result.bound_children) {
+			if (BindsReferencesOnly() && child.types.size() != result.bound_children[0].types.size()) {
+				// dummy scans can give the sides different column counts
+				return BindDummyScan();
+			}
+		}
 		result.names = result.bound_children[0].names;
 		auto result_columns = result.bound_children[0].types.size();
 		for (idx_t i = 1; i < result.bound_children.size(); ++i) {

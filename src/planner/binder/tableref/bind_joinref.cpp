@@ -17,6 +17,7 @@
 #include "duckdb/planner/expression_binder/lateral_binder.hpp"
 #include "duckdb/planner/query_node/bound_select_node.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
@@ -245,6 +246,11 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 	vector<Identifier> extra_using_columns;
 	switch (ref.ref_type) {
 	case JoinRefType::NATURAL: {
+		if (BindsReferencesOnly()) {
+			// the dummy scans of the tables have no columns to join on
+			extra_conditions.push_back(make_uniq<BoundConstantExpression>(Value::BOOLEAN(true)));
+			break;
+		}
 		// natural join, figure out which column names are present in both sides of the join
 		// first bind the left hand side and get a list of all the tables and column names
 		identifier_set_t lhs_columns;
@@ -301,7 +307,10 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 	}
 	case JoinRefType::REGULAR:
 	case JoinRefType::ASOF:
-		if (!ref.using_columns.empty()) {
+		if (!ref.using_columns.empty() && BindsReferencesOnly()) {
+			// the dummy scans of the tables have no columns to join on
+			extra_conditions.push_back(make_uniq<BoundConstantExpression>(Value::BOOLEAN(true)));
+		} else if (!ref.using_columns.empty()) {
 			// USING columns
 			D_ASSERT(!result->condition);
 			extra_using_columns = ref.using_columns;

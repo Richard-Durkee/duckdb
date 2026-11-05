@@ -17,6 +17,14 @@ BoundStatement Binder::Bind(DeleteStatement &stmt) {
 }
 
 BoundStatement Binder::BindNode(DeleteQueryNode &node) {
+	if (BindsReferencesOnly()) {
+		vector<reference<TableRef>> refs {*node.table};
+		for (auto &using_clause : node.using_clauses) {
+			refs.push_back(*using_clause);
+		}
+		vector<reference<unique_ptr<ParsedExpression>>> expressions {node.condition};
+		return BindDMLReferences(refs, expressions);
+	}
 	// visit the table reference
 	auto bound_table = Bind(*node.table);
 	auto root = std::move(bound_table.plan);

@@ -338,8 +338,8 @@ void Binder::SetCatalogLookupCallback(catalog_entry_callback_t callback) {
 void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
                       const vector<Identifier> &schema_path, optional_ptr<LogicalDependencyList> dependencies,
                       const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-                      vector<Identifier> &result_names) {
-	auto view_binder = Binder::CreateBinder(context);
+                      vector<Identifier> &result_names, optional_ptr<Binder> parent) {
+	auto view_binder = Binder::CreateBinder(context, parent);
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);
 
 	if (dependencies) {
@@ -358,7 +358,7 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 
 	auto copy = stmt.Copy();
 	auto query_node = view_binder->Bind(*copy);
-	if (aliases.size() > query_node.names.size()) {
+	if (aliases.size() > query_node.names.size() && !view_binder->BindsReferencesOnly()) {
 		throw BinderException("More VIEW aliases than columns in query result");
 	}
 	result_types = query_node.types;
@@ -396,7 +396,7 @@ void Binder::BindCreateViewInfo(CreateViewInfo &base) {
 		dependencies = base.dependencies;
 	}
 	BindView(context, *base.query, base.GetQualifiedName().Catalog(), base.GetQualifiedName().SchemaPath(),
-	         dependencies, base.aliases, base.types, base.names);
+	         dependencies, base.aliases, base.types, base.names, BindsReferencesOnly() ? this : nullptr);
 }
 
 void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info) {
@@ -907,7 +907,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 				}
 			}
 		}
-		if (stmt.info->on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+		if (stmt.info->on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT && !BindsReferencesOnly()) {
 			CatalogTransaction transaction(schema.ParentCatalog(), context);
 			auto existing_entry = schema.GetEntry(transaction, CatalogType::VIEW_ENTRY, base.GetViewName());
 			if (existing_entry && existing_entry->type == CatalogType::VIEW_ENTRY) {
@@ -968,9 +968,8 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		break;
 	}
 	case CatalogType::TABLE_ENTRY: {
-		// Skip real catalog/schema resolution in EXTRACT_NAMES or EXTRACT_QUALIFIED_NAMES mode
-		if (GetBindingMode() == BindingMode::EXTRACT_NAMES ||
-		    GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
+		// Skip real catalog/schema resolution when only finding references
+		if (BindsReferencesOnly()) {
 			auto &create_info = stmt.info->Cast<CreateTableInfo>();
 			if (GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
 				AddTableName(create_info.GetQualifiedName().ToString());

@@ -243,6 +243,10 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	MoveCorrelatedExpressions(*left_binder);
 	MoveCorrelatedExpressions(*right_binder);
 
+	if (BindsReferencesOnly() && left.types.size() != right.types.size()) {
+		// dummy scans can give the sides different column counts
+		return BindDummyScan();
+	}
 	// now both sides have been bound we can resolve types
 	if (left.types.size() != right.types.size()) {
 		throw BinderException("Set operations can only apply to expressions with the "

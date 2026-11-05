@@ -7,6 +7,7 @@ add_library(
   cast.cpp
   executor.cpp
   concurrent_commits.cpp
+  extract_catalog_lookups.cpp
   in.cpp
   parser.cpp
   storage.cpp

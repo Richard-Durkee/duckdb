@@ -944,19 +944,20 @@ const StringUtil::EnumStringLiteral *GetBindingModeValues() {
 		{ static_cast<uint32_t>(BindingMode::PREPARE), "PREPARE" },
 		{ static_cast<uint32_t>(BindingMode::EXTRACT_NAMES), "EXTRACT_NAMES" },
 		{ static_cast<uint32_t>(BindingMode::EXTRACT_REPLACEMENT_SCANS), "EXTRACT_REPLACEMENT_SCANS" },
-		{ static_cast<uint32_t>(BindingMode::EXTRACT_QUALIFIED_NAMES), "EXTRACT_QUALIFIED_NAMES" }
+		{ static_cast<uint32_t>(BindingMode::EXTRACT_QUALIFIED_NAMES), "EXTRACT_QUALIFIED_NAMES" },
+		{ static_cast<uint32_t>(BindingMode::EXTRACT_CATALOG_LOOKUPS), "EXTRACT_CATALOG_LOOKUPS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<BindingMode>(BindingMode value) {
-	return StringUtil::EnumToString(GetBindingModeValues(), 5, "BindingMode", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetBindingModeValues(), 6, "BindingMode", static_cast<uint32_t>(value));
 }
 
 template<>
 BindingMode EnumUtil::FromString<BindingMode>(const char *value) {
-	return static_cast<BindingMode>(StringUtil::StringToEnum(GetBindingModeValues(), 5, "BindingMode", value));
+	return static_cast<BindingMode>(StringUtil::StringToEnum(GetBindingModeValues(), 6, "BindingMode", value));
 }
 
 const StringUtil::EnumStringLiteral *GetBitpackingModeValues() {

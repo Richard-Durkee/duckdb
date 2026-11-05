@@ -226,6 +226,24 @@ BoundStatement Binder::Bind(MergeIntoStatement &stmt) {
 }
 
 BoundStatement Binder::BindNode(MergeQueryNode &node) {
+	if (BindsReferencesOnly()) {
+		vector<reference<unique_ptr<ParsedExpression>>> expressions {node.join_condition};
+		for (auto &entry : node.actions) {
+			for (auto &action : entry.second) {
+				expressions.push_back(action->condition);
+				if (action->update_info) {
+					expressions.push_back(action->update_info->condition);
+					for (auto &expr : action->update_info->expressions) {
+						expressions.push_back(expr);
+					}
+				}
+				for (auto &expr : action->expressions) {
+					expressions.push_back(expr);
+				}
+			}
+		}
+		return BindDMLReferences({*node.target, *node.source}, expressions);
+	}
 	// bind the target table
 	auto target_binder = Binder::CreateBinder(context, this);
 	auto table_alias = node.target->alias;

@@ -690,6 +690,41 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 	result.names = {"Count"};
 	result.types = {LogicalType::BIGINT};
 
+	if (BindsReferencesOnly()) {
+		// look the target up directly: a CTE of the same name does not replace it
+		AddTableName(GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES
+		                 ? node.qualified_name.ToString()
+		                 : node.qualified_name.Name().GetIdentifierName());
+		EntryLookupInfo target_lookup(CatalogType::TABLE_ENTRY, BindTableName(node.qualified_name));
+		target_lookup.SetCanDeferLoad(GetBindingMode() == BindingMode::EXTRACT_CATALOG_LOOKUPS);
+		entry_retriever.GetEntry(target_lookup, OnEntryNotFound::RETURN_NULL);
+		vector<reference<TableRef>> refs;
+		vector<reference<unique_ptr<ParsedExpression>>> expressions;
+		auto values_list = node.GetValuesList();
+		if (values_list) {
+			// VALUES lists can be large: bind only the values that hold a subquery
+			for (auto &row : values_list->values) {
+				for (auto &value : row) {
+					if (value->HasSubquery()) {
+						expressions.push_back(value);
+					}
+				}
+			}
+		} else if (node.select_statement) {
+			auto select_binder = Binder::CreateBinder(context, this);
+			select_binder->Bind(*node.select_statement);
+		}
+		if (node.on_conflict_info) {
+			expressions.push_back(node.on_conflict_info->condition);
+			if (node.on_conflict_info->set_info) {
+				expressions.push_back(node.on_conflict_info->set_info->condition);
+				for (auto &expr : node.on_conflict_info->set_info->expressions) {
+					expressions.push_back(expr);
+				}
+			}
+		}
+		return BindDMLReferences(refs, expressions);
+	}
 	node.qualified_name = BindTableName(node.qualified_name);
 	EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, node.qualified_name);
 	auto &table_entry = *entry_retriever.GetEntry(table_lookup, OnEntryNotFound::THROW_EXCEPTION);

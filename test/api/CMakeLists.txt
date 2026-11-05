@@ -45,6 +45,7 @@ set(TEST_API_OBJECTS
     test_results.cpp
     test_reset.cpp
     test_get_table_names.cpp
+    test_extract_catalog_lookups.cpp
     test_prepared_api.cpp
     test_table_info.cpp
     test_appender_api.cpp

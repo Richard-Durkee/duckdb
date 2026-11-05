@@ -48,6 +48,9 @@ public:
 	const Identifier &GetSchema() const;
 	const QueryErrorContext &GetErrorContext() const;
 	const optional_ptr<BoundAtClause> GetAtClause() const;
+	//! Whether the catalog may return "not found" for an entry it has not loaded yet (EXTRACT_CATALOG_LOOKUPS)
+	bool CanDeferLoad() const;
+	void SetCanDeferLoad(bool can_defer_load);
 
 	//! Build a schema lookup from a (possibly nested) schema path ([outermost..innermost]); the innermost component is
 	//! the schema name and the preceding components are its parent schemas
@@ -58,6 +61,7 @@ private:
 	QualifiedName name;
 	optional_ptr<BoundAtClause> at_clause;
 	QueryErrorContext error_context;
+	bool can_defer_load = false;
 };
 
 //! Return value of Catalog::LookupEntry

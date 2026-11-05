@@ -293,3 +293,37 @@ TEST_CASE("Test GetTableNames", "[api]") {
 		REQUIRE_NO_FAIL(con.Query("CALL dbgen(sf=0)"));
 	}
 }
+
+TEST_CASE("Test GetTableNames with joins, parameters, DML and views", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a (i INTEGER, j VARCHAR)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE VIEW v AS SELECT j, i + 1 AS k FROM a"));
+
+	auto names = [&](const string &sql, bool qualified = false) {
+		auto table_names = con.GetTableNames(sql, qualified);
+		return set<string>(table_names.begin(), table_names.end());
+	};
+	REQUIRE(names("SELECT * FROM t1 JOIN t2 USING (i)") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT * FROM t1 NATURAL JOIN t2") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT * FROM s.t1 JOIN t2 USING (i)", true) == set<string> {"s.t1", "t2"});
+	REQUIRE(names("UPDATE s.t1 SET j = (SELECT max(j) FROM t2)", true) == set<string> {"s.t1", "t2"});
+	REQUIRE(names("SELECT * FROM t1 WHERE i = ? AND i IN (SELECT i FROM t2)") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT * FROM (SELECT i, j FROM t1 UNION ALL SELECT * FROM t2) u(x, y), t3") ==
+	        set<string> {"t1", "t2", "t3"});
+	REQUIRE(names("UPDATE t1 SET j = (SELECT max(j) FROM t2) FROM t3 WHERE t1.i = t3.i") ==
+	        set<string> {"t1", "t2", "t3"});
+	REQUIRE(names("DELETE FROM t1 WHERE i IN (SELECT i FROM t2)") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT i, j FROM t1 UNION SELECT * FROM t2") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT i, j FROM t1 UNION ALL SELECT * FROM t2 LIMIT 1") == set<string> {"t1", "t2"});
+	REQUIRE(names("COPY a FROM 'does_not_exist.csv'") == set<string> {"a"});
+	REQUIRE(names("MERGE INTO t1 USING t2 ON t1.i = t2.i WHEN MATCHED THEN DELETE") == set<string> {"t1", "t2"});
+	REQUIRE(names("CREATE VIEW x AS SELECT * FROM t1, t2") == set<string> {"t1", "t2"});
+	REQUIRE(names("SELECT * FROM query_table('t1')") == set<string> {"t1"});
+	REQUIRE(names("INSERT INTO t1 SELECT * FROM t2") == set<string> {"t1", "t2"});
+
+	// binding the view for its references keeps the view's types
+	REQUIRE(names("SELECT * FROM v") == set<string> {"a"});
+	auto result = con.Query("SELECT data_type FROM duckdb_columns() WHERE table_name = 'v' ORDER BY column_name");
+	REQUIRE(CHECK_COLUMN(result, 0, {"VARCHAR", "INTEGER"}));
+}

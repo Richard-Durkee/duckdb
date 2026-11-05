@@ -116,7 +116,9 @@ enum class BindingMode : uint8_t {
 	PREPARE,
 	EXTRACT_NAMES,
 	EXTRACT_REPLACEMENT_SCANS,
-	EXTRACT_QUALIFIED_NAMES
+	EXTRACT_QUALIFIED_NAMES,
+	//! Bind only to find the catalog entries the statement needs, see EntryLookupInfo::CanDeferLoad
+	EXTRACT_CATALOG_LOOKUPS
 };
 enum class BinderType : uint8_t { REGULAR_BINDER, VIEW_BINDER };
 
@@ -310,7 +312,7 @@ public:
 	static void BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
 	                     const vector<Identifier> &schema_path, optional_ptr<LogicalDependencyList> dependencies,
 	                     const vector<Identifier> &aliases, vector<LogicalType> &result_types,
-	                     vector<Identifier> &result_names);
+	                     vector<Identifier> &result_names, optional_ptr<Binder> parent = nullptr);
 
 	void SearchSchema(CreateInfo &info);
 	//! Resolve the leading component of a (possibly qualified) name into a catalog: if it names an attached database it
@@ -411,6 +413,16 @@ public:
 
 	void SetBindingMode(BindingMode mode);
 	BindingMode GetBindingMode();
+	//! Whether this binder only finds what the statement references (the EXTRACT_* binding modes)
+	bool BindsReferencesOnly();
+	//! Binds the statement in one of the EXTRACT_* binding modes and returns the names of the tables it references
+	static unordered_set<string> ExtractTableNames(ClientContext &context, SQLStatement &statement, BindingMode mode);
+	//! Binds a copy of the statement in EXTRACT_CATALOG_LOOKUPS mode, e.g. from a pre-bind planner extension. An error
+	//! that ends the binding early is left to the real bind, and returned in error.
+	static unordered_set<string> ExtractCatalogLookups(ClientContext &context, const SQLStatement &statement,
+	                                                   optional_ptr<ErrorData> error = nullptr);
+	//! Rethrows an error caught while binding for references unless it is a regular binding error
+	static void RethrowIfInvalidatesTransaction(const ErrorData &error);
 	void AddTableName(string table_name);
 	void AddReplacementScan(const Identifier &table_name, unique_ptr<TableRef> replacement);
 	const unordered_set<string> &GetTableNames();
@@ -607,6 +619,11 @@ private:
 	BoundStatement BindNode(DeleteQueryNode &node);
 	BoundStatement BindNode(MergeQueryNode &node);
 	BoundStatement BindNode(CopyQueryNode &node);
+
+	//! Binding a statement only for its references (the EXTRACT_* binding modes)
+	BoundStatement BindDummyScan(optional_ptr<const Identifier> alias = nullptr);
+	BoundStatement BindDMLReferences(const vector<reference<TableRef>> &refs,
+	                                 const vector<reference<unique_ptr<ParsedExpression>>> &expressions);
 
 	unique_ptr<LogicalOperator> VisitQueryNode(BoundQueryNode &node, unique_ptr<LogicalOperator> root);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSelectNode &statement);

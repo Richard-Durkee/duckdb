@@ -1431,12 +1431,8 @@ unordered_set<string> ClientContext::GetTableNames(const string &query, const bo
 
 	unordered_set<string> result;
 	RunFunctionInTransactionInternal(*lock, [&]() {
-		// bind the expressions
-		auto binder = Binder::CreateBinder(*this);
 		auto mode = qualified ? BindingMode::EXTRACT_QUALIFIED_NAMES : BindingMode::EXTRACT_NAMES;
-		binder->SetBindingMode(mode);
-		binder->Bind(*statements[0]);
-		result = binder->GetTableNames();
+		result = Binder::ExtractTableNames(*this, *statements[0], mode);
 	});
 	return result;
 }
