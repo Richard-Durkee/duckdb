@@ -1617,10 +1617,11 @@ bool LocalFileSystem::ListFilesExtended(const string &directory,
 	if (hDir == INVALID_HANDLE_VALUE) {
 		return false;
 	}
+	// closes the handle on every return and when the callback throws
+	unique_ptr<void, decltype(&CloseHandle)> dir_handle(hDir, &CloseHandle);
 
 	DWORD volume_serial_number = 0;
 	if (!GetVolumeInformationByHandleW(hDir, NULL, 0, &volume_serial_number, NULL, NULL, NULL, 0)) {
-		CloseHandle(hDir);
 		throw IOException("Failed to get volume serial number from directory \"%s\": %s", directory,
 		                  GetLastErrorAsString());
 	}
@@ -1631,7 +1632,6 @@ bool LocalFileSystem::ListFilesExtended(const string &directory,
 	FILE_INFO_BY_HANDLE_CLASS info_class = FileIdBothDirectoryRestartInfo;
 	while (true) {
 		if (!GetFileInformationByHandleEx(hDir, info_class, buffer.get(), BUFFER_SIZE)) {
-			CloseHandle(hDir);
 			if (GetLastError() == ERROR_NO_MORE_FILES) {
 				// success - listed all files in the directory
 				return true;

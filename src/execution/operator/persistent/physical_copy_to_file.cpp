@@ -1727,18 +1727,17 @@ void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode o
 			auto full_path = fs.JoinPath(directory, path);
 			if (is_directory) {
 				directory_list.emplace_back(std::move(full_path));
-			} else {
+			} else if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
 				file_list.emplace_back(std::move(full_path));
+			} else {
+				// one file is enough to refuse, so stop listing what can be millions of files
+				throw IOException("Directory \"%s\" is not empty! Enable OVERWRITE option to overwrite files",
+				                  file_path);
 			}
 		});
 	}
-	if (file_list.empty()) {
-		return;
-	}
-	if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
+	if (!file_list.empty()) {
 		fs.RemoveFiles(file_list);
-	} else {
-		throw IOException("Directory \"%s\" is not empty! Enable OVERWRITE option to overwrite files", file_path);
 	}
 }
 
