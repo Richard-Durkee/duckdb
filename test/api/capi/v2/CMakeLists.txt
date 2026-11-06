@@ -19,6 +19,7 @@ add_library_unity(
   test_capi_v2_extension_footer.cpp
   test_capi_v2_factory.cpp
   test_capi_v2_file_system.cpp
+  test_capi_v2_memory.cpp
   test_capi_v2_identifier.cpp
   test_capi_v2_log_sink.cpp
   test_capi_v2_query_metrics.cpp

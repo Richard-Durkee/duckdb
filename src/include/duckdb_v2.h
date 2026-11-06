@@ -4264,6 +4264,162 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_log(duckdb_v2_connection_handl
 /* --- Struct definitions for logging --- */
 
 /* ============================================================================
+ * MODULE: memory
+ * ============================================================================ */
+
+/* --- Enums for memory --- */
+
+/* --- Struct forward declarations for memory --- */
+
+/* --- Types for memory --- */
+
+/*!
+ * An owned opaque handle to a block of memory the database accounts for, allocated with
+ * `duckdb_v2_context_allocate_memory()` or `duckdb_v2_instance_allocate_memory()` and destroyed with
+ * `duckdb_v2_memory_buffer_destroy()`. Read and write its bytes through the pointer
+ * `duckdb_v2_memory_buffer_get_data()` returns.
+ *
+ * The memory counts against the `memory_limit` of the database it was allocated from until the buffer is destroyed. It
+ * may outlive the callback, query or connection it was allocated in - e.g. held in a function's bind data or global
+ * state - and destroying it after the database was closed is safe: the memory is then freed without being accounted.
+ */
+typedef struct _duckdb_v2_memory_buffer {
+	void *internal_ptr;
+} * duckdb_v2_memory_buffer_handle;
+
+/* --- Constants for memory --- */
+
+/* --- Function pointer typedefs for memory --- */
+
+/* --- Functions for memory --- */
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Allocates a block of memory the database of a context accounts for.
+ *
+ * The block holds `size` uninitialized bytes, aligned for any fundamental type, and counts against the `memory_limit`
+ * of the context's database until it is destroyed. When it would take the database over its limit, the database first
+ * evicts buffer-managed data to make room; when that is not enough, the allocation fails with
+ * `ERROR_RESOURCE_OUT_OF_MEMORY`. The caller owns the returned buffer and must destroy it with
+ * `duckdb_v2_memory_buffer_destroy()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param context The context whose database accounts for the memory.
+ * @param size How many bytes to allocate. May be 0.
+ * @param buffer On success, receives the allocated buffer. Owned by the caller; destroy via
+ * `duckdb_v2_memory_buffer_destroy()`.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_context_allocate_memory(duckdb_v2_context_handle context, idx_t size,
+                                                               duckdb_v2_memory_buffer_handle *buffer,
+                                                               duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Allocates a block of memory the database of an instance accounts for.
+ *
+ * The same as `duckdb_v2_context_allocate_memory()`, for memory that is not tied to a query, e.g. a cache an embedder
+ * keeps for the lifetime of the instance.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param instance The instance whose database accounts for the memory.
+ * @param size How many bytes to allocate. May be 0.
+ * @param buffer On success, receives the allocated buffer. Owned by the caller; destroy via
+ * `duckdb_v2_memory_buffer_destroy()`.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_allocate_memory(duckdb_v2_instance_handle instance, idx_t size,
+                                                                duckdb_v2_memory_buffer_handle *buffer,
+                                                                duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns a writable pointer to the bytes of a buffer.
+ *
+ * The pointer is valid until the buffer is resized with `duckdb_v2_memory_buffer_resize()` or destroyed. A buffer of
+ * size 0 may return a null pointer.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param buffer The buffer to read.
+ * @param out_ptr Receives a writable pointer to the buffer's bytes, owned by the buffer.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_memory_buffer_get_data(duckdb_v2_memory_buffer_handle buffer, uint8_t **out_ptr,
+                                                              duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns how many bytes a buffer holds, which is also how many it counts against the memory limit.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param buffer The buffer to read.
+ * @param size Receives the size of the buffer in bytes.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_memory_buffer_get_size(duckdb_v2_memory_buffer_handle buffer, idx_t *size,
+                                                              duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Grows or shrinks a buffer, keeping its contents up to the smaller of the old and the new size.
+ *
+ * The bytes past the old size are uninitialized. The buffer may move, so take its pointer again with
+ * `duckdb_v2_memory_buffer_get_data()` afterwards. Growing is accounted like an allocation: when the database can not
+ * make room for the additional bytes, it fails with `ERROR_RESOURCE_OUT_OF_MEMORY` and leaves the buffer as it was.
+ * Resizing a buffer whose database was closed fails.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param buffer The buffer to resize.
+ * @param size The new size in bytes. May be 0.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_memory_buffer_resize(duckdb_v2_memory_buffer_handle buffer, idx_t size,
+                                                            duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Destroys a buffer, freeing its memory and returning it to the memory limit of its database.
+ *
+ * Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
+ * double-destruction.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param buffer The buffer to destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_memory_buffer_destroy(duckdb_v2_memory_buffer_handle *buffer);
+#endif
+
+/* --- Struct definitions for memory --- */
+
+/* ============================================================================
  * MODULE: qname
  * ============================================================================ */
 

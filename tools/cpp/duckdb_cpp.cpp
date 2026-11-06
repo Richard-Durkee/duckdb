@@ -228,6 +228,10 @@ struct HandleTraits<FileHandle> {
 	using handle = duckdb_v2_file_handle;
 };
 template <>
+struct HandleTraits<MemoryBuffer> {
+	using handle = duckdb_v2_memory_buffer_handle;
+};
+template <>
 struct HandleTraits<FileOpenOptions> {
 	using handle = duckdb_v2_file_open_options_handle;
 };
@@ -1420,6 +1424,42 @@ auto Instance::GetFileSystem() const -> FileSystem {
 	duckdb_v2_file_system_handle fs = nullptr;
 	CheckedAPICall(duckdb_v2_instance_get_file_system, handle(), &fs);
 	return detail::HandleFactory::Make<FileSystem>(fs);
+}
+
+auto Context::AllocateMemory(idx_t size) const -> MemoryBuffer {
+	duckdb_v2_memory_buffer_handle buffer = nullptr;
+	CheckedAPICall(duckdb_v2_context_allocate_memory, handle(), size, &buffer);
+	return detail::HandleFactory::Make<MemoryBuffer>(buffer);
+}
+
+auto Instance::AllocateMemory(idx_t size) const -> MemoryBuffer {
+	duckdb_v2_memory_buffer_handle buffer = nullptr;
+	CheckedAPICall(duckdb_v2_instance_allocate_memory, handle(), size, &buffer);
+	return detail::HandleFactory::Make<MemoryBuffer>(buffer);
+}
+
+MemoryBuffer::MemoryBuffer(void *impl) : detail::Handle<MemoryBuffer>(impl) {
+}
+
+MemoryBuffer::~MemoryBuffer() {
+	auto _h = handle();
+	duckdb_v2_memory_buffer_destroy(&_h);
+}
+
+auto MemoryBuffer::GetData() const -> uint8_t * {
+	uint8_t *data = nullptr;
+	CheckedAPICall(duckdb_v2_memory_buffer_get_data, handle(), &data);
+	return data;
+}
+
+auto MemoryBuffer::GetSize() const -> idx_t {
+	idx_t size = 0;
+	CheckedAPICall(duckdb_v2_memory_buffer_get_size, handle(), &size);
+	return size;
+}
+
+auto MemoryBuffer::Resize(idx_t size) -> void {
+	CheckedAPICall(duckdb_v2_memory_buffer_resize, handle(), size);
 }
 
 auto Factory::CreateType(const QualifiedName &name) const -> LogicalType {

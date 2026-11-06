@@ -104,6 +104,7 @@ class QueryMetrics;
 class QueryMetricsNode;
 class FileSystem;
 class FileHandle;
+class MemoryBuffer;
 class FileOpenOptions;
 class MultiFileFunction;
 class ScalarFunction;
@@ -532,6 +533,12 @@ public:
 
 	/// The file system this context reads and writes through. Borrowed, and valid only while the context is.
 	auto GetFileSystem() const -> FileSystem;
+
+	/// Allocates memory the context's database accounts for: see `MemoryBuffer`. When the allocation would take the
+	/// database over its `memory_limit`, the database first evicts buffer-managed data to make room.
+	/// @param size How many uninitialized bytes to allocate. May be 0.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY` when the database can not make room for it.
+	auto AllocateMemory(idx_t size) const -> MemoryBuffer;
 
 	/// The factory values, types and data chunks are created through in this context.
 	auto GetFactory() -> Factory & {
@@ -1297,6 +1304,12 @@ public:
 	/// The file system of this database, with its GLOBAL settings and secrets. Borrowed, and valid only while the
 	/// instance is.
 	auto GetFileSystem() const -> FileSystem;
+
+	/// Allocates memory the database accounts for, for state not tied to a query: see `MemoryBuffer` and
+	/// `Context::AllocateMemory`.
+	/// @param size How many uninitialized bytes to allocate. May be 0.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY` when the database can not make room for it.
+	auto AllocateMemory(idx_t size) const -> MemoryBuffer;
 
 	/// Writes a message to DuckDB's log, readable through `SELECT * FROM duckdb_logs`.
 	/// Whether the entry is recorded is up to the database's log configuration; a message it filters out is dropped
@@ -6599,6 +6612,49 @@ public:
 
 		void *GetUserDataInternal() const;
 	};
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Memory Buffer
+//----------------------------------------------------------------------------------------------------------------------
+
+/// A block of memory the database accounts for: it counts against `memory_limit`, and shows in `duckdb_memory()` under
+/// the `EXTENSION` tag, until it is destroyed. Allocate one with `Context::AllocateMemory` or
+/// `Instance::AllocateMemory` for state an extension keeps that is too large to leave unaccounted - decompressed
+/// blocks, decoded dictionaries, read buffers. The memory is not buffer-managed: it is never evicted or spilled, and
+/// stays at its address until it is resized or destroyed.
+///
+/// Frees its memory on destruction. It may outlive the callback or query it was allocated in, and also the database:
+/// destroying it after the database was closed frees the memory without accounting it.
+class MemoryBuffer final : public detail::Handle<MemoryBuffer> {
+	friend detail::HandleFactory;
+
+public:
+	MemoryBuffer(MemoryBuffer &&) noexcept = default;
+	MemoryBuffer &operator=(MemoryBuffer &&) noexcept = default;
+
+	~MemoryBuffer() override;
+
+	/// The bytes of the buffer, writable, and valid until it is resized or destroyed. May be null for an empty buffer.
+	auto GetData() const -> uint8_t *;
+
+	/// The bytes of the buffer, as an array of `T`. See `GetData()`.
+	template <class T>
+	auto GetData() const -> T * {
+		return reinterpret_cast<T *>(GetData());
+	}
+
+	/// How many bytes the buffer holds, which is also how many it counts against the memory limit.
+	auto GetSize() const -> idx_t;
+
+	/// Grows or shrinks the buffer, keeping its contents up to the smaller of the old and the new size. The buffer may
+	/// move: take its data again afterwards.
+	/// @throws Exception With code `DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY` when the database can not make room for the
+	/// additional bytes, leaving the buffer as it was.
+	auto Resize(idx_t size) -> void;
+
+private:
+	explicit MemoryBuffer(void *impl);
 };
 
 //----------------------------------------------------------------------------------------------------------------------

@@ -1570,6 +1570,19 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const char *name, idx_t name_length,
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_context_allocate_memory)
+	(duckdb_v2_context_handle context, idx_t size, duckdb_v2_memory_buffer_handle *buffer,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_instance_allocate_memory)
+	(duckdb_v2_instance_handle instance, idx_t size, duckdb_v2_memory_buffer_handle *buffer,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR (*duckdb_v2_memory_buffer_destroy)(duckdb_v2_memory_buffer_handle *buffer);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_get_data)
+	(duckdb_v2_memory_buffer_handle buffer, uint8_t **out_ptr, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_get_size)
+	(duckdb_v2_memory_buffer_handle buffer, idx_t *size, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_resize)
+	(duckdb_v2_memory_buffer_handle buffer, idx_t size, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3582,6 +3595,24 @@ typedef struct {
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_statement_add_collection duckdb_ext_api.duckdb_v2_statement_add_collection
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_context_allocate_memory duckdb_ext_api.duckdb_v2_context_allocate_memory
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_instance_allocate_memory duckdb_ext_api.duckdb_v2_instance_allocate_memory
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_memory_buffer_destroy duckdb_ext_api.duckdb_v2_memory_buffer_destroy
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_memory_buffer_get_data duckdb_ext_api.duckdb_v2_memory_buffer_get_data
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_memory_buffer_get_size duckdb_ext_api.duckdb_v2_memory_buffer_get_size
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_memory_buffer_resize duckdb_ext_api.duckdb_v2_memory_buffer_resize
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

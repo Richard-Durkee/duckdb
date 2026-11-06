@@ -1496,6 +1496,19 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const char *name, idx_t name_length,
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_context_allocate_memory)
+	(duckdb_v2_context_handle context, idx_t size, duckdb_v2_memory_buffer_handle *buffer,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_instance_allocate_memory)
+	(duckdb_v2_instance_handle instance, idx_t size, duckdb_v2_memory_buffer_handle *buffer,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR (*duckdb_v2_memory_buffer_destroy)(duckdb_v2_memory_buffer_handle *buffer);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_get_data)
+	(duckdb_v2_memory_buffer_handle buffer, uint8_t **out_ptr, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_get_size)
+	(duckdb_v2_memory_buffer_handle buffer, idx_t *size, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_memory_buffer_resize)
+	(duckdb_v2_memory_buffer_handle buffer, idx_t size, duckdb_v2_error_info_handle *err);
 } duckdb_ext_api_v2;
 
 //===--------------------------------------------------------------------===//
@@ -2177,6 +2190,12 @@ inline duckdb_ext_api_v2 CreateAPIv2(void) {
 	result.duckdb_v2_query_metrics_node_get_metric_value = duckdb_v2_query_metrics_node_get_metric_value;
 	result.duckdb_v2_query_metrics_node_get_name = duckdb_v2_query_metrics_node_get_name;
 	result.duckdb_v2_statement_add_collection = duckdb_v2_statement_add_collection;
+	result.duckdb_v2_context_allocate_memory = duckdb_v2_context_allocate_memory;
+	result.duckdb_v2_instance_allocate_memory = duckdb_v2_instance_allocate_memory;
+	result.duckdb_v2_memory_buffer_destroy = duckdb_v2_memory_buffer_destroy;
+	result.duckdb_v2_memory_buffer_get_data = duckdb_v2_memory_buffer_get_data;
+	result.duckdb_v2_memory_buffer_get_size = duckdb_v2_memory_buffer_get_size;
+	result.duckdb_v2_memory_buffer_resize = duckdb_v2_memory_buffer_resize;
 	return result;
 }
 
