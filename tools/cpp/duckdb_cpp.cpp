@@ -116,6 +116,10 @@ struct HandleTraits<Expression> {
 	using handle = duckdb_v2_expression_handle;
 };
 template <>
+struct HandleTraits<TableFilter> {
+	using handle = duckdb_v2_table_filter_handle;
+};
+template <>
 struct HandleTraits<ColumnDataCollection> {
 	using handle = duckdb_v2_column_data_collection_handle;
 };
@@ -4707,6 +4711,11 @@ auto TableFunction::SetMetricsCallback(MetricsCallback callback) & -> TableFunct
 	return *this;
 }
 
+auto TableFunction::SetFilterPushdown(bool enable) & -> TableFunction & {
+	CheckedAPICall(duckdb_v2_table_function_set_filter_pushdown, handle(), enable);
+	return *this;
+}
+
 auto TableFunction::PrepareRegistration() -> void {
 	// The callback table rides the C user_data slot so the trampolines can find
 	// it; the user's own data (SetUserData, moved out here) rides inside it.
@@ -4795,6 +4804,20 @@ auto TableFunction::InitGlobalInput::GetColumnIndex(idx_t index) const -> idx_t 
 	return column_index;
 }
 
+auto TableFunction::InitGlobalInput::GetFilterCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter_count,
+	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), &count);
+	return count;
+}
+
+auto TableFunction::InitGlobalInput::GetFilter(idx_t index) const -> TableFilter {
+	duckdb_v2_table_filter_handle filter = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter,
+	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &filter);
+	return detail::HandleFactory::Make<TableFilter>(static_cast<void *>(filter));
+}
+
 void TableFunction::InitLocalInput::SetLocalStateInternal(void *data, void (*destructor)(void *)) {
 	duckdb_v2_opaque opaque {data, destructor, nullptr};
 	CheckedAPICall(duckdb_v2_table_function_init_local_set_local_state,
@@ -4832,6 +4855,20 @@ auto TableFunction::InitLocalInput::GetColumnCount() const -> idx_t {
 	CheckedAPICall(duckdb_v2_table_function_init_local_get_column_count,
 	               static_cast<duckdb_v2_table_function_init_local_info_handle>(args), &count);
 	return count;
+}
+
+auto TableFunction::InitLocalInput::GetFilterCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_table_function_init_local_get_filter_count,
+	               static_cast<duckdb_v2_table_function_init_local_info_handle>(args), &count);
+	return count;
+}
+
+auto TableFunction::InitLocalInput::GetFilter(idx_t index) const -> TableFilter {
+	duckdb_v2_table_filter_handle filter = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_init_local_get_filter,
+	               static_cast<duckdb_v2_table_function_init_local_info_handle>(args), index, &filter);
+	return detail::HandleFactory::Make<TableFilter>(static_cast<void *>(filter));
 }
 
 auto TableFunction::InitLocalInput::GetColumnIndex(idx_t index) const -> idx_t {
@@ -4887,6 +4924,11 @@ auto TableFunction::ExecInput::GetColumnCount() const -> idx_t {
 	CheckedAPICall(duckdb_v2_table_function_exec_get_column_count,
 	               static_cast<duckdb_v2_table_function_exec_info_handle>(args), &count);
 	return count;
+}
+
+auto TableFunction::ExecInput::SetFiltersApplied(bool applied) -> void {
+	CheckedAPICall(duckdb_v2_table_function_exec_set_filters_applied,
+	               static_cast<duckdb_v2_table_function_exec_info_handle>(args), applied);
 }
 
 auto TableFunction::ExecInput::GetColumnIndex(idx_t index) const -> idx_t {
@@ -5300,6 +5342,35 @@ auto TableFunction::StatsInput::GetContext() -> Context & {
 //----------------------------------------------------------------------------------------------------------------------
 
 Expression::Expression(void *impl) : detail::Handle<Expression>(impl) {
+}
+
+TableFilter::TableFilter(void *impl) : detail::Handle<TableFilter>(impl) {
+}
+
+auto TableFilter::GetColumnIndex() const -> idx_t {
+	idx_t column_index = 0;
+	CheckedAPICall(duckdb_v2_table_filter_get_column_index, handle(), &column_index);
+	return column_index;
+}
+
+auto TableFilter::IsOptional() const -> bool {
+	bool optional = false;
+	CheckedAPICall(duckdb_v2_table_filter_is_optional, handle(), &optional);
+	return optional;
+}
+
+auto TableFilter::GetExpression() const -> Expression {
+	duckdb_v2_expression_handle expression = nullptr;
+	CheckedAPICall(duckdb_v2_table_filter_get_expression, handle(), &expression);
+	return detail::HandleFactory::Make<Expression>(static_cast<void *>(expression));
+}
+
+auto TableFilter::CheckRange(const Value *min, const Value *max, bool can_have_null, bool can_have_valid) const
+    -> FilterPropagateResult {
+	auto result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
+	CheckedAPICall(duckdb_v2_table_filter_check_range, handle(), min ? min->handle() : nullptr,
+	               max ? max->handle() : nullptr, can_have_null, can_have_valid, &result);
+	return static_cast<FilterPropagateResult>(result);
 }
 
 auto Expression::GetType() const -> ExpressionType {

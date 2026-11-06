@@ -113,6 +113,7 @@ class CopyFunction;
 class Factory;
 class Extension;
 class Stats;
+class TableFilter;
 
 //----------------------------------------------------------------------------------------------------------------------
 // Internal Implementation Details
@@ -4518,6 +4519,59 @@ private:
 	explicit Expression(void *impl);
 };
 
+/// What a table filter is known to evaluate to over a block of rows, as `TableFilter::CheckRange` reports it.
+enum class FilterPropagateResult : uint8_t {
+	/// The block's statistics do not tell: some rows may pass the filter and others may not.
+	NO_PRUNING_POSSIBLE = 0,
+	/// Every row of the block passes the filter.
+	FILTER_ALWAYS_TRUE = 1,
+	/// No row of the block passes the filter, so the block can be skipped.
+	FILTER_ALWAYS_FALSE = 2,
+	/// Every row of the block passes the filter, or makes it NULL.
+	FILTER_TRUE_OR_NULL = 3,
+	/// No row of the block passes the filter - each one fails it or makes it NULL - so the block can be skipped.
+	FILTER_FALSE_OR_NULL = 4,
+};
+
+/// A filter the engine pushed into the scan of a table function that enabled `TableFunction::SetFilterPushdown`: a
+/// predicate on one of the function's columns. Obtained from `TableFunction::InitGlobalInput::GetFilter` or
+/// `TableFunction::InitLocalInput::GetFilter`. Borrowed, but valid until the scan ends, so a scan may keep it in its
+/// global or local state and consult it whenever it is about to read a block of rows.
+///
+/// Besides the filters of the query's `WHERE` clause, the engine pushes filters it derives while the query runs, e.g.
+/// from the build side of a join or the rows a top-N keeps. Those can tighten as the scan goes on.
+class TableFilter final : public detail::Handle<TableFilter> {
+	friend detail::HandleFactory;
+
+public:
+	TableFilter(TableFilter &&) noexcept = default;
+	TableFilter &operator=(TableFilter &&) noexcept = default;
+	~TableFilter() override = default;
+
+	/// The declared column (in `BindInput::AddResultColumn` order) the filter applies to.
+	auto GetColumnIndex() const -> idx_t;
+	/// Whether the engine pushed the filter only so the scan can skip data - e.g. the range of the values the build
+	/// side of a join holds - and query results do not depend on it.
+	auto IsOptional() const -> bool;
+	/// The filter as a predicate: a bound expression evaluating to `BOOLEAN`, in which the filtered column appears as
+	/// a column reference whose `Expression::GetColumnIndex` is the declared column. Filters the engine derives while
+	/// the query runs appear as calls to internal functions. Valid until the scan ends.
+	auto GetExpression() const -> Expression;
+	/// Checks the filter against the statistics of a block of rows, e.g. the minimum and maximum the metadata of a
+	/// row group or stripe records. Skip the block when the result is `FILTER_ALWAYS_FALSE` or
+	/// `FILTER_FALSE_OR_NULL`. A filter the engine derives while the query runs is checked with what it holds at the
+	/// time of the call. Thread-safe.
+	/// @param min The smallest value of the column in the block, cast to the column's type; nullptr when not known.
+	/// @param max The largest value of the column in the block, cast to the column's type; nullptr when not known.
+	/// @param can_have_null Whether the column can be NULL in the block.
+	/// @param can_have_valid Whether the column can hold a value other than NULL in the block.
+	auto CheckRange(const Value *min, const Value *max, bool can_have_null = true, bool can_have_valid = true) const
+	    -> FilterPropagateResult;
+
+private:
+	explicit TableFilter(void *impl);
+};
+
 //----------------------------------------------------------------------------------------------------------------------
 // Table Function
 //----------------------------------------------------------------------------------------------------------------------
@@ -4699,6 +4753,14 @@ public:
 	/// Lets the function report what the scan did: see `MetricsCallback`. Unstable API.
 	auto SetMetricsCallback(MetricsCallback callback) & -> TableFunction &;
 
+	/// Declares whether the engine pushes the filters of a query into the function's scan. Defaults to false. With it,
+	/// the init inputs' `GetFilter` hand out the filters on the function's columns - those of the `WHERE` clause and
+	/// those the engine derives while the query runs, e.g. from the build side of a join - and the scan can skip a
+	/// block of rows that no row of can pass with `TableFilter::CheckRange`. The scan need not apply the filters to the
+	/// rows it produces: the engine removes the rows a filter rejects after every exec callback, unless the callback
+	/// reports with `ExecInput::SetFiltersApplied` that it did so itself. Requires projection pushdown.
+	auto SetFilterPushdown(bool enable) & -> TableFunction &;
+
 private:
 	explicit TableFunction(void *impl);
 	//! Moves what the callbacks need into the C handle, right before it is registered.
@@ -4802,6 +4864,13 @@ public:
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
+		/// How many filters the engine pushed into the scan: zero unless the function enabled
+		/// `TableFunction::SetFilterPushdown` and the query filters its columns. They are combined with `AND`.
+		auto GetFilterCount() const -> idx_t;
+		/// A filter the engine pushed into the scan, valid until the scan ends.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilter(idx_t index) const -> TableFilter;
+
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
 
@@ -4858,6 +4927,12 @@ public:
 		/// Which declared column the scan's column at `index` stands for; see `InitGlobalInput::GetColumnIndex`.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
+
+		/// How many filters the engine pushed into the scan; see `InitGlobalInput::GetFilterCount`.
+		auto GetFilterCount() const -> idx_t;
+		/// A filter the engine pushed into the scan; see `InitGlobalInput::GetFilter`.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilter(idx_t index) const -> TableFilter;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
@@ -4921,6 +4996,11 @@ public:
 		/// `InitGlobalInput::GetColumnIndex`.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
+
+		/// Declares that the rows this invocation produces already satisfy every filter pushed into the scan, so the
+		/// engine does not apply them again. Applies to this invocation only. Setting it for rows a filter rejects
+		/// produces wrong query results.
+		auto SetFiltersApplied(bool applied = true) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
