@@ -3223,6 +3223,36 @@ auto Stats::SetCanHaveValid(bool value) -> void {
 	CheckedAPICall(duckdb_v2_stats_set_can_have_valid, handle(), value);
 }
 
+auto Stats::GetMin() const -> Value {
+	duckdb_v2_value_handle value = nullptr;
+	CheckedAPICall(duckdb_v2_stats_get_min, handle(), &value);
+	return detail::HandleFactory::Make<Value>(value);
+}
+
+auto Stats::GetMax() const -> Value {
+	duckdb_v2_value_handle value = nullptr;
+	CheckedAPICall(duckdb_v2_stats_get_max, handle(), &value);
+	return detail::HandleFactory::Make<Value>(value);
+}
+
+auto Stats::SetMin(const Value &value) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_min, handle(), value.handle());
+}
+
+auto Stats::SetMax(const Value &value) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_max, handle(), value.handle());
+}
+
+auto Stats::GetDistinctCount() const -> idx_t {
+	uint64_t result = 0;
+	CheckedAPICall(duckdb_v2_stats_get_distinct_count, handle(), &result);
+	return static_cast<idx_t>(result);
+}
+
+auto Stats::SetDistinctCount(idx_t count) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_distinct_count, handle(), static_cast<uint64_t>(count));
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Scalar Function
 //----------------------------------------------------------------------------------------------------------------------

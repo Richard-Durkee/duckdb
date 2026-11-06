@@ -32,6 +32,10 @@ struct StatsProbe {
 	bool arg_can_have_null = false;
 	bool arg_can_have_valid = false;
 	bool arg_write_refused = false;
+	bool arg_has_range = false;
+	int32_t arg_min = 0;
+	int32_t arg_max = 0;
+	bool arg_range_write_refused = false;
 	bool result_can_have_null = false;
 	bool result_can_have_valid = false;
 	idx_t column_index = 0;
@@ -64,6 +68,18 @@ void ProbeArg(Stats arg) {
 		arg.SetCanHaveNull(false);
 	} catch (const InvalidInputException &) {
 		stats_probe.arg_write_refused = true;
+	}
+	const auto min = arg.GetMin();
+	const auto max = arg.GetMax();
+	stats_probe.arg_has_range = !min.IsNull() && !max.IsNull();
+	if (stats_probe.arg_has_range) {
+		stats_probe.arg_min = min.Get<int32_t>();
+		stats_probe.arg_max = max.Get<int32_t>();
+		try {
+			arg.SetMin(min);
+		} catch (const InvalidInputException &) {
+			stats_probe.arg_range_write_refused = true;
+		}
 	}
 }
 
@@ -198,6 +214,110 @@ void RegisterPair(Connection &conn, const std::string &name, const StatsMode &mo
 	conn.Register(function);
 }
 
+// ---------------------------------------------------------------------------
+// cpp_stats_range(): columns n INTEGER (7 in every row), s VARCHAR ('b') and l INTEGER[] (NULL), whose stats callback
+// reports ranges that leave the data out: n in [100, 200], s in ['x', 'z']. A filter the range decides is pruned, so a
+// filter matching the data returns no rows exactly when the optimizer acted on the range.
+// ---------------------------------------------------------------------------
+
+struct RangeProbe {
+	int calls = 0;
+	int32_t n_min = 0;
+	int32_t n_max = 0;
+	std::string s_max;
+	idx_t n_distinct = 0;
+	bool inverted_refused = false;
+	bool uncastable_refused = false;
+	bool cleared_min_is_null = false;
+	bool list_min_is_null = false;
+	bool list_set_refused = false;
+};
+RangeProbe range_probe;
+
+void RangeBind(TableFunction::BindInput &input) {
+	auto &factory = input.GetContext().GetFactory();
+	input.AddResultColumn("n", factory.ParseType("INTEGER"));
+	input.AddResultColumn("s", factory.ParseType("VARCHAR"));
+	input.AddResultColumn("l", factory.ParseType("INTEGER[]"));
+}
+
+void RangeExec(TableFunction::ExecInput &input) {
+	auto &global = input.GetGlobalState<PairGlobal>();
+	const idx_t produced = global.produced < 3 ? 1 : 0;
+	global.produced += produced;
+	auto chunk = input.GetOutputChunk();
+	auto numbers = chunk.GetVector(0);
+	auto strings = chunk.GetVector(1);
+	auto lists = chunk.GetVector(2);
+	// Every vector gets the batch's row count up front: SetNull only writes rows within it. 0 ends the scan.
+	numbers.SetSize(produced);
+	strings.SetSize(produced);
+	lists.SetSize(produced);
+	for (idx_t i = 0; i < produced; i++) {
+		numbers.GetDataMutable<int32_t>()[i] = 7;
+		strings.AssignString(i, "b");
+		lists.SetNull(i);
+	}
+}
+
+template <class F>
+bool Refused(F &&f) {
+	try {
+		f();
+	} catch (const InvalidInputException &) {
+		return true;
+	}
+	return false;
+}
+
+void RangeStats(TableFunction::StatsInput &input) {
+	range_probe.calls++;
+	if (!input.GetUserData<bool>()) {
+		return;
+	}
+	auto &factory = input.GetContext().GetFactory();
+	auto stats = input.GetResultStats();
+	switch (input.GetColumnIndex()) {
+	case 0: {
+		stats.SetMin(Value::Create(factory, int32_t(100)));
+		stats.SetMax(Value::Create(factory, int32_t(200)));
+		range_probe.inverted_refused = Refused([&]() { stats.SetMin(Value::Create(factory, int32_t(300))); });
+		range_probe.uncastable_refused = Refused([&]() { stats.SetMax(Value::Create(factory, varchar_t("abc"))); });
+		// a NULL removes the minimum; a value of another type is cast
+		stats.SetMin(Value::CreateNull(factory, factory.ParseType("INTEGER")));
+		range_probe.cleared_min_is_null = stats.GetMin().IsNull();
+		stats.SetMin(Value::Create(factory, int64_t(100)));
+		range_probe.n_min = stats.GetMin().Get<int32_t>();
+		range_probe.n_max = stats.GetMax().Get<int32_t>();
+		stats.SetDistinctCount(42);
+		range_probe.n_distinct = stats.GetDistinctCount();
+		break;
+	}
+	case 1:
+		stats.SetMin(Value::Create(factory, varchar_t("x")));
+		stats.SetMax(Value::Create(factory, varchar_t("z")));
+		range_probe.s_max = std::string(stats.GetMax().Get<varchar_t>().view());
+		break;
+	case 2:
+		range_probe.list_min_is_null = stats.GetMin().IsNull();
+		range_probe.list_set_refused = Refused([&]() { stats.SetMin(Value::Create(factory, int32_t(1))); });
+		break;
+	default:
+		break;
+	}
+}
+
+void RegisterRange(Connection &conn, const std::string &name, bool report) {
+	auto function = TableFunction::Create(conn.GetFactory());
+	function.SetName(name)
+	    .SetBindCallback(RangeBind)
+	    .SetInitGlobalCallback(PairInitGlobal)
+	    .SetExecCallback(RangeExec)
+	    .SetStatsCallback(RangeStats)
+	    .SetUserData<bool>(report);
+	conn.Register(function);
+}
+
 // Tables whose column statistics the engine knows from storage: "t" has no NULLs, "tn" has one.
 void CreateTables(Connection &conn) {
 	conn.Execute("CREATE TABLE t AS SELECT range::INTEGER AS i FROM range(3)").Drain();
@@ -234,6 +354,11 @@ TEST_CASE("Stable C++API: scalar stats callback narrows the result", "[cpp_api]"
 	REQUIRE(!stats_probe.arg_can_have_null);
 	REQUIRE(stats_probe.arg_can_have_valid);
 	REQUIRE(stats_probe.arg_write_refused);
+	// "t" holds 0, 1 and 2, which the statistics of the argument read back as its range
+	REQUIRE(stats_probe.arg_has_range);
+	REQUIRE(stats_probe.arg_min == 0);
+	REQUIRE(stats_probe.arg_max == 2);
+	REQUIRE(stats_probe.arg_range_write_refused);
 	REQUIRE(!stats_probe.result_can_have_null);
 
 	stats_probe = {};
@@ -292,4 +417,37 @@ TEST_CASE("Stable C++API: table stats callback narrows a column", "[cpp_api]") {
 	// Column "a" is described as unknown, so its filter is evaluated
 	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair() WHERE a IS NOT NULL") == 3);
 	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_pair_untouched() WHERE b IS NOT NULL") == 3);
+}
+
+TEST_CASE("Stable C++API: table stats callback reports column ranges", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	RegisterRange(conn, "cpp_stats_range", true);
+	RegisterRange(conn, "cpp_stats_range_untouched", false);
+
+	range_probe = {};
+	// 7 lies outside [100, 200], so the filter is pruned and no row is read
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range() WHERE n = 7") == 0);
+	REQUIRE(range_probe.calls > 0);
+	REQUIRE(range_probe.n_min == 100);
+	REQUIRE(range_probe.n_max == 200);
+	REQUIRE(range_probe.inverted_refused);
+	REQUIRE(range_probe.uncastable_refused);
+	REQUIRE(range_probe.cleared_min_is_null);
+	REQUIRE(range_probe.n_distinct == 42);
+	// the range decides the filter is always true, so it is dropped and every row is counted
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range() WHERE n BETWEEN 100 AND 200") == 3);
+
+	// 'b' lies outside ['x', 'z']
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range() WHERE s = 'b'") == 0);
+	REQUIRE(range_probe.s_max == "z");
+
+	// a LIST has no range: its minimum is unknown, and setting one fails
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range() WHERE l IS NULL") == 3);
+	REQUIRE(range_probe.list_min_is_null);
+	REQUIRE(range_probe.list_set_refused);
+
+	// without a reported range, the data decides
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range_untouched() WHERE n = 7") == 3);
+	REQUIRE(CountOf(conn, "SELECT count(*) FROM cpp_stats_range_untouched() WHERE s = 'b'") == 3);
 }

@@ -1570,6 +1570,18 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const char *name, idx_t name_length,
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_distinct_count)
+	(duckdb_v2_stats_handle stats, uint64_t *out, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_max)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_min)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_distinct_count)
+	(duckdb_v2_stats_handle stats, uint64_t value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_max)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_min)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3582,6 +3594,24 @@ typedef struct {
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_statement_add_collection duckdb_ext_api.duckdb_v2_statement_add_collection
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_get_distinct_count duckdb_ext_api.duckdb_v2_stats_get_distinct_count
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_get_max duckdb_ext_api.duckdb_v2_stats_get_max
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_get_min duckdb_ext_api.duckdb_v2_stats_get_min
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_set_distinct_count duckdb_ext_api.duckdb_v2_stats_set_distinct_count
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_set_max duckdb_ext_api.duckdb_v2_stats_set_max
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_stats_set_min duckdb_ext_api.duckdb_v2_stats_set_min
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

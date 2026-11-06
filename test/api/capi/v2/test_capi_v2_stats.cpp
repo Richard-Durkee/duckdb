@@ -25,6 +25,10 @@ struct StatsMode {
 	bool fail = false;
 	// Scalar exec only: write NULL instead of 7 into every row
 	bool write_nulls = false;
+	// Table only: report [range_min, range_max] as the range of the column
+	bool set_range = false;
+	int32_t range_min = 0;
+	int32_t range_max = 0;
 };
 
 // What the last stats callback saw.
@@ -41,6 +45,17 @@ struct StatsObserved {
 	bool result_can_have_valid = false;
 	// Table only: one bit per declared column the engine asked about
 	uint64_t columns_asked = 0;
+	// The range of the single argument, if its statistics have one, and whether setting a minimum on it failed
+	bool arg_has_range = false;
+	int32_t arg_min = 0;
+	int32_t arg_max = 0;
+	DUCKDB_V2_ERROR read_only_min_rc = DUCKDB_V2_ERROR_NONE;
+	// Table only: the range read back after setting it, and what setting an inverted or uncastable bound returned
+	int32_t result_min = 0;
+	int32_t result_max = 0;
+	DUCKDB_V2_ERROR inverted_min_rc = DUCKDB_V2_ERROR_NONE;
+	DUCKDB_V2_ERROR uncastable_max_rc = DUCKDB_V2_ERROR_NONE;
+	uint64_t result_distinct_count = 0;
 };
 
 StatsObserved g_stats_observed;
@@ -77,6 +92,60 @@ void StatsObserveArg(duckdb_v2_stats_handle arg, duckdb_v2_error_info_handle *er
 	}
 	g_stats_observed.read_only_null_rc = duckdb_v2_stats_set_can_have_null(arg, false, nullptr);
 	g_stats_observed.read_only_valid_rc = duckdb_v2_stats_set_can_have_valid(arg, false, nullptr);
+
+	duckdb_v2_value_handle min = nullptr;
+	duckdb_v2_value_handle max = nullptr;
+	bool min_is_null = true;
+	bool max_is_null = true;
+	if (duckdb_v2_stats_get_min(arg, &min, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_get_max(arg, &max, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_is_null(min, &min_is_null, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_is_null(max, &max_is_null, err) == DUCKDB_V2_ERROR_NONE && !min_is_null && !max_is_null &&
+	    duckdb_v2_value_get_int(min, &g_stats_observed.arg_min, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_get_int(max, &g_stats_observed.arg_max, err) == DUCKDB_V2_ERROR_NONE) {
+		g_stats_observed.arg_has_range = true;
+		g_stats_observed.read_only_min_rc = duckdb_v2_stats_set_min(arg, min, nullptr);
+	}
+	duckdb_v2_value_destroy(&min);
+	duckdb_v2_value_destroy(&max);
+}
+
+// Reports the range of the mode as the range of the result, and latches what it reads back as.
+void StatsApplyRange(duckdb_v2_stats_handle result, const StatsMode &mode, duckdb_v2_context_handle context,
+                     duckdb_v2_error_info_handle *err) {
+	duckdb_v2_factory_handle factory = nullptr;
+	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_value_handle min = nullptr;
+	duckdb_v2_value_handle max = nullptr;
+	duckdb_v2_value_handle inverted = nullptr;
+	duckdb_v2_value_handle uncastable = nullptr;
+	std::string_view text = "abc";
+	if (duckdb_v2_value_create_int(factory, mode.range_min, &min, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_int(factory, mode.range_max, &max, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_int(factory, mode.range_max + 1, &inverted, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_varchar(factory, text.data(), text.size(), &uncastable, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_set_min(result, min, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_set_max(result, max, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_set_distinct_count(result, 2, err) == DUCKDB_V2_ERROR_NONE) {
+		g_stats_observed.inverted_min_rc = duckdb_v2_stats_set_min(result, inverted, nullptr);
+		g_stats_observed.uncastable_max_rc = duckdb_v2_stats_set_max(result, uncastable, nullptr);
+		duckdb_v2_value_handle read_min = nullptr;
+		duckdb_v2_value_handle read_max = nullptr;
+		if (duckdb_v2_stats_get_min(result, &read_min, err) == DUCKDB_V2_ERROR_NONE &&
+		    duckdb_v2_stats_get_max(result, &read_max, err) == DUCKDB_V2_ERROR_NONE &&
+		    duckdb_v2_value_get_int(read_min, &g_stats_observed.result_min, err) == DUCKDB_V2_ERROR_NONE &&
+		    duckdb_v2_value_get_int(read_max, &g_stats_observed.result_max, err) == DUCKDB_V2_ERROR_NONE) {
+			duckdb_v2_stats_get_distinct_count(result, &g_stats_observed.result_distinct_count, err);
+		}
+		duckdb_v2_value_destroy(&read_min);
+		duckdb_v2_value_destroy(&read_max);
+	}
+	duckdb_v2_value_destroy(&min);
+	duckdb_v2_value_destroy(&max);
+	duckdb_v2_value_destroy(&inverted);
+	duckdb_v2_value_destroy(&uncastable);
 }
 
 // Runs a query producing a single BIGINT cell.
@@ -380,7 +449,7 @@ void StatsPairExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_c
 	duckdb_v2_vector_set_size(first, produced, err);
 }
 
-void StatsPairStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_context_handle,
+void StatsPairStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_context_handle context,
                       duckdb_v2_error_info_handle *err) {
 	g_stats_observed.calls++;
 	void *user_data = nullptr;
@@ -394,7 +463,12 @@ void StatsPairStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2
 	g_stats_observed.user_data = user_data;
 	g_stats_observed.columns_asked |= uint64_t(1) << column;
 	if (column == 1) {
-		StatsApply(result, *static_cast<StatsMode *>(user_data), err);
+		auto &mode = *static_cast<StatsMode *>(user_data);
+		if (mode.set_range) {
+			StatsApplyRange(result, mode, context, err);
+			return;
+		}
+		StatsApply(result, mode, err);
 	}
 }
 
@@ -445,6 +519,11 @@ TEST_CASE("V2 stats: scalar result statistics reach the optimizer", "[capi_v2][s
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM t WHERE stats_no_null(i) IS NULL") == 0);
 	REQUIRE(g_stats_observed.calls > 0);
 	REQUIRE(g_stats_observed.user_data == &no_null);
+	// "t" holds 0, 1 and 2, which the read-only statistics of the argument read back as its range
+	REQUIRE(g_stats_observed.arg_has_range);
+	REQUIRE(g_stats_observed.arg_min == 0);
+	REQUIRE(g_stats_observed.arg_max == 2);
+	REQUIRE(g_stats_observed.read_only_min_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(!g_stats_observed.result_can_have_null);
 	REQUIRE(g_stats_observed.result_can_have_valid);
 
@@ -562,6 +641,32 @@ TEST_CASE("V2 stats: table column statistics", "[capi_v2][stats]") {
 	REQUIRE(g_stats_observed.result_can_have_valid);
 }
 
+TEST_CASE("V2 stats: table column ranges", "[capi_v2][stats]") {
+	EnvFixture fx;
+
+	// Column "b" holds 7s but is reported to lie in [100, 200]
+	static StatsMode range;
+	range.set_range = true;
+	range.range_min = 100;
+	range.range_max = 200;
+	RegisterStatsPair(fx.conn, "stats_pair_range", &range);
+
+	g_stats_observed = {};
+	// The range rules out 7, so the filter is pruned and no row is read
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM stats_pair_range() WHERE b = 7") == 0);
+	REQUIRE(g_stats_observed.calls > 0);
+	REQUIRE(g_stats_observed.result_min == 100);
+	REQUIRE(g_stats_observed.result_max == 200);
+	REQUIRE(g_stats_observed.result_distinct_count == 2);
+	REQUIRE(g_stats_observed.inverted_min_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(g_stats_observed.uncastable_max_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+
+	// The range decides the filter is always true, so it is dropped and every row is counted
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM stats_pair_range() WHERE b BETWEEN 100 AND 200") == 3);
+	// Column "a" has no reported range, so the data decides
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM stats_pair_range() WHERE a = 7") == 3);
+}
+
 // ---------------------------------------------------------------------------
 // Null arguments
 // ---------------------------------------------------------------------------
@@ -572,6 +677,14 @@ TEST_CASE("V2 stats: null arguments", "[capi_v2][stats]") {
 	REQUIRE(duckdb_v2_stats_can_have_valid(nullptr, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_stats_set_can_have_null(nullptr, false, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_stats_set_can_have_valid(nullptr, false, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_stats_get_min(nullptr, &value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_get_max(nullptr, &value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_set_min(nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_set_max(nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	uint64_t count = 0;
+	REQUIRE(duckdb_v2_stats_get_distinct_count(nullptr, &count, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_set_distinct_count(nullptr, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	REQUIRE(duckdb_v2_scalar_function_set_stats_callback(nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_aggregate_function_set_stats_callback(nullptr, nullptr, nullptr) ==

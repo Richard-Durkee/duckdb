@@ -3569,7 +3569,7 @@ enum class OrderPreservation : uint8_t {
 
 /// The statistics of an expression or a column: what values it can produce. A function's stats callback reads the
 /// statistics of its arguments and narrows those of its result, and the engine uses them to simplify the query, e.g.
-/// folding `x IS NULL` to false when `x` cannot be NULL.
+/// folding `x IS NULL` to false when `x` cannot be NULL, or `x > 100` to false when `x` cannot exceed 10.
 ///
 /// Every statistic states what can occur: `true` means a kind of value may be present, `false` guarantees it is
 /// absent. The engine relies on the guarantees, so claiming less than the data holds produces wrong query results.
@@ -3596,6 +3596,31 @@ public:
 	/// true is always safe.
 	/// @throws InvalidInputException When the statistics are read-only, such as those of an argument.
 	auto SetCanHaveValid(bool value) -> void;
+
+	/// The minimum of the values described: every non-NULL value is at least this value. A NULL value of the described
+	/// type when no minimum is known, which is always the case for types without a range, e.g. nested types. A string
+	/// minimum the engine truncated reads as the nearest string it can still guarantee.
+	auto GetMin() const -> Value;
+	/// The maximum of the values described: every non-NULL value is at most this value. See `GetMin`.
+	auto GetMax() const -> Value;
+	/// Sets the minimum: a guarantee that every non-NULL value is at least `value`, which the engine relies on, e.g. to
+	/// prune a filter the range decides. A minimum below every value is always safe; a NULL value removes the minimum.
+	/// Only numeric, decimal, temporal, boolean, VARCHAR and BLOB statistics have a range.
+	/// @param value The minimum, cast to the described type.
+	/// @throws InvalidInputException When the statistics are read-only or have no range, when the value can not be
+	/// cast to the described type, or when it is greater than the maximum already set.
+	auto SetMin(const Value &value) -> void;
+	/// Sets the maximum: a guarantee that every non-NULL value is at most `value`. See `SetMin`.
+	/// @throws InvalidInputException When the statistics are read-only or have no range, when the value can not be
+	/// cast to the described type, or when it is less than the minimum already set.
+	auto SetMax(const Value &value) -> void;
+
+	/// The estimated number of distinct values described, or 0 when no estimate is known.
+	auto GetDistinctCount() const -> idx_t;
+	/// Sets the estimated number of distinct values, which the optimizer uses to plan, e.g. to order joins. Only a
+	/// hint: a wrong estimate makes a plan slower, never a result wrong. 0 removes the estimate.
+	/// @throws InvalidInputException When the statistics are read-only, such as those of an argument.
+	auto SetDistinctCount(idx_t count) -> void;
 
 private:
 	explicit Stats(void *impl);

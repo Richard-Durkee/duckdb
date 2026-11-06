@@ -4928,6 +4928,144 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_
                                                                 duckdb_v2_error_info_handle *err);
 #endif
 
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the minimum of the values described: every non-NULL value is at least this value.
+ *
+ * Receives a NULL value when no minimum is known, which is always the case for statistics of types without a range,
+ * e.g. nested types. The returned value has the type the statistics describe, is owned by the caller and must be
+ * destroyed via `duckdb_v2_value_destroy()`.
+ *
+ * For strings the engine may keep only a prefix of the minimum. The value returned is then the nearest string the
+ * engine can still guarantee, which can lie below every value described.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to read.
+ * @param value Receives the owned minimum, or a NULL value when no minimum is known.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_min(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value,
+                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the maximum of the values described: every non-NULL value is at most this value.
+ *
+ * Receives a NULL value when no maximum is known, which is always the case for statistics of types without a range,
+ * e.g. nested types. The returned value has the type the statistics describe, is owned by the caller and must be
+ * destroyed via `duckdb_v2_value_destroy()`.
+ *
+ * For strings the engine may keep only a prefix of the maximum. The value returned is then the nearest string the
+ * engine can still guarantee, which can lie above every value described.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to read.
+ * @param value Receives the owned maximum, or a NULL value when no maximum is known.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_max(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value,
+                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets the minimum of the values described: a guarantee that every non-NULL value is at least `value`.
+ *
+ * The engine relies on the guarantee: a value below the minimum produces wrong query results. A minimum below every
+ * value is always safe, and a NULL `value` removes the minimum, which is always safe too. The value is cast to the type
+ * the statistics describe. Only the statistics of numeric, decimal, temporal, boolean, VARCHAR and BLOB values have a
+ * range.
+ *
+ * Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of an argument; on statistics of a type
+ * without a range; when the value can not be cast to the type the statistics describe; and when the minimum would be
+ * greater than the maximum already set.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to modify.
+ * @param value The borrowed minimum, copied in. NULL removes the minimum.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_min(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value,
+                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets the maximum of the values described: a guarantee that every non-NULL value is at most `value`.
+ *
+ * The engine relies on the guarantee: a value above the maximum produces wrong query results. A maximum above every
+ * value is always safe, and a NULL `value` removes the maximum, which is always safe too. The value is cast to the type
+ * the statistics describe. Only the statistics of numeric, decimal, temporal, boolean, VARCHAR and BLOB values have a
+ * range.
+ *
+ * Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of an argument; on statistics of a type
+ * without a range; when the value can not be cast to the type the statistics describe; and when the maximum would be
+ * less than the minimum already set.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to modify.
+ * @param value The borrowed maximum, copied in. NULL removes the maximum.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_max(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value,
+                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the estimated number of distinct values described, or 0 when no estimate is known.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to read.
+ * @param out Receives the estimated number of distinct values, or 0 when none is known.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_distinct_count(duckdb_v2_stats_handle stats, uint64_t *out,
+                                                                duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets the estimated number of distinct values described.
+ *
+ * The optimizer uses the estimate to plan, e.g. to order joins; it is not a guarantee, so a wrong estimate makes a plan
+ * slower but never a result wrong. 0 removes the estimate. Fails with `ERROR_INPUT_INVALID` on read-only statistics,
+ * such as those of an argument.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param stats The statistics to modify.
+ * @param value The estimated number of distinct values, or 0 for none known.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_distinct_count(duckdb_v2_stats_handle stats, uint64_t value,
+                                                                duckdb_v2_error_info_handle *err);
+#endif
+
 /* --- Struct definitions for stats --- */
 
 /* ============================================================================

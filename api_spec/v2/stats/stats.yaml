@@ -9,6 +9,12 @@ module: stats
 # Every statistic states what can occur, never what does occur: `true` means a kind of value may be present, `false`
 # guarantees it is absent. The engine relies on the guarantees, so a statistic that claims less than the data holds
 # produces wrong query results.
+#
+# Beyond validity, the statistics of numeric, temporal, boolean and string values carry a range: a minimum and a maximum
+# that every non-NULL value lies within. The engine prunes and folds comparisons the range decides, e.g. `x > 100` when
+# `x` cannot exceed 10. The statistics also carry an estimate of the number of distinct values, which the optimizer
+# uses to plan joins and aggregates. Unlike the range, the estimate is only a hint: a wrong one makes a plan slower,
+# never a result wrong.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
@@ -113,6 +119,163 @@ functions:
       value:
         type: bool
         description: True if a value can be non-NULL, false if none can.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Range
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_get_min:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Returns the minimum of the values described: every non-NULL value is at least this value.
+
+      Receives a NULL value when no minimum is known, which is always the case for statistics of types without a range,
+      e.g. nested types. The returned value has the type the statistics describe, is owned by the caller and must be
+      destroyed via `[[value_destroy]]`.
+
+      For strings the engine may keep only a prefix of the minimum. The value returned is then the nearest string the
+      engine can still guarantee, which can lie below every value described.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned minimum, or a NULL value when no minimum is known.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_get_max:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Returns the maximum of the values described: every non-NULL value is at most this value.
+
+      Receives a NULL value when no maximum is known, which is always the case for statistics of types without a range,
+      e.g. nested types. The returned value has the type the statistics describe, is owned by the caller and must be
+      destroyed via `[[value_destroy]]`.
+
+      For strings the engine may keep only a prefix of the maximum. The value returned is then the nearest string the
+      engine can still guarantee, which can lie above every value described.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned maximum, or a NULL value when no maximum is known.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_min:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Sets the minimum of the values described: a guarantee that every non-NULL value is at least `value`.
+
+      The engine relies on the guarantee: a value below the minimum produces wrong query results. A minimum below every
+      value is always safe, and a NULL `value` removes the minimum, which is always safe too. The value is cast to the
+      type the statistics describe. Only the statistics of numeric, decimal, temporal, boolean, VARCHAR and BLOB values
+      have a range.
+
+      Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of an argument; on statistics of a type
+      without a range; when the value can not be cast to the type the statistics describe; and when the minimum would be
+      greater than the maximum already set.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to modify.
+      value:
+        type: value
+        description: The borrowed minimum, copied in. NULL removes the minimum.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_max:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Sets the maximum of the values described: a guarantee that every non-NULL value is at most `value`.
+
+      The engine relies on the guarantee: a value above the maximum produces wrong query results. A maximum above every
+      value is always safe, and a NULL `value` removes the maximum, which is always safe too. The value is cast to the
+      type the statistics describe. Only the statistics of numeric, decimal, temporal, boolean, VARCHAR and BLOB values
+      have a range.
+
+      Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of an argument; on statistics of a type
+      without a range; when the value can not be cast to the type the statistics describe; and when the maximum would be
+      less than the minimum already set.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to modify.
+      value:
+        type: value
+        description: The borrowed maximum, copied in. NULL removes the maximum.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Distinct count
+  #---------------------------------------------------------------------------------------------------------------------
+
+  stats_get_distinct_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Returns the estimated number of distinct values described, or 0 when no estimate is known.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      out:
+        type: u64
+        indirection: 1
+        kind: OUT
+        description: Receives the estimated number of distinct values, or 0 when none is known.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_distinct_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Sets the estimated number of distinct values described.
+
+      The optimizer uses the estimate to plan, e.g. to order joins; it is not a guarantee, so a wrong estimate makes a
+      plan slower but never a result wrong. 0 removes the estimate. Fails with `ERROR_INPUT_INVALID` on read-only
+      statistics, such as those of an argument.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to modify.
+      value:
+        type: u64
+        description: The estimated number of distinct values, or 0 for none known.
       err:
         type: error_info
         indirection: 1
