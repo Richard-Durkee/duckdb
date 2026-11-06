@@ -8,7 +8,15 @@
 #include "duckdb/function/partition_stats.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/table_filter_set.hpp"
+#include "duckdb/planner/table_filter_state.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
 namespace duckdb::capiv2 {
@@ -49,6 +57,46 @@ public:
 	}
 };
 
+//! A filter the engine pushed into the scan, as the API hands it out. Built when the scan starts, and kept in the
+//! global state until it ends: a scan may hold on to the handles it obtained in its init callbacks.
+class CV2TableFilter {
+public:
+	CV2TableFilter(ClientContext &context, ProjectionIndex scan_index_p, column_t column_index_p,
+	               const TableFilter &filter_p, LogicalType column_type_p)
+	    : context(context), scan_index(scan_index_p), column_index(column_index_p),
+	      filter(ExpressionFilter::GetExpressionFilter(filter_p, "CV2TableFilter")),
+	      column_type(std::move(column_type_p)) {
+		// the engine's filter is a predicate over a placeholder for the column - a reference to "column 0" of the
+		// column's type. Present the predicate over a reference to the declared column instead
+		ExpressionIterator::VisitExpression<BoundReferenceExpression>(
+		    *filter.expr, [&](const BoundReferenceExpression &ref) { column_type = ref.GetReturnType(); });
+		is_optional = ExpressionFilter::IsOptionalFilter(filter);
+		BoundColumnRefExpression column(column_type, ColumnBinding(TableIndex(0), ProjectionIndex(column_index)));
+		expression = filter.ToExpression(column);
+	}
+
+	//! Valid for the duration of the scan, which the filter does not outlive
+	ClientContext &context;
+	//! The position of the column among the columns the scan produces, i.e. the vector of the output chunk
+	ProjectionIndex scan_index;
+	//! The declared column the filter applies to
+	column_t column_index;
+	//! The engine's filter, owned by the scan's filter set
+	const ExpressionFilter &filter;
+	//! The type of the column, as the filter evaluates it
+	LogicalType column_type;
+	bool is_optional = false;
+	//! The filter as a predicate over a reference to the declared column
+	unique_ptr<Expression> expression;
+};
+
+static auto Convert(duckdb_v2_table_filter_handle filter) -> CV2TableFilter * {
+	return reinterpret_cast<CV2TableFilter *>(filter);
+}
+static auto Convert(CV2TableFilter *filter) -> duckdb_v2_table_filter_handle {
+	return reinterpret_cast<duckdb_v2_table_filter_handle>(filter);
+}
+
 class CV2TableGlobalState final : public GlobalTableFunctionState {
 public:
 	auto MaxThreads() const -> idx_t override {
@@ -60,6 +108,8 @@ public:
 
 	// The declared column each vector of the output chunk stands for, kept here so the exec callback can ask.
 	vector<column_t> scan_columns;
+	//! The filters pushed into the scan, which the engine applies to the rows the exec callback produces
+	vector<unique_ptr<CV2TableFilter>> filters;
 };
 
 class CV2TableLocalState final : public LocalTableFunctionState {
@@ -72,6 +122,8 @@ public:
 	//! Written into by the exec callback when the scan requests no columns, as the function produces its rows through
 	//! its first column
 	unique_ptr<DataChunk> row_chunk;
+	//! The state of each pushed filter for evaluating it on this thread, created when the first batch is filtered
+	vector<unique_ptr<TableFilterState>> filter_states;
 
 	// Requested partition columns as declared columns, fixed for the lifetime of the local state's pipeline.
 	const vector<column_t> &PartitionColumns(const OperatorPartitionInfo &partition_info,
@@ -148,6 +200,7 @@ public:
 	void *in_user_data = nullptr;
 	void *in_bind_data = nullptr;
 	const vector<column_t> *in_scan_columns = nullptr;
+	const vector<unique_ptr<CV2TableFilter>> *in_filters = nullptr;
 
 	duckdb_v2_opaque out_global_state = {};
 	idx_t out_max_threads = 1;
@@ -166,6 +219,7 @@ public:
 	void *in_bind_data = nullptr;
 	void *in_global_state = nullptr;
 	const vector<column_t> *in_scan_columns = nullptr;
+	const vector<unique_ptr<CV2TableFilter>> *in_filters = nullptr;
 
 	duckdb_v2_opaque out_local_state = {};
 };
@@ -186,6 +240,8 @@ public:
 	const vector<column_t> *in_scan_columns = nullptr;
 
 	DataChunk *output = nullptr;
+	//! Whether the exec callback reported that its rows already satisfy every pushed filter
+	bool out_filters_applied = false;
 };
 
 static auto Convert(duckdb_v2_table_function_exec_info_handle info) -> CV2TableExecInfo * {
@@ -354,6 +410,7 @@ public:
 	duckdb_v2_table_function_get_bind_info_callback_fn get_bind_info_cb = nullptr;
 	shared_ptr<CV2UserData> user_data = nullptr;
 	bool projection_pushdown = false;
+	bool filter_pushdown = false;
 
 	Identifier name;
 };
@@ -464,6 +521,35 @@ static auto CV2TableScanColumns(const CV2TableFunctionData &bind_data, const Tab
 	return columns;
 }
 
+//! The filters the engine pushed into the scan. The filter set keys them by the position of their column among the
+//! columns the scan produces, which - with projection pushdown, and without filter pruning - is also the position of
+//! the column's vector in the output chunk.
+static auto CV2TableCollectFilters(ClientContext &context, const CV2TableFunctionData &bind_data,
+                                   const TableFunctionInitInput &input) -> vector<unique_ptr<CV2TableFilter>> {
+	vector<unique_ptr<CV2TableFilter>> result;
+	if (!bind_data.info->filter_pushdown || !input.filters) {
+		return result;
+	}
+	if (input.filters->HasMultiColumnFilters()) {
+		throw InternalException("Multi-column filters cannot be pushed into a V2 C API table function");
+	}
+	if (!input.projection_ids.empty() && input.projection_ids.size() != input.column_ids.size()) {
+		throw InternalException("A V2 C API table function scan cannot leave out the columns only a filter reads");
+	}
+	for (auto &entry : *input.filters) {
+		auto scan_index = entry.GetIndex();
+		if (scan_index.GetIndex() >= input.column_ids.size() ||
+		    input.column_ids[scan_index.GetIndex()] >= bind_data.column_types.size()) {
+			throw InternalException(
+			    "A filter pushed into a V2 C API table function refers to a column it does not scan");
+		}
+		auto column_index = input.column_ids[scan_index.GetIndex()];
+		auto &column_type = bind_data.column_types[column_index];
+		result.push_back(make_uniq<CV2TableFilter>(context, scan_index, column_index, entry.Filter(), column_type));
+	}
+	return result;
+}
+
 static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &input)
     -> unique_ptr<GlobalTableFunctionState> {
 	const auto &bind_data = input.bind_data->Cast<CV2TableFunctionData>();
@@ -472,6 +558,7 @@ static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &i
 	// Always produced, even without a callback: it carries the thread count and column list the scan runs with.
 	auto result = make_uniq<CV2TableGlobalState>();
 	result->scan_columns = CV2TableScanColumns(bind_data, input);
+	result->filters = CV2TableCollectFilters(context, bind_data, input);
 	if (!info.init_global_cb) {
 		return std::move(result);
 	}
@@ -480,6 +567,7 @@ static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &i
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_scan_columns = &result->scan_columns;
+	args.in_filters = &result->filters;
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
@@ -518,7 +606,9 @@ static auto CV2TableInitLocal(ExecutionContext &context, TableFunctionInitInput 
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_scan_columns = &scan_columns;
 	if (global_state) {
-		args.in_global_state = global_state->Cast<CV2TableGlobalState>().handle.GetData();
+		auto &global = global_state->Cast<CV2TableGlobalState>();
+		args.in_global_state = global.handle.GetData();
+		args.in_filters = &global.filters;
 	}
 
 	CV2ErrorInfo err = {};
@@ -598,7 +688,8 @@ static auto CV2TableExec(ClientContext &context, TableFunctionInput &input, Data
 	}
 }
 
-static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input, DataChunk &output) -> void {
+//! Calls the exec callback once - returns whether the rows it produced already satisfy the pushed filters
+static auto CV2TableExecOnce(ClientContext &context, TableFunctionInput &input, DataChunk &output) -> bool {
 	const auto &bind_data = input.bind_data->Cast<CV2TableFunctionData>();
 	const auto &info = *bind_data.info;
 
@@ -639,9 +730,63 @@ static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input,
 	auto row_count = target.get().data[0].size();
 	if (output.ColumnCount() == 0) {
 		output.SetCardinalityUnsafe(row_count);
-		return;
+		return true;
 	}
 	output.SetChildCardinality(row_count);
+	return args.out_filters_applied;
+}
+
+//! Removes the rows of the output chunk that a pushed filter rejects, the way the engine would above the scan - returns
+//! how many remain
+static auto CV2TableApplyFilters(ClientContext &context, const CV2TableGlobalState &global_state,
+                                 CV2TableLocalState &local_state, DataChunk &output) -> idx_t {
+	auto &filters = global_state.filters;
+	auto count = output.size();
+	if (local_state.filter_states.empty()) {
+		for (auto &filter : filters) {
+			local_state.filter_states.push_back(TableFilterState::Initialize(context, filter->filter));
+		}
+	}
+	if (count > STANDARD_VECTOR_SIZE) {
+		throw InternalException("A V2 C API table function produced more rows than fit in a chunk");
+	}
+	// a fresh selection for every batch: the sliced chunk keeps referencing it after the scan moves on
+	SelectionVector sel(STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < count; i++) {
+		sel.set_index(i, i);
+	}
+	idx_t approved_count = count;
+	for (idx_t i = 0; i < filters.size() && approved_count > 0; i++) {
+		auto &vector = output.data[filters[i]->scan_index.GetIndex()];
+		ColumnSegment::FilterSelection(sel, vector, *local_state.filter_states[i], count, approved_count);
+	}
+	if (approved_count < count) {
+		output.Slice(sel, approved_count);
+	}
+	return approved_count;
+}
+
+static auto CV2TableExecBatch(ClientContext &context, TableFunctionInput &input, DataChunk &output) -> void {
+	optional_ptr<CV2TableGlobalState> global_state;
+	if (input.global_state) {
+		global_state = input.global_state->Cast<CV2TableGlobalState>();
+	}
+	if (!global_state || global_state->filters.empty()) {
+		CV2TableExecOnce(context, input, output);
+		return;
+	}
+	auto &local_state = input.local_state->Cast<CV2TableLocalState>();
+	while (true) {
+		auto filters_applied = CV2TableExecOnce(context, input, output);
+		if (output.size() == 0 || filters_applied) {
+			return;
+		}
+		if (CV2TableApplyFilters(context, *global_state, local_state, output) > 0) {
+			return;
+		}
+		// the filters rejected every row: an empty chunk would end the scan, so produce the next rows instead
+		output.Reset();
+	}
 }
 
 //! An exact estimate also pins the maximum; otherwise only the estimate is known.
@@ -881,6 +1026,16 @@ public:
 			function.statistics_extended = CV2TableStats;
 		}
 		function.projection_pushdown = info.projection_pushdown;
+		if (info.filter_pushdown) {
+			// the filters name the vectors of the output chunk that hold their columns, which needs projection pushdown
+			if (!info.projection_pushdown) {
+				throw InvalidInputException(
+				    "Filter pushdown requires projection pushdown to be enabled for the function.");
+			}
+			function.filter_pushdown = true;
+			// the scan produces every column it reads, also the ones only a filter reads
+			function.filter_prune = false;
+		}
 		if (info.get_bind_info_cb) {
 			function.get_bind_info = CV2TableGetBindInfo;
 		}
@@ -1901,5 +2056,140 @@ DUCKDB_V2_ERROR duckdb_v2_multi_file_function_destroy(duckdb_v2_multi_file_funct
 			delete Convert(*function);
 			*function = nullptr;
 		}
+	});
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Table Filters
+//----------------------------------------------------------------------------------------------------------------------
+
+static_assert(static_cast<int>(duckdb::FilterPropagateResult::NO_PRUNING_POSSIBLE) ==
+                  DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE,
+              "FILTER_PROPAGATE_RESULT numeric drift: NO_PRUNING_POSSIBLE");
+static_assert(static_cast<int>(duckdb::FilterPropagateResult::FILTER_ALWAYS_TRUE) ==
+                  DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_ALWAYS_TRUE,
+              "FILTER_PROPAGATE_RESULT numeric drift: FILTER_ALWAYS_TRUE");
+static_assert(static_cast<int>(duckdb::FilterPropagateResult::FILTER_ALWAYS_FALSE) ==
+                  DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_ALWAYS_FALSE,
+              "FILTER_PROPAGATE_RESULT numeric drift: FILTER_ALWAYS_FALSE");
+static_assert(static_cast<int>(duckdb::FilterPropagateResult::FILTER_TRUE_OR_NULL) ==
+                  DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_TRUE_OR_NULL,
+              "FILTER_PROPAGATE_RESULT numeric drift: FILTER_TRUE_OR_NULL");
+static_assert(static_cast<int>(duckdb::FilterPropagateResult::FILTER_FALSE_OR_NULL) ==
+                  DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_FALSE_OR_NULL,
+              "FILTER_PROPAGATE_RESULT numeric drift: FILTER_FALSE_OR_NULL");
+
+DUCKDB_V2_ERROR duckdb_v2_table_function_set_filter_pushdown(duckdb_v2_table_function_handle function, bool enable,
+                                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(function);
+	return WithErrorHandler(err, [&]() { Convert(function)->info.filter_pushdown = enable; });
+}
+
+//! The filters of the scan an init callback runs for: none when the function did not enable filter pushdown
+static auto CV2TableFiltersOf(const duckdb::vector<duckdb::unique_ptr<CV2TableFilter>> *filters)
+    -> const duckdb::vector<duckdb::unique_ptr<CV2TableFilter>> & {
+	static const duckdb::vector<duckdb::unique_ptr<CV2TableFilter>> NO_FILTERS;
+	return filters ? *filters : NO_FILTERS;
+}
+
+static auto CV2TableGetFilter(const duckdb::vector<duckdb::unique_ptr<CV2TableFilter>> *filters, idx_t index,
+                              const char *function_name) -> duckdb_v2_table_filter_handle {
+	auto &list = CV2TableFiltersOf(filters);
+	if (index >= list.size()) {
+		throw duckdb::InvalidInputException("Index out of bounds in %s", function_name);
+	}
+	return Convert(list[index].get());
+}
+
+DUCKDB_V2_ERROR
+duckdb_v2_table_function_init_global_get_filter_count(duckdb_v2_table_function_init_global_info_handle info,
+                                                      idx_t *count, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(count);
+	return WithErrorHandler(err, [&]() { *count = CV2TableFiltersOf(Convert(info)->in_filters).size(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_function_init_global_get_filter(duckdb_v2_table_function_init_global_info_handle info,
+                                                                idx_t index, duckdb_v2_table_filter_handle *filter,
+                                                                duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(filter);
+	*filter = nullptr;
+	return WithErrorHandler(err, [&]() {
+		*filter =
+		    CV2TableGetFilter(Convert(info)->in_filters, index, "duckdb_v2_table_function_init_global_get_filter");
+	});
+}
+
+DUCKDB_V2_ERROR
+duckdb_v2_table_function_init_local_get_filter_count(duckdb_v2_table_function_init_local_info_handle info, idx_t *count,
+                                                     duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(count);
+	return WithErrorHandler(err, [&]() { *count = CV2TableFiltersOf(Convert(info)->in_filters).size(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_function_init_local_get_filter(duckdb_v2_table_function_init_local_info_handle info,
+                                                               idx_t index, duckdb_v2_table_filter_handle *filter,
+                                                               duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_ARG(filter);
+	*filter = nullptr;
+	return WithErrorHandler(err, [&]() {
+		*filter = CV2TableGetFilter(Convert(info)->in_filters, index, "duckdb_v2_table_function_init_local_get_filter");
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_function_exec_set_filters_applied(duckdb_v2_table_function_exec_info_handle info,
+                                                                  bool applied, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(info);
+	return WithErrorHandler(err, [&]() { Convert(info)->out_filters_applied = applied; });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_filter_get_column_index(duckdb_v2_table_filter_handle filter, idx_t *column_index,
+                                                        duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(filter);
+	DUCKDB_CHECK_ARG(column_index);
+	return WithErrorHandler(err, [&]() { *column_index = Convert(filter)->column_index; });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_filter_is_optional(duckdb_v2_table_filter_handle filter, bool *out,
+                                                   duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(filter);
+	DUCKDB_CHECK_ARG(out);
+	return WithErrorHandler(err, [&]() { *out = Convert(filter)->is_optional; });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_filter_get_expression(duckdb_v2_table_filter_handle filter,
+                                                      duckdb_v2_expression_handle *expression,
+                                                      duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(filter);
+	DUCKDB_CHECK_ARG(expression);
+	*expression = nullptr;
+	return WithErrorHandler(err, [&]() { *expression = Convert(Convert(filter)->expression.get()); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_table_filter_check_range(duckdb_v2_table_filter_handle filter, duckdb_v2_value_handle min,
+                                                   duckdb_v2_value_handle max, bool can_have_null, bool can_have_valid,
+                                                   DUCKDB_V2_FILTER_PROPAGATE_RESULT *result,
+                                                   duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(filter);
+	DUCKDB_CHECK_ARG(result);
+	return WithErrorHandler(err, [&]() {
+		auto &table_filter = *Convert(filter);
+		auto &type = table_filter.column_type;
+		// the statistics of the block: the range of its values if both ends are known, and what it can hold
+		auto stats = duckdb::BaseStatistics::CreateUnknown(type);
+		if (!can_have_valid) {
+			stats = duckdb::BaseStatistics::CreateEmpty(type);
+		} else if (min && max && !Convert(min)->IsNull() && !Convert(max)->IsNull()) {
+			stats = duckdb::BaseStatistics::FromConstant(Convert(min)->DefaultCastAs(type));
+			stats.Merge(duckdb::BaseStatistics::FromConstant(Convert(max)->DefaultCastAs(type)));
+		}
+		stats.Set(can_have_null ? duckdb::StatsInfo::CAN_HAVE_NULL_VALUES : duckdb::StatsInfo::CANNOT_HAVE_NULL_VALUES);
+		stats.Set(can_have_valid ? duckdb::StatsInfo::CAN_HAVE_VALID_VALUES
+		                         : duckdb::StatsInfo::CANNOT_HAVE_VALID_VALUES);
+		auto propagate = table_filter.filter.CheckStatistics(table_filter.context, stats);
+		*result = static_cast<DUCKDB_V2_FILTER_PROPAGATE_RESULT>(propagate);
 	});
 }

@@ -1570,6 +1570,29 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const char *name, idx_t name_length,
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_filter_check_range)
+	(duckdb_v2_table_filter_handle filter, duckdb_v2_value_handle min, duckdb_v2_value_handle max, bool can_have_null,
+	 bool can_have_valid, DUCKDB_V2_FILTER_PROPAGATE_RESULT *result, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_filter_get_column_index)
+	(duckdb_v2_table_filter_handle filter, idx_t *column_index, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_filter_get_expression)
+	(duckdb_v2_table_filter_handle filter, duckdb_v2_expression_handle *expression, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_filter_is_optional)
+	(duckdb_v2_table_filter_handle filter, bool *out, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_exec_set_filters_applied)
+	(duckdb_v2_table_function_exec_info_handle info, bool applied, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_init_global_get_filter)
+	(duckdb_v2_table_function_init_global_info_handle info, idx_t index, duckdb_v2_table_filter_handle *filter,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_init_global_get_filter_count)
+	(duckdb_v2_table_function_init_global_info_handle info, idx_t *count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_init_local_get_filter)
+	(duckdb_v2_table_function_init_local_info_handle info, idx_t index, duckdb_v2_table_filter_handle *filter,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_init_local_get_filter_count)
+	(duckdb_v2_table_function_init_local_info_handle info, idx_t *count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_set_filter_pushdown)
+	(duckdb_v2_table_function_handle function, bool enable, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3582,6 +3605,39 @@ typedef struct {
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_statement_add_collection duckdb_ext_api.duckdb_v2_statement_add_collection
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_filter_check_range duckdb_ext_api.duckdb_v2_table_filter_check_range
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_filter_get_column_index duckdb_ext_api.duckdb_v2_table_filter_get_column_index
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_filter_get_expression duckdb_ext_api.duckdb_v2_table_filter_get_expression
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_filter_is_optional duckdb_ext_api.duckdb_v2_table_filter_is_optional
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_exec_set_filters_applied                                                              \
+	duckdb_ext_api.duckdb_v2_table_function_exec_set_filters_applied
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_init_global_get_filter duckdb_ext_api.duckdb_v2_table_function_init_global_get_filter
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_init_global_get_filter_count                                                          \
+	duckdb_ext_api.duckdb_v2_table_function_init_global_get_filter_count
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_init_local_get_filter duckdb_ext_api.duckdb_v2_table_function_init_local_get_filter
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_init_local_get_filter_count                                                           \
+	duckdb_ext_api.duckdb_v2_table_function_init_local_get_filter_count
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_table_function_set_filter_pushdown duckdb_ext_api.duckdb_v2_table_function_set_filter_pushdown
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

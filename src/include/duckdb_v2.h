@@ -12951,6 +12951,29 @@ typedef enum DUCKDB_V2_TABLE_PARTITION_INFO {
 	DUCKDB_V2_TABLE_PARTITION_INFO_MAX_ENUM = 0x7FFFFFFF,
 } DUCKDB_V2_TABLE_PARTITION_INFO;
 
+/*!
+ * What a table filter is known to evaluate to over a range of values, as `duckdb_v2_table_filter_check_range()` reports
+ * it. A scan uses it to skip a block of rows - e.g. a row group or stripe - whose statistics show that no row of it can
+ * pass the filter.
+ */
+typedef enum DUCKDB_V2_FILTER_PROPAGATE_RESULT {
+	//! The range does not tell: some rows may pass the filter and others may not.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE = 0,
+
+	//! Every row in the range passes the filter.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_ALWAYS_TRUE = 1,
+
+	//! No row in the range passes the filter, so the block can be skipped.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_ALWAYS_FALSE = 2,
+
+	//! Every row in the range passes the filter, or makes it NULL.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_TRUE_OR_NULL = 3,
+
+	//! No row in the range passes the filter - each one fails it or makes it NULL - so the block can be skipped.
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_FILTER_FALSE_OR_NULL = 4,
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT_MAX_ENUM = 0x7FFFFFFF,
+} DUCKDB_V2_FILTER_PROPAGATE_RESULT;
+
 /* --- Struct forward declarations for table --- */
 
 /* --- Types for table --- */
@@ -13079,6 +13102,21 @@ typedef struct _duckdb_v2_table_function_get_bind_info_info {
 typedef struct _duckdb_v2_multi_file_function {
 	void *internal_ptr;
 } * duckdb_v2_multi_file_function_handle;
+
+/*!
+ * A borrowed opaque handle to a filter the engine pushed into the scan of a table function that enabled
+ * `duckdb_v2_table_function_set_filter_pushdown()`: a predicate on one of the function's columns that every row the
+ * scan produces must satisfy. Obtained via `duckdb_v2_table_function_init_global_get_filter()` or
+ * `duckdb_v2_table_function_init_local_get_filter()`, and valid until the scan ends, so a scan may keep it in its
+ * global or local state and consult it whenever it is about to read a block of rows.
+ *
+ * Besides the filters of the query's `WHERE` clause, the engine pushes filters it derives while the query runs - e.g.
+ * from the rows the build side of a join holds, or from the rows a `LIMIT` with an `ORDER BY` keeps. Those can tighten
+ * as the scan goes on, which `duckdb_v2_table_filter_check_range()` takes into account.
+ */
+typedef struct _duckdb_v2_table_filter {
+	void *internal_ptr;
+} * duckdb_v2_table_filter_handle;
 
 /* --- Constants for table --- */
 
@@ -15038,6 +15076,235 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_extension_register_multi_file_function(
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_destroy(duckdb_v2_multi_file_function_handle *function);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Sets whether the engine pushes the filters of a query into the table function's scan. Defaults to false.
+ *
+ * With filter pushdown, the engine hands the scan the filters on its columns - the comparisons, `IS NULL`, `IN` and
+ * conjunctions of the query's `WHERE` clause, and the filters it derives while the query runs, e.g. from the build side
+ * of a join or the rows a top-N keeps - instead of applying them above the scan. The scan reads them in its init
+ * callbacks via `duckdb_v2_table_function_init_global_get_filter()` and can skip a block of rows that no row of can
+ * pass by checking the block's statistics with `duckdb_v2_table_filter_check_range()`.
+ *
+ * The scan does not have to apply the filters to the rows it produces: after each exec callback the engine removes the
+ * rows a filter rejects, exactly as it would above the scan. A scan that applied every filter itself can say so with
+ * `duckdb_v2_table_function_exec_set_filters_applied()`.
+ *
+ * Requires projection pushdown (`duckdb_v2_table_function_set_projection_pushdown()`): a filtered column is one the
+ * scan produces, so the engine needs to know which vector holds it. Registration fails otherwise.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param function The function to configure.
+ * @param enable Whether the function supports filter pushdown.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_filter_pushdown(duckdb_v2_table_function_handle function,
+                                                                          bool enable,
+                                                                          duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns how many filters the engine pushed into the scan.
+ *
+ * Zero unless the function enabled `duckdb_v2_table_function_set_filter_pushdown()` and the query filters its columns.
+ * The filters are combined with `AND`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The global init info handle.
+ * @param count Receives the number of filters.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_init_global_get_filter_count(
+    duckdb_v2_table_function_init_global_info_handle info, idx_t *count, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the filter at the given index.
+ *
+ * Fails if the index is out of bounds. The filter is borrowed and stays valid until the scan ends.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The global init info handle.
+ * @param index The index of the filter, below `duckdb_v2_table_function_init_global_get_filter_count()`.
+ * @param filter Receives the borrowed filter.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_init_global_get_filter(
+    duckdb_v2_table_function_init_global_info_handle info, idx_t index, duckdb_v2_table_filter_handle *filter,
+    duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns how many filters the engine pushed into the scan; see
+ * `duckdb_v2_table_function_init_global_get_filter_count()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The local init info handle.
+ * @param count Receives the number of filters.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_init_local_get_filter_count(
+    duckdb_v2_table_function_init_local_info_handle info, idx_t *count, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the filter at the given index; see `duckdb_v2_table_function_init_global_get_filter()`.
+ *
+ * Fails if the index is out of bounds. The filter is borrowed and stays valid until the scan ends.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The local init info handle.
+ * @param index The index of the filter, below `duckdb_v2_table_function_init_local_get_filter_count()`.
+ * @param filter Receives the borrowed filter.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR
+duckdb_v2_table_function_init_local_get_filter(duckdb_v2_table_function_init_local_info_handle info, idx_t index,
+                                               duckdb_v2_table_filter_handle *filter, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Declares that the rows the exec callback produced in this invocation already satisfy every pushed filter, so the
+ * engine does not apply them again.
+ *
+ * Applies to the current invocation only; by default the engine applies the filters to every batch. Setting it for a
+ * batch that holds a row some filter rejects produces wrong query results.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param info The exec info handle.
+ * @param applied Whether the batch already satisfies every pushed filter.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_exec_set_filters_applied(
+    duckdb_v2_table_function_exec_info_handle info, bool applied, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the column the filter applies to, as the index of a column declared with
+ * `duckdb_v2_table_function_bind_add_result_column()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param filter The filter to read.
+ * @param column_index Receives the index of the declared column.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_filter_get_column_index(duckdb_v2_table_filter_handle filter,
+                                                                     idx_t *column_index,
+                                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns whether the filter is optional: one the engine pushed only so the scan can skip data, such as the range of
+ * the values the build side of a join holds, and that query results do not depend on.
+ *
+ * An optional filter is as useful to `duckdb_v2_table_filter_check_range()` as any other. A scan that applies filters
+ * itself may leave an optional one out.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param filter The filter to read.
+ * @param out Receives true if the filter is optional.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_filter_is_optional(duckdb_v2_table_filter_handle filter, bool *out,
+                                                                duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Retrieves the filter as a predicate: a bound expression evaluating to `BOOLEAN`, to inspect with
+ * `duckdb_v2_expression_get_type()` and the other `expression` functions.
+ *
+ * The column the filter applies to appears in the predicate as a column reference whose
+ * `duckdb_v2_expression_column_ref_get_index()` is the index of the declared column. Filters the engine derives while
+ * the query runs appear as calls to internal functions. Borrowed; valid until the scan ends.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param filter The filter to read.
+ * @param expression Receives the borrowed predicate.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_filter_get_expression(duckdb_v2_table_filter_handle filter,
+                                                                   duckdb_v2_expression_handle *expression,
+                                                                   duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Checks the filter against the statistics of a block of rows - e.g. the minimum and maximum the metadata of a row
+ * group or stripe records - and reports what the filter is known to evaluate to over it.
+ *
+ * A scan skips the block when the result is `FILTER_PROPAGATE_RESULT_FILTER_ALWAYS_FALSE` or
+ * `FILTER_PROPAGATE_RESULT_FILTER_FALSE_OR_NULL`. A filter the engine derives while the query runs is checked with what
+ * it holds at the time of the call, so checking right before reading a block skips the most.
+ *
+ * Thread-safe: may be called from any scanning thread.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param filter The filter to check.
+ * @param min Optional. The smallest value of the column in the block, which is cast to the column's type. Null when not
+ * known.
+ * @param max Optional. The largest value of the column in the block, which is cast to the column's type. Null when not
+ * known.
+ * @param can_have_null Whether the column can be NULL in the block.
+ * @param can_have_valid Whether the column can hold a value other than NULL in the block. False for a block that is
+ * entirely NULL, for which `min` and `max` are ignored.
+ * @param result Receives what the filter is known to evaluate to over the block.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_filter_check_range(duckdb_v2_table_filter_handle filter,
+                                                                duckdb_v2_value_handle min, duckdb_v2_value_handle max,
+                                                                bool can_have_null, bool can_have_valid,
+                                                                DUCKDB_V2_FILTER_PROPAGATE_RESULT *result,
+                                                                duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for table --- */

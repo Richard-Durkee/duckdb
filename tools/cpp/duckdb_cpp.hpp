@@ -113,6 +113,7 @@ class CopyFunction;
 class Factory;
 class Extension;
 class Stats;
+class TableFilter;
 
 //----------------------------------------------------------------------------------------------------------------------
 // Internal Implementation Details
@@ -182,7 +183,7 @@ private:
 /// ownership release from inside a member of the consuming wrapper.
 struct HandleFactory {
 	template <class T, class... ARGS>
-	static auto Make(ARGS &&... args) -> T {
+	static auto Make(ARGS &&...args) -> T {
 		return T(std::forward<ARGS>(args)...);
 	}
 };
@@ -607,7 +608,7 @@ public:
 	/// the update callback via `UpdateInput::GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> CustomOption & {
+	auto SetUserData(ARGS &&...args) & -> CustomOption & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -3449,7 +3450,7 @@ public:
 	/// `GetBindData<T>`. The engine compares bind data when it compares expressions: by `operator==` when `T` has one,
 	/// by identity otherwise.
 	template <class T, class... ARGS>
-	void SetBindData(ARGS &&... args) {
+	void SetBindData(ARGS &&...args) {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetBindDataInternal(ptr, detail::SelectEquals<T>(), detail::TypedDelete<T>);
 	}
@@ -3680,7 +3681,7 @@ public:
 	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> ScalarFunction & {
+	auto SetUserData(ARGS &&...args) & -> ScalarFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -3756,7 +3757,7 @@ public:
 		/// callbacks via `GetBindData<T>`. The engine compares bind data when it compares expressions: by
 		/// `operator==` when `T` has one, by identity otherwise.
 		template <class T, class... ARGS>
-		void SetBindData(ARGS &&... args) {
+		void SetBindData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetBindDataInternal(ptr, detail::SelectEquals<T>(), detail::TypedDelete<T>);
 		}
@@ -3786,7 +3787,7 @@ public:
 		/// Constructs init data of type `T`, owned by this execution thread's function state and readable from the
 		/// exec callback via `GetInitData<T>`.
 		template <class T, class... ARGS>
-		void SetInitData(ARGS &&... args) {
+		void SetInitData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetInitDataInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -4037,7 +4038,7 @@ public:
 	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> AggregateFunction & {
+	auto SetUserData(ARGS &&...args) & -> AggregateFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -4504,6 +4505,59 @@ private:
 	explicit Expression(void *impl);
 };
 
+/// What a table filter is known to evaluate to over a block of rows, as `TableFilter::CheckRange` reports it.
+enum class FilterPropagateResult : uint8_t {
+	/// The block's statistics do not tell: some rows may pass the filter and others may not.
+	NO_PRUNING_POSSIBLE = 0,
+	/// Every row of the block passes the filter.
+	FILTER_ALWAYS_TRUE = 1,
+	/// No row of the block passes the filter, so the block can be skipped.
+	FILTER_ALWAYS_FALSE = 2,
+	/// Every row of the block passes the filter, or makes it NULL.
+	FILTER_TRUE_OR_NULL = 3,
+	/// No row of the block passes the filter - each one fails it or makes it NULL - so the block can be skipped.
+	FILTER_FALSE_OR_NULL = 4,
+};
+
+/// A filter the engine pushed into the scan of a table function that enabled `TableFunction::SetFilterPushdown`: a
+/// predicate on one of the function's columns. Obtained from `TableFunction::InitGlobalInput::GetFilter` or
+/// `TableFunction::InitLocalInput::GetFilter`. Borrowed, but valid until the scan ends, so a scan may keep it in its
+/// global or local state and consult it whenever it is about to read a block of rows.
+///
+/// Besides the filters of the query's `WHERE` clause, the engine pushes filters it derives while the query runs, e.g.
+/// from the build side of a join or the rows a top-N keeps. Those can tighten as the scan goes on.
+class TableFilter final : public detail::Handle<TableFilter> {
+	friend detail::HandleFactory;
+
+public:
+	TableFilter(TableFilter &&) noexcept = default;
+	TableFilter &operator=(TableFilter &&) noexcept = default;
+	~TableFilter() override = default;
+
+	/// The declared column (in `BindInput::AddResultColumn` order) the filter applies to.
+	auto GetColumnIndex() const -> idx_t;
+	/// Whether the engine pushed the filter only so the scan can skip data - e.g. the range of the values the build
+	/// side of a join holds - and query results do not depend on it.
+	auto IsOptional() const -> bool;
+	/// The filter as a predicate: a bound expression evaluating to `BOOLEAN`, in which the filtered column appears as
+	/// a column reference whose `Expression::GetColumnIndex` is the declared column. Filters the engine derives while
+	/// the query runs appear as calls to internal functions. Valid until the scan ends.
+	auto GetExpression() const -> Expression;
+	/// Checks the filter against the statistics of a block of rows, e.g. the minimum and maximum the metadata of a
+	/// row group or stripe records. Skip the block when the result is `FILTER_ALWAYS_FALSE` or
+	/// `FILTER_FALSE_OR_NULL`. A filter the engine derives while the query runs is checked with what it holds at the
+	/// time of the call. Thread-safe.
+	/// @param min The smallest value of the column in the block, cast to the column's type; nullptr when not known.
+	/// @param max The largest value of the column in the block, cast to the column's type; nullptr when not known.
+	/// @param can_have_null Whether the column can be NULL in the block.
+	/// @param can_have_valid Whether the column can hold a value other than NULL in the block.
+	auto CheckRange(const Value *min, const Value *max, bool can_have_null = true, bool can_have_valid = true) const
+	    -> FilterPropagateResult;
+
+private:
+	explicit TableFilter(void *impl);
+};
+
 //----------------------------------------------------------------------------------------------------------------------
 // Table Function
 //----------------------------------------------------------------------------------------------------------------------
@@ -4624,7 +4678,7 @@ public:
 	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> TableFunction & {
+	auto SetUserData(ARGS &&...args) & -> TableFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -4652,6 +4706,14 @@ public:
 	/// the init and exec inputs' `GetColumnIndex` says which declared column each vector stands for. Without it the
 	/// output chunk always holds every declared column, and the engine drops the unused ones itself.
 	auto SetProjectionPushdown(bool enable) & -> TableFunction &;
+
+	/// Declares whether the engine pushes the filters of a query into the function's scan. Defaults to false. With it,
+	/// the init inputs' `GetFilter` hand out the filters on the function's columns - those of the `WHERE` clause and
+	/// those the engine derives while the query runs, e.g. from the build side of a join - and the scan can skip a
+	/// block of rows that no row of can pass with `TableFilter::CheckRange`. The scan need not apply the filters to the
+	/// rows it produces: the engine removes the rows a filter rejects after every exec callback, unless the callback
+	/// reports with `ExecInput::SetFiltersApplied` that it did so itself. Requires projection pushdown.
+	auto SetFilterPushdown(bool enable) & -> TableFunction &;
 
 private:
 	explicit TableFunction(void *impl);
@@ -4723,7 +4785,7 @@ public:
 		/// local init, exec and progress callbacks. Since every thread sees the same object, the function must
 		/// synchronize its own access to it.
 		template <class T, class... ARGS>
-		void SetGlobalState(ARGS &&... args) {
+		void SetGlobalState(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetGlobalStateInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -4755,6 +4817,13 @@ public:
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
 
+		/// How many filters the engine pushed into the scan: zero unless the function enabled
+		/// `TableFunction::SetFilterPushdown` and the query filters its columns. They are combined with `AND`.
+		auto GetFilterCount() const -> idx_t;
+		/// A filter the engine pushed into the scan, valid until the scan ends.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilter(idx_t index) const -> TableFilter;
+
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
 
@@ -4779,7 +4848,7 @@ public:
 		/// Constructs local state of type `T`, owned by this scanning thread and readable from the exec callback via
 		/// `ExecInput::GetLocalState<T>`. No other thread observes it, so it needs no synchronization.
 		template <class T, class... ARGS>
-		void SetLocalState(ARGS &&... args) {
+		void SetLocalState(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetLocalStateInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -4811,6 +4880,12 @@ public:
 		/// Which declared column the scan's column at `index` stands for; see `InitGlobalInput::GetColumnIndex`.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
+
+		/// How many filters the engine pushed into the scan; see `InitGlobalInput::GetFilterCount`.
+		auto GetFilterCount() const -> idx_t;
+		/// A filter the engine pushed into the scan; see `InitGlobalInput::GetFilter`.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilter(idx_t index) const -> TableFilter;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
@@ -4874,6 +4949,11 @@ public:
 		/// `InitGlobalInput::GetColumnIndex`.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
+
+		/// Declares that the rows this invocation produces already satisfy every filter pushed into the scan, so the
+		/// engine does not apply them again. Applies to this invocation only. Setting it for rows a filter rejects
+		/// produces wrong query results.
+		auto SetFiltersApplied(bool applied = true) -> void;
 
 		/// The execution context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
@@ -5461,7 +5541,7 @@ public:
 	/// any callback via the inputs' `GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> CopyFunction & {
+	auto SetUserData(ARGS &&...args) & -> CopyFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -5512,7 +5592,7 @@ public:
 		/// callback via `GetBindData<T>`. The engine compares bind data when it compares statements: by `operator==`
 		/// when `T` has one, by identity otherwise.
 		template <class T, class... ARGS>
-		void SetBindData(ARGS &&... args) {
+		void SetBindData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetBindDataInternal(ptr, detail::SelectEquals<T>(), detail::TypedDelete<T>);
 		}
@@ -5621,7 +5701,7 @@ public:
 		/// finalize callbacks of that file via `GetInitData<T>`. Batches may be prepared on several threads at once, so
 		/// the batch callback must synchronize its own access to it.
 		template <class T, class... ARGS>
-		void SetInitData(ARGS &&... args) {
+		void SetInitData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetInitDataInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -5668,7 +5748,7 @@ public:
 		/// Constructs batch data of type `T`: the prepared form of the batch, handed to the flush callback via
 		/// `CopyToFlushInput::GetBatchData<T>` and freed once the batch has been flushed.
 		template <class T, class... ARGS>
-		void SetBatchData(ARGS &&... args) {
+		void SetBatchData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetBatchDataInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -5868,7 +5948,7 @@ public:
 		/// `COPY ... FROM` callback via `GetBindData<T>`. The engine compares bind data when it compares statements:
 		/// by `operator==` when `T` has one, by identity otherwise.
 		template <class T, class... ARGS>
-		void SetBindData(ARGS &&... args) {
+		void SetBindData(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetBindDataInternal(ptr, detail::SelectEquals<T>(), detail::TypedDelete<T>);
 		}
@@ -5943,7 +6023,7 @@ public:
 		/// init, exec and progress callbacks. Since every thread sees the same object, the function must synchronize
 		/// its own access to it.
 		template <class T, class... ARGS>
-		void SetGlobalState(ARGS &&... args) {
+		void SetGlobalState(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetGlobalStateInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -5991,7 +6071,7 @@ public:
 		/// Constructs local state of type `T`, owned by this reading thread and readable from the exec callback via
 		/// `CopyFromExecInput::GetLocalState<T>`. No other thread observes it, so it needs no synchronization.
 		template <class T, class... ARGS>
-		void SetLocalState(ARGS &&... args) {
+		void SetLocalState(ARGS &&...args) {
 			auto ptr = new T(std::forward<ARGS>(args)...);
 			SetLocalStateInternal(ptr, detail::TypedDelete<T>);
 		}
@@ -6201,7 +6281,7 @@ public:
 	/// exec callback via `ExecInput::GetUserData<T>`. Consumed by registration: set it again before
 	/// re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> CastFunction & {
+	auto SetUserData(ARGS &&...args) & -> CastFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -6327,7 +6407,7 @@ public:
 	/// Constructs user data of type `T`, carried by the registered pragma and freed at engine teardown; read it from
 	/// the callback via the input's `GetUserData<T>`. Consumed by registration: set it again before re-registering.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> PragmaFunction & {
+	auto SetUserData(ARGS &&...args) & -> PragmaFunction & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -6511,7 +6591,7 @@ public:
 	/// Constructs user data of type `T`, carried by the registered sink and freed at database teardown; read it
 	/// from the callbacks via `GetUserData<T>`. Consumed by registration.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> LogSink & {
+	auto SetUserData(ARGS &&...args) & -> LogSink & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
@@ -7016,7 +7096,7 @@ public:
 	/// Constructs user data of type `T`, carried by the registered scan and freed when its scope ends; read it from
 	/// the callback via `Input::GetUserData<T>`. Consumed by registration.
 	template <class T, class... ARGS>
-	auto SetUserData(ARGS &&... args) & -> ReplacementScan & {
+	auto SetUserData(ARGS &&...args) & -> ReplacementScan & {
 		auto ptr = new T(std::forward<ARGS>(args)...);
 		SetUserDataInternal(ptr, detail::TypedDelete<T>);
 		return *this;
