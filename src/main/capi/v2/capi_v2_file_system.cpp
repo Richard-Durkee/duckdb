@@ -4,6 +4,10 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/query_context.hpp"
+#include "duckdb/parallel/task_executor.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+
+#include <algorithm>
 
 namespace duckdb::capiv2 {
 
@@ -90,6 +94,113 @@ static void ApplyFileFlag(CV2FileOpenOptions &options, DUCKDB_V2_FILE_FLAG flag)
 		throw InvalidInputException("'%d' is not a file flag.", static_cast<int>(flag));
 	}
 	options.has_flags = true;
+}
+
+//! One read of the file that serves one or more of the requested ranges: the ranges whose gaps are small enough are
+//! merged into it, and it reads everything from the start of the first to the end of the last
+struct CV2MergedRead {
+	idx_t location;
+	idx_t size;
+	//! The requested ranges it serves, by index
+	vector<idx_t> ranges;
+};
+
+//! Performs one merged read: straight into the caller's buffer when it serves a single range, else into a buffer of
+//! its own that the ranges are copied out of
+static void CV2PerformMergedRead(CV2File &file, const duckdb_v2_file_read_range *ranges, const CV2MergedRead &read) {
+	auto &handle = file.Handle();
+	if (read.ranges.size() == 1) {
+		auto &range = ranges[read.ranges[0]];
+		handle.Read(file.query, range.buffer, range.size, range.location);
+		return;
+	}
+	auto services = file.query.GetServices();
+	auto &allocator = services ? services->GetBufferManager().GetBufferAllocator() : Allocator::DefaultAllocator();
+	auto buffer = allocator.Allocate(read.size);
+	handle.Read(file.query, buffer.get(), read.size, read.location);
+	for (auto range_idx : read.ranges) {
+		auto &range = ranges[range_idx];
+		memcpy(range.buffer, buffer.get() + (range.location - read.location), range.size);
+	}
+}
+
+class CV2MergedReadTask : public BaseExecutorTask {
+public:
+	CV2MergedReadTask(TaskExecutor &executor, CV2File &file, const duckdb_v2_file_read_range *ranges,
+	                  const CV2MergedRead &read)
+	    : BaseExecutorTask(executor), file(file), ranges(ranges), read(read) {
+	}
+
+	void ExecuteTask() override {
+		CV2PerformMergedRead(file, ranges, read);
+	}
+
+	string TaskType() const override {
+		return "CV2MergedReadTask";
+	}
+
+private:
+	CV2File &file;
+	const duckdb_v2_file_read_range *ranges;
+	const CV2MergedRead &read;
+};
+
+//! Reads the requested ranges: validates all of them first, merges the ones at most max_gap bytes apart, and issues
+//! the merged reads concurrently when the file allows parallel reads and a context supplies the task scheduler
+static void CV2ReadRanges(CV2File &file, const duckdb_v2_file_read_range *ranges, idx_t range_count, idx_t max_gap) {
+	auto &handle = file.Handle();
+	auto file_size = handle.GetFileSize();
+	vector<idx_t> order;
+	order.reserve(range_count);
+	for (idx_t i = 0; i < range_count; i++) {
+		auto &range = ranges[i];
+		if (range.size == 0) {
+			continue;
+		}
+		if (!range.buffer) {
+			throw InvalidInputException("Range %llu of %llu bytes has no buffer to read into.", i, range.size);
+		}
+		if (range.location > file_size || range.size > file_size - range.location) {
+			throw InvalidInputException("Range %llu, of %llu bytes at offset %llu, reaches past the end of \"%s\", "
+			                            "which has %llu bytes.",
+			                            i, range.size, range.location, handle.GetPath(), file_size);
+		}
+		order.push_back(i);
+	}
+	std::sort(order.begin(), order.end(), [&](idx_t a, idx_t b) { return ranges[a].location < ranges[b].location; });
+
+	vector<CV2MergedRead> reads;
+	for (auto range_idx : order) {
+		auto &range = ranges[range_idx];
+		auto range_end = range.location + range.size;
+		if (!reads.empty()) {
+			auto &last = reads.back();
+			auto last_end = last.location + last.size;
+			if (range.location <= last_end || range.location - last_end <= max_gap) {
+				last.size = MaxValue(last_end, range_end) - last.location;
+				last.ranges.push_back(range_idx);
+				continue;
+			}
+		}
+		reads.push_back(CV2MergedRead {range.location, range.size, {range_idx}});
+	}
+
+	auto services = file.query.GetServices();
+	if (reads.size() <= 1 || !services || !handle.GetFlags().RequireParallelAccess()) {
+		for (auto &read : reads) {
+			CV2PerformMergedRead(file, ranges, read);
+		}
+		return;
+	}
+	// The reads wait on storage rather than on the CPU, so they go to the scheduler's asynchronous I/O pool, the way
+	// the Parquet reader issues its I/O; the calling thread works on them as well
+	TaskExecutor executor(*services, TaskSchedulerType::ASYNC);
+	vector<unique_ptr<BaseExecutorTask>> tasks;
+	for (auto &read : reads) {
+		tasks.push_back(make_uniq<CV2MergedReadTask>(executor, file, ranges, read));
+	}
+	executor.ScheduleTasks(std::move(tasks));
+	executor.WorkOnTasks();
 }
 
 } // namespace duckdb::capiv2
@@ -318,6 +429,15 @@ DUCKDB_V2_ERROR duckdb_v2_file_read_at(duckdb_v2_file_handle file, void *buffer,
 		auto &f = *Convert(file);
 		f.Handle().Read(f.query, buffer, buffer_size, location);
 	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_file_read_ranges(duckdb_v2_file_handle file, const duckdb_v2_file_read_range *ranges,
+                                           idx_t range_count, idx_t max_gap, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(file);
+	if (range_count > 0) {
+		DUCKDB_CHECK_ARG(ranges);
+	}
+	return WithErrorHandler(err, [&]() { CV2ReadRanges(*Convert(file), ranges, range_count, max_gap); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_file_write_at(duckdb_v2_file_handle file, const void *buffer, idx_t buffer_size,

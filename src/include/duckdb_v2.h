@@ -2768,6 +2768,8 @@ typedef enum DUCKDB_V2_FILE_FLAG {
 
 /* --- Struct forward declarations for file system --- */
 
+typedef struct duckdb_v2_file_read_range duckdb_v2_file_read_range;
+
 /* --- Types for file system --- */
 
 /*!
@@ -3252,6 +3254,40 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_read_at(duckdb_v2_file_handle file, 
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Reads several byte ranges of a file in one call, without moving the file's position.
+ *
+ * Each range is read in full into its own buffer, as `duckdb_v2_file_read_at()` would read it, and the call fails if
+ * any range reaches past the end of the file -- checked for every range before anything is read. The ranges may be
+ * given in any order, and may be adjacent, overlap, or repeat.
+ *
+ * What makes this more than a loop over `duckdb_v2_file_read_at()` is how the ranges are read: ranges whose gap is at
+ * most `max_gap` bytes are merged into a single read of the file, which also reads the bytes in between, and the merged
+ * reads are issued concurrently when the file was opened with `FILE_FLAG_PARALLEL_ACCESS` through a connection or a
+ * context. A reader that knows up front which parts of a file it needs -- e.g. the streams of a stripe or the column
+ * chunks of a row group -- thereby turns many small reads into a few larger ones, which is what reading from remote
+ * storage is billed and paced by. A `max_gap` of zero merges only ranges that touch or overlap; a larger one trades
+ * reading unneeded bytes for fewer reads.
+ *
+ * The file must have been opened with `FILE_FLAG_READ`. The buffers must not overlap one another.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param file The file to read from.
+ * @param ranges An array of `range_count` ranges to read, each with the buffer that receives it.
+ * @param range_count The number of ranges in `ranges`. Zero reads nothing.
+ * @param max_gap The largest number of bytes between two ranges for which they are read as one.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_read_ranges(duckdb_v2_file_handle file,
+                                                        const duckdb_v2_file_read_range *ranges, idx_t range_count,
+                                                        idx_t max_gap, duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Writes at a fixed offset, without moving the file's position.
  *
  * Writes exactly `buffer_size` bytes starting at `location`, extending the file when the offset is past its end. Unlike
@@ -3384,6 +3420,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_destroy(duckdb_v2_file_handle *file)
 #endif
 
 /* --- Struct definitions for file system --- */
+
+/*!
+ * One byte range for `duckdb_v2_file_read_ranges()` to read: `size` bytes starting at the absolute offset `location`,
+ * written to `buffer`, a caller-owned buffer of at least `size` bytes.
+ */
+struct duckdb_v2_file_read_range {
+	idx_t location;
+	idx_t size;
+	void *buffer;
+};
 
 /* ============================================================================
  * MODULE: function

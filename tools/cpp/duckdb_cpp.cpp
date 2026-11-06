@@ -6957,6 +6957,15 @@ void FileHandle::ReadAt(void *buffer, idx_t size, idx_t location) {
 	CheckedAPICall(duckdb_v2_file_read_at, handle(), buffer, size, location);
 }
 
+void FileHandle::ReadRanges(const std::vector<ReadRange> &ranges, idx_t max_gap) {
+	std::vector<duckdb_v2_file_read_range> c_ranges;
+	c_ranges.reserve(ranges.size());
+	for (auto &range : ranges) {
+		c_ranges.push_back(duckdb_v2_file_read_range {range.location, range.size, range.buffer});
+	}
+	CheckedAPICall(duckdb_v2_file_read_ranges, handle(), c_ranges.data(), c_ranges.size(), max_gap);
+}
+
 void FileHandle::WriteAt(const void *buffer, idx_t size, idx_t location) {
 	CheckedAPICall(duckdb_v2_file_write_at, handle(), buffer, size, location);
 }

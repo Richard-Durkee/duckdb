@@ -6678,6 +6678,28 @@ public:
 	/// @throws Exception When the file ends before `size` bytes have been read.
 	void ReadAt(void *buffer, idx_t size, idx_t location);
 
+	/// One byte range for `ReadRanges`: `size` bytes from `location`, into `buffer`, which holds at least `size` bytes.
+	struct ReadRange {
+		idx_t location;
+		idx_t size;
+		void *buffer;
+	};
+
+	/// The gap `ReadRanges` merges ranges across by default: the one the Parquet reader merges column chunks across.
+	static constexpr idx_t DEFAULT_MAX_GAP = 16 * 1024;
+
+	/// Reads several byte ranges in one call, each in full as `ReadAt` would, leaving the file's position alone. The
+	/// ranges may come in any order, and may touch, overlap or repeat; all of them are checked against the file's size
+	/// before anything is read. Ranges at most `max_gap` bytes apart are read as one - also reading the bytes between
+	/// them - and the reads are issued concurrently when the file was opened with `FileFlags::PARALLEL_ACCESS` through
+	/// a connection or a context. For a reader that knows which parts of a file it needs up front, this turns many
+	/// small reads into a few larger ones, which is what remote storage is billed and paced by. Unstable API.
+	/// @param ranges The ranges to read. Their buffers must not overlap one another.
+	/// @param max_gap The largest gap, in bytes, across which two ranges are read as one. Zero merges only ranges that
+	/// touch or overlap.
+	/// @throws Exception When a range reaches past the end of the file, or a read fails.
+	void ReadRanges(const std::vector<ReadRange> &ranges, idx_t max_gap = DEFAULT_MAX_GAP);
+
 	/// Writes exactly `size` bytes at `location`, leaving the file's position alone and extending the file when the
 	/// offset is past its end. Safe to call from several threads at once when the file was opened with
 	/// `FileFlags::PARALLEL_ACCESS` and the threads write disjoint ranges.

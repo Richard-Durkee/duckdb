@@ -80,6 +80,56 @@ idx_t FsTell(duckdb_v2_file_handle handle) {
 	return position;
 }
 
+// Writes a file of `size` bytes whose byte i is i % 251, so that every range of it is recognizable.
+std::string FsWritePattern(duckdb_v2_file_system_handle fs, const std::string &name, idx_t size) {
+	auto path = duckdb::TestCreatePath(name);
+	std::string data(size, '\0');
+	for (idx_t i = 0; i < size; i++) {
+		data[i] = static_cast<char>(i % 251);
+	}
+	auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_WRITE, DUCKDB_V2_FILE_FLAG_CREATE_NEW});
+	FsWrite(handle, data);
+	duckdb_v2_file_destroy(&handle);
+	return path;
+}
+
+std::string Pattern(idx_t location, idx_t size) {
+	std::string result(size, '\0');
+	for (idx_t i = 0; i < size; i++) {
+		result[i] = static_cast<char>((location + i) % 251);
+	}
+	return result;
+}
+
+// Reads the given (location, size) ranges with file_read_ranges, and checks every buffer holds what the file holds
+// there.
+void RequireRangesRead(duckdb_v2_file_handle handle, const std::vector<std::pair<idx_t, idx_t>> &spans, idx_t max_gap) {
+	std::vector<std::string> buffers;
+	std::vector<duckdb_v2_file_read_range> ranges;
+	for (auto &span : spans) {
+		buffers.emplace_back(span.second, '\xff');
+	}
+	for (idx_t i = 0; i < spans.size(); i++) {
+		ranges.push_back(duckdb_v2_file_read_range {spans[i].first, spans[i].second, &buffers[i][0]});
+	}
+	REQUIRE(duckdb_v2_file_read_ranges(handle, ranges.data(), ranges.size(), max_gap, nullptr) == DUCKDB_V2_ERROR_NONE);
+	bool all_match = true;
+	for (idx_t i = 0; i < spans.size(); i++) {
+		all_match = all_match && buffers[i] == Pattern(spans[i].first, spans[i].second);
+	}
+	REQUIRE(all_match);
+}
+
+// Counts the reads the FileSystem log recorded for the file with the given name.
+idx_t CountFileReads(duckdb_v2_connection_handle conn, const std::string &name) {
+	duckdb_v2_result_handle r = nullptr;
+	auto sql = "SELECT * FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND ends_with(path, '" + name + "')";
+	REQUIRE(Query(conn, sql, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto count = DrainRowCount(r);
+	duckdb_v2_result_destroy(&r);
+	return count;
+}
+
 } // namespace
 
 TEST_CASE("V2 file system: write, read back, and seek", "[capi_v2][file_system]") {
@@ -346,6 +396,112 @@ TEST_CASE("V2 file system: positional read and write", "[capi_v2][file_system]")
 	auto reader = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_READ});
 	REQUIRE(FsReadAll(reader, 32).substr(0, 10) == "abcdXYghij");
 	duckdb_v2_file_destroy(&reader);
+}
+
+TEST_CASE("V2 file system: read ranges", "[capi_v2][file_system]") {
+	EnvFixture fx;
+	auto fs = FsOf(fx.conn);
+	auto path = FsWritePattern(fs, "v2_fs_read_ranges.bin", 100000);
+	auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_READ, DUCKDB_V2_FILE_FLAG_PARALLEL_ACCESS});
+
+	// Unsorted, adjacent, overlapping, repeated, empty, far apart, and touching both ends of the file
+	const std::vector<std::pair<idx_t, idx_t>> spans = {
+	    {50000, 100}, {10, 20}, {30, 5},    {32, 10}, {50000, 100}, {7, 0},
+	    {99990, 10},  {0, 1},   {70000, 3}, {25, 40}, {80000, 1},   {80002, 1},
+	};
+	for (idx_t max_gap : {idx_t(0), idx_t(1), idx_t(64), idx_t(16384), idx_t(1000000)}) {
+		RequireRangesRead(handle, spans, max_gap);
+	}
+	// A single range, and the whole file
+	RequireRangesRead(handle, {{123, 456}}, 0);
+	RequireRangesRead(handle, {{0, 100000}}, 0);
+	// Many small ranges, which the concurrent path reads as many separate reads
+	std::vector<std::pair<idx_t, idx_t>> many;
+	for (idx_t i = 0; i < 200; i++) {
+		many.emplace_back((i * 7919) % 99000, 1 + i % 37);
+	}
+	RequireRangesRead(handle, many, 0);
+	RequireRangesRead(handle, many, 4096);
+
+	// The file's position is left alone
+	REQUIRE(FsTell(handle) == 0);
+	// No ranges reads nothing
+	REQUIRE(duckdb_v2_file_read_ranges(handle, nullptr, 0, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_file_destroy(&handle);
+
+	// Without parallel access, or through an instance's file system, the reads are issued one after another
+	auto sequential = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_READ});
+	RequireRangesRead(sequential, spans, 0);
+	RequireRangesRead(sequential, spans, 16384);
+	duckdb_v2_file_destroy(&sequential);
+
+	duckdb_v2_file_system_handle instance_fs = nullptr;
+	REQUIRE(duckdb_v2_instance_get_file_system(fx.instance, &instance_fs, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto instance_file = FsOpen(instance_fs, path, {DUCKDB_V2_FILE_FLAG_READ, DUCKDB_V2_FILE_FLAG_PARALLEL_ACCESS});
+	RequireRangesRead(instance_file, spans, 0);
+	duckdb_v2_file_destroy(&instance_file);
+}
+
+TEST_CASE("V2 file system: read ranges refusals", "[capi_v2][file_system]") {
+	EnvFixture fx;
+	auto fs = FsOf(fx.conn);
+	auto path = FsWritePattern(fs, "v2_fs_read_ranges_refusals.bin", 1000);
+	auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_READ, DUCKDB_V2_FILE_FLAG_PARALLEL_ACCESS});
+
+	// A range past the end fails the call before anything is read: the other buffers are left untouched
+	std::string first(10, '\xff');
+	std::string past_end(20, '\xff');
+	std::vector<duckdb_v2_file_read_range> ranges = {{0, 10, &first[0]}, {990, 20, &past_end[0]}};
+	duckdb_v2_error_info_handle err = nullptr;
+	REQUIRE(duckdb_v2_file_read_ranges(handle, ranges.data(), ranges.size(), 0, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(err != nullptr);
+	duckdb_v2_error_info_destroy(&err);
+	REQUIRE(first == std::string(10, '\xff'));
+
+	// So does a range starting past the end, one whose end overflows, and one without a buffer
+	std::vector<duckdb_v2_file_read_range> beyond = {{2000, 1, &first[0]}};
+	REQUIRE(duckdb_v2_file_read_ranges(handle, beyond.data(), 1, 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::vector<duckdb_v2_file_read_range> overflow = {{10, ~idx_t(0), &first[0]}};
+	REQUIRE(duckdb_v2_file_read_ranges(handle, overflow.data(), 1, 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::vector<duckdb_v2_file_read_range> no_buffer = {{0, 10, nullptr}};
+	REQUIRE(duckdb_v2_file_read_ranges(handle, no_buffer.data(), 1, 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// An empty range needs no buffer
+	std::vector<duckdb_v2_file_read_range> empty = {{0, 0, nullptr}};
+	REQUIRE(duckdb_v2_file_read_ranges(handle, empty.data(), 1, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
+
+	// Null arguments
+	REQUIRE(duckdb_v2_file_read_ranges(nullptr, ranges.data(), 1, 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_read_ranges(handle, nullptr, 1, 0, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_file_destroy(&handle);
+}
+
+TEST_CASE("V2 file system: read ranges merges close ranges into fewer reads", "[capi_v2][file_system]") {
+	EnvFixture fx;
+	auto fs = FsOf(fx.conn);
+	auto path = FsWritePattern(fs, "v2_fs_read_ranges_log.bin", 100000);
+	ExecSQL(fx.conn, "CALL enable_logging('FileSystem', storage = 'memory')");
+
+	// Eight ranges of 100 bytes, 1000 bytes apart: the way the streams of one stripe of a columnar file lie
+	std::vector<std::pair<idx_t, idx_t>> spans;
+	for (idx_t i = 0; i < 8; i++) {
+		spans.emplace_back(10000 + i * 1100, 100);
+	}
+	auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_READ, DUCKDB_V2_FILE_FLAG_PARALLEL_ACCESS});
+	ExecSQL(fx.conn, "CALL truncate_duckdb_logs()");
+	RequireRangesRead(handle, spans, 0);
+	// Without merging, every range is a read of its own
+	REQUIRE(CountFileReads(fx.conn, "v2_fs_read_ranges_log.bin") == 8);
+
+	ExecSQL(fx.conn, "CALL truncate_duckdb_logs()");
+	RequireRangesRead(handle, spans, 1000);
+	// With gaps of up to 1000 bytes merged, the ranges are a single read
+	REQUIRE(CountFileReads(fx.conn, "v2_fs_read_ranges_log.bin") == 1);
+
+	ExecSQL(fx.conn, "CALL truncate_duckdb_logs()");
+	RequireRangesRead(handle, spans, 999);
+	// A gap one byte too wide is not merged
+	REQUIRE(CountFileReads(fx.conn, "v2_fs_read_ranges_log.bin") == 8);
+	duckdb_v2_file_destroy(&handle);
 }
 
 TEST_CASE("V2 file system: positional read and write null arguments", "[capi_v2][file_system]") {

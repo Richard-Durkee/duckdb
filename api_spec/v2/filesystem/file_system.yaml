@@ -78,6 +78,19 @@ handles:
       system it was opened through is still valid.
 
 #-----------------------------------------------------------------------------------------------------------------------
+# Structs
+#-----------------------------------------------------------------------------------------------------------------------
+structs:
+  file_read_range:
+    description: |
+      One byte range for `[[file_read_ranges]]` to read: `size` bytes starting at the absolute offset `location`,
+      written to `buffer`, a caller-owned buffer of at least `size` bytes.
+    fields:
+      - {name: location, type: idx}
+      - {name: size, type: idx}
+      - {name: buffer, type: void, pointer: 1}
+
+#-----------------------------------------------------------------------------------------------------------------------
 # Callbacks
 #-----------------------------------------------------------------------------------------------------------------------
 callbacks:
@@ -644,6 +657,46 @@ functions:
       location:
         type: idx
         description: The absolute byte offset to read from, measured from the start of the file.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_read_ranges:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Reads several byte ranges of a file in one call, without moving the file's position.
+
+      Each range is read in full into its own buffer, as `[[file_read_at]]` would read it, and the call fails if any
+      range reaches past the end of the file -- checked for every range before anything is read. The ranges may be
+      given in any order, and may be adjacent, overlap, or repeat.
+
+      What makes this more than a loop over `[[file_read_at]]` is how the ranges are read: ranges whose gap is at most
+      `max_gap` bytes are merged into a single read of the file, which also reads the bytes in between, and the merged
+      reads are issued concurrently when the file was opened with `FILE_FLAG_PARALLEL_ACCESS` through a connection or
+      a context. A reader that knows up front which parts of a file it needs -- e.g. the streams of a stripe or the
+      column chunks of a row group -- thereby turns many small reads into a few larger ones, which is what reading from
+      remote storage is billed and paced by. A `max_gap` of zero merges only ranges that touch or overlap; a larger one
+      trades reading unneeded bytes for fewer reads.
+
+      The file must have been opened with `FILE_FLAG_READ`. The buffers must not overlap one another.
+    parameters:
+      file:
+        type: file
+        description: The file to read from.
+      ranges:
+        type: file_read_range
+        indirection: 1
+        const: true
+        description: An array of `range_count` ranges to read, each with the buffer that receives it.
+      range_count:
+        type: idx
+        description: The number of ranges in `ranges`. Zero reads nothing.
+      max_gap:
+        type: idx
+        description: The largest number of bytes between two ranges for which they are read as one.
       err:
         type: error_info
         indirection: 1

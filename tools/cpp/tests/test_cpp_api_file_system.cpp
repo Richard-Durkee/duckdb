@@ -157,6 +157,45 @@ TEST_CASE("Stable C++API: positional file read and write", "[cpp_api]") {
 	REQUIRE_THROWS_AS(file.ReadAt(buffer, 4, 8), Exception);
 }
 
+TEST_CASE("Stable C++API: reading several ranges in one call", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto fs = conn.GetFileSystem();
+	auto path = duckdb::TestCreatePath("cpp_fs_read_ranges.bin");
+	std::string data(50000, '\0');
+	for (idx_t i = 0; i < data.size(); i++) {
+		data[i] = static_cast<char>(i % 251);
+	}
+	{
+		auto file = fs.OpenFile(path, {FileFlags::WRITE, FileFlags::FILE_CREATE_NEW});
+		WriteAll(file, data);
+	}
+
+	auto file = fs.OpenFile(path, {FileFlags::READ, FileFlags::PARALLEL_ACCESS});
+	// Unsorted, overlapping, adjacent and far apart
+	const std::vector<std::pair<idx_t, idx_t>> spans = {{40000, 500}, {0, 10}, {5, 10}, {15, 3}, {49990, 10}};
+	for (idx_t max_gap : {idx_t(0), FileHandle::DEFAULT_MAX_GAP, idx_t(100000)}) {
+		std::vector<std::string> buffers;
+		for (auto &span : spans) {
+			buffers.emplace_back(span.second, '\xff');
+		}
+		std::vector<FileHandle::ReadRange> ranges;
+		for (idx_t i = 0; i < spans.size(); i++) {
+			ranges.push_back({spans[i].first, spans[i].second, &buffers[i][0]});
+		}
+		file.ReadRanges(ranges, max_gap);
+		for (idx_t i = 0; i < spans.size(); i++) {
+			REQUIRE(buffers[i] == data.substr(spans[i].first, spans[i].second));
+		}
+	}
+	REQUIRE(file.Tell() == 0);
+	file.ReadRanges({});
+
+	// A range past the end is an error
+	char buffer[20];
+	REQUIRE_THROWS_AS(file.ReadRanges({{49990, 20, buffer}}), Exception);
+}
+
 TEST_CASE("Stable C++API: file open options", "[cpp_api]") {
 	auto db = Instance(":memory:");
 	auto conn = db.Connect();
