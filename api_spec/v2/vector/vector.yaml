@@ -109,6 +109,20 @@ module: vector
 #   kind aliases — varchar_t / blob_t / bit_t / bignum_t — are semantic-marker
 #   typedefs of bytes.
 
+handles:
+  dictionary:
+    description: |
+      An opaque, owned handle to a dictionary: a FLAT vector of distinct values, the entries, that DICTIONARY vectors
+      select from by index (see `[[vector_dictionary]]`). One dictionary can back the vectors of many chunks, e.g. all
+      the chunks a scan produces from a part of a file whose values are dictionary-encoded, and DuckDB recognizes it
+      as the same dictionary in each of them: it can then work on the entries once rather than once per row, e.g.
+      hash them once for a join or an aggregate, or evaluate a function on each entry once.
+
+      The entries are filled through the vector `[[dictionary_get_vector]]` hands out, before the dictionary is first
+      used, and must not change afterwards. A DICTIONARY vector shares the entries with the dictionary, so it stays
+      valid after the dictionary handle is destroyed.
+    cleanup_with: dictionary_destroy
+
 structs:
   vector_view:
     fields:
@@ -590,6 +604,131 @@ functions:
       count:
         type: idx
         description: The number of elements in the sequence.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+  # -----------------------------------------------------------------------
+  # Dictionaries
+  # -----------------------------------------------------------------------
+  dictionary_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Creates a dictionary of the given type and number of entries.
+
+      The entries are a FLAT vector of `size` rows, all valid, whose contents are undefined until written: fill them
+      through the vector `[[dictionary_get_vector]]` hands out. A row of a DICTIONARY vector is NULL when the entry it
+      selects is NULL, so a producer whose rows can be NULL sets one entry NULL and selects it for those rows. Every
+      dictionary gets an id of its own, by which DuckDB recognizes it in each vector that selects from it.
+
+      STRUCT types (and UNION, which is stored as one) are rejected with ERROR_INPUT_INVALID: DuckDB does not keep
+      such vectors as dictionaries. The dictionary is caller-owned and must be destroyed via `[[dictionary_destroy]]`.
+    role: constructor
+    belongs_to: dictionary
+    parameters:
+      type:
+        type: logical_type
+        description: The type of the entries.
+      size:
+        type: idx
+        description: The number of entries.
+      out_dictionary:
+        type: dictionary
+        indirection: 1
+        kind: OUT
+        description: Receives the new dictionary handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  dictionary_get_vector:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Returns the entries of a dictionary, a FLAT vector to write them into.
+
+      The vector holds `size` rows, as the dictionary was created with, and is written like the vector of a data chunk
+      (`[[vector_get_data_mutable]]`, `[[vector_flat_get_validity_mutable]]`, `[[vector_get_arena]]`, ...). Write the
+      entries before the dictionary is first passed to `[[vector_dictionary]]`, and leave them unchanged afterwards:
+      the vectors that select from the dictionary read them, and DuckDB may cache what it computes from them. Its
+      size must not change. The handle is borrowed and stays valid for as long as the dictionary handle does.
+    role: method
+    belongs_to: dictionary
+    parameters:
+      dictionary:
+        type: dictionary
+        description: The dictionary whose entries to return.
+      out_vector:
+        type: vector
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed vector of entries.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  dictionary_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Destroys a dictionary handle.
+
+      Null-safe: passing nullptr or a slot already set to nullptr is a no-op. On success the slot is set to nullptr.
+      The vector borrowed from the dictionary with `[[dictionary_get_vector]]` becomes invalid, but the DICTIONARY
+      vectors that select from the dictionary keep the entries alive and stay valid.
+    role: destructor
+    belongs_to: dictionary
+    parameters:
+      dictionary:
+        type: dictionary
+        indirection: 1
+        description: The dictionary to destroy.
+    return_type: ERROR
+
+  vector_dictionary:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-06" ]
+    description: |
+      Turns the vector into a DICTIONARY vector of `count` rows, each the dictionary entry its selection index names.
+
+      Row `i` of the vector reads entry `sel[i]` of the dictionary; no values are copied, and the vector shares the
+      entries with the dictionary. The selection is copied, so the array may be reused once the call returns. The
+      dictionary's type must equal the vector's, and every index must be below the dictionary's size; otherwise the
+      call returns ERROR_INPUT_INVALID and leaves the vector unchanged. Passing the same dictionary to the vectors of
+      many chunks is what lets DuckDB recognize the dictionary across them, so create one per set of distinct values
+      rather than one per chunk.
+
+      Only a top-level vector of a chunk can be turned into a DICTIONARY vector, not the child of a nested vector nor
+      the entries of a dictionary. The vector's size becomes `count`, which must not exceed the number of rows the
+      vector's chunk can hold. The
+      vector reads as `DUCKDB_V2_VECTOR_TYPE_DICTIONARY` through `[[vector_get_view]]`, and can no longer be written
+      through `[[vector_get_data_mutable]]` or resized; `[[data_chunk_clear]]` makes it a writable FLAT vector again.
+    role: method
+    belongs_to: vector
+    parameters:
+      vector:
+        type: vector
+        description: The vector to turn into a DICTIONARY vector.
+      dictionary:
+        type: dictionary
+        description: The dictionary the vector selects from.
+      sel:
+        type: u32
+        indirection: 1
+        const: true
+        description: Pointer to `count` entry indices, one per row of the vector. May be null only when `count` is 0.
+      count:
+        type: idx
+        description: Number of rows, and of indices in the sel array.
       err:
         type: error_info
         indirection: 1
