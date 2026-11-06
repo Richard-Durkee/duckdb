@@ -1,6 +1,7 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
@@ -42,6 +43,23 @@ DUCKDB_V2_VECTOR_TYPE MapVectorType(VectorType vt) {
 	default:
 		return DUCKDB_V2_VECTOR_TYPE_OTHER;
 	}
+}
+
+//! A dictionary handle: the entries DICTIONARY vectors select from. The entry is shared with every vector made from
+//! it, so those outlive the handle
+struct CV2Dictionary {
+	explicit CV2Dictionary(buffer_ptr<DictionaryEntry> entry_p) : entry(std::move(entry_p)) {
+	}
+
+	buffer_ptr<DictionaryEntry> entry;
+};
+
+auto Convert(duckdb_v2_dictionary_handle dictionary) -> CV2Dictionary * {
+	return reinterpret_cast<CV2Dictionary *>(dictionary);
+}
+
+auto Convert(CV2Dictionary *dictionary) -> duckdb_v2_dictionary_handle {
+	return reinterpret_cast<duckdb_v2_dictionary_handle>(dictionary);
 }
 
 } // anonymous namespace
@@ -239,6 +257,84 @@ DUCKDB_V2_ERROR duckdb_v2_vector_make_sequence(duckdb_v2_vector_handle vector, i
                                                idx_t count, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(vector);
 	return WithErrorHandler(err, [&]() { Convert(vector)->Sequence(start, increment, count); });
+}
+
+// ---------------------------------------------------------------------------
+// Dictionaries
+// ---------------------------------------------------------------------------
+
+DUCKDB_V2_ERROR duckdb_v2_dictionary_create(duckdb_v2_logical_type_handle type, idx_t size,
+                                            duckdb_v2_dictionary_handle *out_dictionary,
+                                            duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out_dictionary);
+	*out_dictionary = nullptr;
+	DUCKDB_CHECK_ARG(type);
+	return WithErrorHandler(err, [&]() {
+		auto type_ref = Convert(type);
+		const duckdb::LogicalType &entry_type = *type_ref;
+		if (duckdb::TypeVisitor::Contains(entry_type, duckdb::LogicalTypeId::ANY)) {
+			throw duckdb::InvalidInputException("duckdb_v2_dictionary_create: the type cannot be ANY");
+		}
+		if (entry_type.InternalType() == duckdb::PhysicalType::STRUCT) {
+			throw duckdb::InvalidInputException(
+			    "duckdb_v2_dictionary_create: STRUCT and UNION vectors cannot be dictionaries");
+		}
+		// the same entry the Parquet reader creates for a dictionary-encoded column chunk: FLAT, sized, with an id
+		auto dictionary =
+		    duckdb::make_uniq<CV2Dictionary>(duckdb::DictionaryVector::CreateReusableDictionary(entry_type, size));
+		*out_dictionary = Convert(dictionary.release());
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_dictionary_get_vector(duckdb_v2_dictionary_handle dictionary,
+                                                duckdb_v2_vector_handle *out_vector, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out_vector);
+	*out_vector = nullptr;
+	DUCKDB_CHECK_ARG(dictionary);
+	return WithErrorHandler(err, [&]() { *out_vector = Convert(&Convert(dictionary)->entry->data); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_dictionary_destroy(duckdb_v2_dictionary_handle *dictionary) {
+	return WithErrorHandler(nullptr, [&]() {
+		if (!dictionary || !*dictionary) {
+			return;
+		}
+		delete Convert(*dictionary);
+		*dictionary = nullptr;
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_vector_dictionary(duckdb_v2_vector_handle vector, duckdb_v2_dictionary_handle dictionary,
+                                            const uint32_t *sel, idx_t count, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(vector);
+	DUCKDB_CHECK_ARG(dictionary);
+	if (count > 0) {
+		DUCKDB_CHECK_ARG(sel);
+	}
+	return WithErrorHandler(err, [&]() {
+		auto *vec = Convert(vector);
+		auto &entry = Convert(dictionary)->entry;
+		if (vec == &entry->data) {
+			throw duckdb::InvalidInputException(
+			    "duckdb_v2_vector_dictionary: the entries of a dictionary cannot select from the dictionary itself");
+		}
+		if (vec->GetType() != entry->data.GetType()) {
+			throw duckdb::InvalidInputException(
+			    "duckdb_v2_vector_dictionary: the dictionary's type does not match the vector's logical type");
+		}
+		const auto dictionary_size = entry->data.size();
+		// the selection is copied: the caller may reuse its array once the call returns
+		duckdb::SelectionVector owned_sel(count);
+		for (idx_t i = 0; i < count; i++) {
+			if (sel[i] >= dictionary_size) {
+				throw duckdb::InvalidInputException("duckdb_v2_vector_dictionary: index %llu at row %llu is not below "
+				                                    "the dictionary's size of %llu",
+				                                    static_cast<idx_t>(sel[i]), i, dictionary_size);
+			}
+			owned_sel.set_index(i, sel[i]);
+		}
+		vec->Dictionary(entry, owned_sel, count);
+	});
 }
 
 // ---------------------------------------------------------------------------
