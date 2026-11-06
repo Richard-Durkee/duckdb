@@ -73,6 +73,7 @@ class Signature;
 class LogicalType;
 class Value;
 class Vector;
+class Dictionary;
 class Arena;
 class DataChunk;
 class ColumnDataCollection;
@@ -2687,6 +2688,20 @@ public:
 	/// @param count How many rows the vector then holds.
 	auto MakeSequence(int64_t start, int64_t increment, idx_t count) -> void;
 
+	/// Rewrites the vector as a DICTIONARY one: row `i` reads entry `sel[i]` of the dictionary, without copying any
+	/// value. Passing the same `Dictionary` to the vectors of many chunks lets DuckDB recognize it across them and work
+	/// on its entries once rather than per row. The result reads as `VectorType::DICTIONARY` through `GetView`, and
+	/// can no longer be written or resized until its chunk is cleared. Only for a top-level vector of a chunk.
+	/// @param dictionary The dictionary to select from. Its type must match the vector's.
+	/// @param sel One entry index per row, each below the dictionary's size. Copied, so it may be reused afterwards.
+	/// @param count How many rows the vector then holds: at most the rows its chunk can hold.
+	/// @throws InvalidInputException When the types differ or an index is out of range.
+	auto MakeDictionary(const Dictionary &dictionary, const uint32_t *sel, idx_t count) -> void;
+	/// `MakeDictionary` with one entry index per element of `sel`.
+	auto MakeDictionary(const Dictionary &dictionary, const std::vector<uint32_t> &sel) -> void {
+		MakeDictionary(dictionary, sel.data(), sel.size());
+	}
+
 	/// Reads one cell as a `Value`, whatever the layout and whatever the type -- including the types without a view
 	/// layout, such as VARIANT -- and without flattening. Costs an owned value per call, so read bulk data through
 	/// `GetView` instead.
@@ -2728,6 +2743,39 @@ private:
 	/// @internal Throws `InvalidInputException` if [start, start + count) is not writable: a CONSTANT vector has a
 	/// single element, so only index 0 may be written.
 	auto CheckWriteRange(idx_t start, idx_t count) const -> void;
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+// Dictionary
+//----------------------------------------------------------------------------------------------------------------------
+// The distinct values of a column, which the rows of DICTIONARY vectors select by index: see `Vector::MakeDictionary`.
+// A scan that reads dictionary-encoded data - e.g. a column chunk whose values a file format stores once, with an index
+// per row - hands DuckDB the dictionary rather than a copy of a value for every row, and DuckDB can then hash, compare
+// or transform each distinct value once.
+
+/// An owned dictionary: a FLAT vector of entries, filled through `GetVector` before the dictionary is first used and
+/// left unchanged afterwards. The DICTIONARY vectors made from it share its entries, so they stay valid after the
+/// dictionary is destroyed. Unstable API.
+class Dictionary final : public detail::Handle<Dictionary> {
+	friend detail::HandleFactory;
+
+public:
+	/// A dictionary of `size` entries of the given type, all valid and with undefined contents until written. A row
+	/// selecting a NULL entry is NULL, so a producer whose rows can be NULL sets one entry NULL and selects it for
+	/// them.
+	/// @throws InvalidInputException For STRUCT and UNION types, which DuckDB does not keep as dictionaries.
+	Dictionary(const LogicalType &type, idx_t size);
+	Dictionary(Dictionary &&) noexcept = default;
+	Dictionary &operator=(Dictionary &&) noexcept = default;
+	~Dictionary() override;
+
+	/// The entries, a FLAT vector of `GetSize()` rows to write them into. Borrowed, valid as long as the dictionary.
+	auto GetVector() const -> Vector;
+	/// How many entries the dictionary holds.
+	auto GetSize() const -> idx_t;
+
+private:
+	explicit Dictionary(void *impl);
 };
 
 //----------------------------------------------------------------------------------------------------------------------

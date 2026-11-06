@@ -1570,6 +1570,15 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const char *name, idx_t name_length,
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_dictionary_create)
+	(duckdb_v2_logical_type_handle type, idx_t size, duckdb_v2_dictionary_handle *out_dictionary,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR (*duckdb_v2_dictionary_destroy)(duckdb_v2_dictionary_handle *dictionary);
+	DUCKDB_V2_ERROR(*duckdb_v2_dictionary_get_vector)
+	(duckdb_v2_dictionary_handle dictionary, duckdb_v2_vector_handle *out_vector, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_vector_dictionary)
+	(duckdb_v2_vector_handle vector, duckdb_v2_dictionary_handle dictionary, const uint32_t *sel, idx_t count,
+	 duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3582,6 +3591,18 @@ typedef struct {
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_statement_add_collection duckdb_ext_api.duckdb_v2_statement_add_collection
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_dictionary_create duckdb_ext_api.duckdb_v2_dictionary_create
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_dictionary_destroy duckdb_ext_api.duckdb_v2_dictionary_destroy
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_dictionary_get_vector duckdb_ext_api.duckdb_v2_dictionary_get_vector
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_vector_dictionary duckdb_ext_api.duckdb_v2_vector_dictionary
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

@@ -112,6 +112,10 @@ struct HandleTraits<DataChunk> {
 	using handle = duckdb_v2_data_chunk_handle;
 };
 template <>
+struct HandleTraits<Dictionary> {
+	using handle = duckdb_v2_dictionary_handle;
+};
+template <>
 struct HandleTraits<Expression> {
 	using handle = duckdb_v2_expression_handle;
 };
@@ -2446,6 +2450,34 @@ auto Vector::MakeConstant(const Value &value, idx_t count) -> void {
 
 auto Vector::MakeSequence(int64_t start, int64_t increment, idx_t count) -> void {
 	CheckedAPICall(duckdb_v2_vector_make_sequence, handle(), start, increment, count);
+}
+
+auto Vector::MakeDictionary(const Dictionary &dictionary, const uint32_t *sel, idx_t count) -> void {
+	CheckedAPICall(duckdb_v2_vector_dictionary, handle(), dictionary.handle(), sel, count);
+}
+
+Dictionary::Dictionary(const LogicalType &type, idx_t size) {
+	duckdb_v2_dictionary_handle dictionary = nullptr;
+	CheckedAPICall(duckdb_v2_dictionary_create, type.handle(), size, &dictionary);
+	impl = dictionary;
+}
+
+Dictionary::Dictionary(void *impl) : detail::Handle<Dictionary>(impl) {
+}
+
+Dictionary::~Dictionary() {
+	auto _h = handle();
+	duckdb_v2_dictionary_destroy(&_h);
+}
+
+auto Dictionary::GetVector() const -> Vector {
+	duckdb_v2_vector_handle vector = nullptr;
+	CheckedAPICall(duckdb_v2_dictionary_get_vector, handle(), &vector);
+	return detail::HandleFactory::Make<Vector>(vector);
+}
+
+auto Dictionary::GetSize() const -> idx_t {
+	return GetVector().GetSize();
 }
 
 auto Vector::GetValue(idx_t row) const -> Value {
