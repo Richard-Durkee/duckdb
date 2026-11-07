@@ -17,6 +17,7 @@ CPP_TYPE_MAP = {
     "uint64": "uint64_t",
     "string": "string",
     "map": "Value",
+    "list": "Value",
 }
 
 # Preserve JSON insertion order so the generated files are deterministic.
@@ -107,7 +108,11 @@ def generate_header(data: dict) -> str:
         ]
 
     live_metrics = [to_pascal_case(f"{group}.{name}") for group, name, info in iter_metrics(data) if info.get("live")]
+    opt_in_metrics = [f'"{group}.{name}"' for group, name, info in iter_metrics(data) if info.get("opt_in")]
     lines += [
+        "",
+        '// The metrics marked "opt_in": tracked only when tracked_metrics names them, not through "*" or a prefix',
+        f"static constexpr const char *OPT_IN_METRICS[] = {{{', '.join(opt_in_metrics)}}};",
         "",
         "template <class... METRICS>",
         "struct MetricList {};",

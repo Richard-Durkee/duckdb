@@ -1,5 +1,7 @@
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
 
+#include "duckdb/main/profiler/profiling_node.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/path.hpp"
@@ -144,7 +146,8 @@ private:
 
 class CopyOutputFileRegistry {
 public:
-	explicit CopyOutputFileRegistry(const PhysicalCopyToFile &op_p) : op(op_p) {
+	CopyOutputFileRegistry(const PhysicalCopyToFile &op_p, bool register_all_files_p)
+	    : op(op_p), register_all_files(register_all_files_p) {
 	}
 
 public:
@@ -164,11 +167,21 @@ public:
 		return written_files;
 	}
 
+	vector<string> GetWrittenFilePaths() const {
+		vector<string> result;
+		for (auto &file_info : written_files) {
+			result.push_back(file_info->file_path);
+		}
+		return result;
+	}
+
 private:
 	optional_ptr<CopyToFileInfo> AddFile(const string &file_name);
 
 private:
 	const PhysicalCopyToFile &op;
+	//! Also register the files of a copy that returns only its row count, for the query.written_files metric
+	bool register_all_files;
 	vector<unique_ptr<CopyToFileInfo>> written_files;
 };
 
@@ -1932,7 +1945,7 @@ PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,
 	PendingFileState result;
 	result.output_path = std::move(output_path);
 
-	if (GetCopyFunctionBaseReturnType(op.return_type) != CopyFunctionReturnType::CHANGED_ROWS) {
+	if (register_all_files || GetCopyFunctionBaseReturnType(op.return_type) != CopyFunctionReturnType::CHANGED_ROWS) {
 		result.written_file_info = AddFile(result.output_path);
 	}
 
@@ -4492,7 +4505,9 @@ void PartitionedCopy::FinalizeFileStates(vector<FileStateHandle> files_to_finali
 CopyToFileGlobalState::CopyToFileGlobalState(const PhysicalCopyToFile &op_p, ClientContext &context_p)
     : op(op_p), context(context_p), output_lifecycle(context_p), initialized(false), prepare_global_state(nullptr),
       create_file_state_fun([&](FileStateHandle &file_state) DUCKDB_EXCLUDES(lock) { RequestFileState(file_state); }),
-      lifecycle_executor(context_p), output_files(op_p), rows_copied(0), last_file_offset(0) {
+      lifecycle_executor(context_p),
+      output_files(op_p, QueryProfiler::Get(context_p).MetricIsTracked(MetricQueryWrittenFiles::Name)), rows_copied(0),
+      last_file_offset(0) {
 }
 
 CopyToFileGlobalState::~CopyToFileGlobalState() {
@@ -5129,6 +5144,11 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!file_size_bytes.IsValid());
 		D_ASSERT(!Rotate());
 		MoveTmpFile(context, file_path);
+		// the registered files carry their final names from here on
+		annotated_lock_guard<annotated_mutex> guard(gstate.lock);
+		for (auto &file_info : gstate.output_files.GetWrittenFiles()) {
+			file_info->file_path = GetNonTmpFile(context, file_info->file_path);
+		}
 	}
 	gstate.MarkSuccessful();
 
@@ -5285,6 +5305,16 @@ public:
 	}
 };
 
+void PhysicalCopyToFile::GetMetrics(ClientContext &context, OperatorMetrics &operator_metrics) const {
+	if (!sink_state) {
+		return;
+	}
+	auto &gstate = sink_state->Cast<CopyToFileGlobalState>();
+	gstate.WaitForLifecycleTasks();
+	annotated_lock_guard<annotated_mutex> guard(gstate.lock);
+	operator_metrics.written_files = gstate.output_files.GetWrittenFilePaths();
+}
+
 unique_ptr<GlobalSourceState> PhysicalCopyToFile::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<CopyToFileGlobalSourceState>();
 }
@@ -5302,11 +5332,7 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 		    MinValue<idx_t>(source_state.offset + STANDARD_VECTOR_SIZE, gstate.output_files.WrittenFileCount());
 		idx_t count = next_end - source_state.offset;
 		for (idx_t i = 0; i < count; i++) {
-			auto &file_entry = gstate.output_files.GetWrittenFile(source_state.offset + i);
-			if (use_tmp_file) {
-				file_entry.file_path = GetNonTmpFile(context.client, file_entry.file_path);
-			}
-			ReturnStatistics(chunk, file_entry);
+			ReturnStatistics(chunk, gstate.output_files.GetWrittenFile(source_state.offset + i));
 		}
 		if (return_column_types) {
 			if (gstate.output_files.WrittenFileCount() == 0) {
@@ -5327,12 +5353,8 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST: {
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(gstate.rows_copied.load())));
 		vector<Value> file_name_list;
-		for (auto &file_info : gstate.output_files.GetWrittenFiles()) {
-			if (use_tmp_file) {
-				file_name_list.emplace_back(GetNonTmpFile(context.client, file_info->file_path));
-			} else {
-				file_name_list.emplace_back(file_info->file_path);
-			}
+		for (auto &file_path : gstate.output_files.GetWrittenFilePaths()) {
+			file_name_list.emplace_back(file_path);
 		}
 		chunk.data[1].Append(Value::LIST(LogicalType::VARCHAR, std::move(file_name_list)));
 		break;

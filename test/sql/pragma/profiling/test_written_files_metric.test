@@ -1,0 +1,181 @@
+# name: test/sql/pragma/profiling/test_written_files_metric.test
+# description: Test the query.written_files metric
+# group: [profiling]
+
+require json
+
+require parquet
+
+query III
+SELECT metric_name, metric_type, description
+FROM duckdb_available_metrics()
+WHERE metric_name = 'query.written_files';
+----
+query.written_files	list	The files written by the COPY operators of the query
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['query.written_files'];
+
+# a COPY that returns only its row count
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_plain.json';
+
+statement ok
+COPY (SELECT range AS i FROM range(10)) TO '{TEST_DIR}/written_files_plain.parquet';
+
+query I
+SELECT json_extract_string(content, '$.query.written_files[*]') = ['{TEST_DIR}/written_files_plain.parquet']
+FROM read_text('{TEST_DIR}/written_files_plain.json');
+----
+true
+
+# a partitioned COPY reports every file it wrote
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_partitioned.json';
+
+statement ok
+COPY (SELECT range % 3 AS p, range AS i FROM range(30)) TO '{TEST_DIR}/written_files_partitioned' (FORMAT parquet, PARTITION_BY (p));
+
+query I
+SELECT list_sort(json_extract_string(content, '$.query.written_files[*]')) = list_sort((SELECT list(file) FROM glob('{TEST_DIR}/written_files_partitioned/**/*.parquet')))
+FROM read_text('{TEST_DIR}/written_files_partitioned.json');
+----
+true
+
+# so does a COPY that rotates files
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_rotated.json';
+
+statement ok
+COPY (SELECT range AS i FROM range(100000)) TO '{TEST_DIR}/written_files_rotated' (FORMAT parquet, FILE_SIZE_BYTES '100kb', ROW_GROUP_SIZE 10000);
+
+query I
+SELECT len(json_extract_string(content, '$.query.written_files[*]')) = (SELECT count(*) FROM glob('{TEST_DIR}/written_files_rotated/*.parquet')) AND len(json_extract_string(content, '$.query.written_files[*]')) > 1
+FROM read_text('{TEST_DIR}/written_files_rotated.json');
+----
+true
+
+# the final name of a file written through a temporary one, also when the name starts like a temporary one
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_tmp.json';
+
+statement ok
+COPY (SELECT range AS i FROM range(10)) TO '{TEST_DIR}/tmp_written_files.parquet' (USE_TMP_FILE true, RETURN_STATS);
+
+query I
+SELECT json_extract_string(content, '$.query.written_files[*]') = ['{TEST_DIR}/tmp_written_files.parquet']
+FROM read_text('{TEST_DIR}/written_files_tmp.json');
+----
+true
+
+# RETURN_FILES reports the same files as the metric
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_returned.json';
+
+query II
+COPY (SELECT range AS i FROM range(10)) TO '{TEST_DIR}/written_files_returned.parquet' (RETURN_FILES);
+----
+10	[{TEST_DIR}/written_files_returned.parquet]
+
+query I
+SELECT json_extract_string(content, '$.query.written_files[*]') = ['{TEST_DIR}/written_files_returned.parquet']
+FROM read_text('{TEST_DIR}/written_files_returned.json');
+----
+true
+
+# a COPY that writes a file per thread
+statement ok
+SET threads = 4;
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_per_thread.json';
+
+statement ok
+COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/written_files_per_thread' (FORMAT parquet, PER_THREAD_OUTPUT);
+
+query I
+SELECT list_sort(json_extract_string(content, '$.query.written_files[*]')) = list_sort((SELECT list(file) FROM glob('{TEST_DIR}/written_files_per_thread/*.parquet')))
+FROM read_text('{TEST_DIR}/written_files_per_thread.json');
+----
+true
+
+statement ok
+RESET threads;
+
+# a query that writes no file has no list
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_none.json';
+
+statement ok
+SELECT 42;
+
+query I
+SELECT json_extract(content, '$.query.written_files') IS NULL FROM read_text('{TEST_DIR}/written_files_none.json');
+----
+true
+
+# it is opt-in: '*' and a prefix don't track it, only its name does
+statement ok
+RESET tracked_metrics;
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_default.json';
+
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/written_files_default.parquet';
+
+query I
+SELECT json_extract(content, '$.query.written_files') IS NULL AND json_extract(content, '$.query.total_time') IS NOT NULL
+FROM read_text('{TEST_DIR}/written_files_default.json');
+----
+true
+
+statement ok
+SET tracked_metrics = ['query.*'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_prefix.json';
+
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/written_files_prefix.parquet';
+
+query I
+SELECT json_extract(content, '$.query.written_files') IS NULL AND json_extract(content, '$.query.total_time') IS NOT NULL
+FROM read_text('{TEST_DIR}/written_files_prefix.json');
+----
+true
+
+# a COPY that fails reports no files
+statement ok
+SET tracked_metrics = ['query.written_files'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_failed.json';
+
+statement error
+COPY (SELECT range % 2 AS p, CASE WHEN range = 5000 THEN error('boom') ELSE range END AS i FROM range(10000)) TO '{TEST_DIR}/written_files_failed' (FORMAT parquet, PARTITION_BY (p));
+----
+boom
+
+query I
+SELECT json_extract(content, '$.query.written_files') IS NULL FROM read_text('{TEST_DIR}/written_files_failed.json');
+----
+true
+
+# the metric is only reported when it is tracked
+statement ok
+SET tracked_metrics = ['query.total_time'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/written_files_untracked.json';
+
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/written_files_untracked.parquet';
+
+query I
+SELECT json_extract(content, '$.query.written_files') IS NULL FROM read_text('{TEST_DIR}/written_files_untracked.json');
+----
+true

@@ -18,6 +18,8 @@
 
 namespace duckdb {
 
+struct OperatorMetrics;
+
 struct GlobalFileState;
 struct FileStateHandle;
 struct BoundOrderByNode;
@@ -49,6 +51,8 @@ public:
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(DataChunk &chunk, CopyToFileInfo &written_file_info);
+	//! Reports the files this copy wrote, once it has finished writing
+	void GetMetrics(ClientContext &context, OperatorMetrics &operator_metrics) const;
 	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
 	static void ReturnNoFileStatistics(DataChunk &chunk);
 	//! Sets the last column of every row in the chunk to the RETURN_COLUMN_TYPES value

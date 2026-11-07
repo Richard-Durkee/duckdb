@@ -32,6 +32,8 @@ struct OperatorMetrics {
 	idx_t bytes_scanned;
 	//! Whether the scan reports bytes_scanned at all - otherwise the metric is left out rather than reported as 0
 	bool bytes_scanned_reported;
+	//! The files a copy wrote
+	vector<string> written_files;
 
 	profiler_metrics_t GetMetrics(const GatheredMetrics &info) const;
 	void ResetMetrics() {
@@ -45,6 +47,7 @@ struct OperatorMetrics {
 		total_row_groups_to_scan = 0;
 		bytes_scanned = 0;
 		bytes_scanned_reported = false;
+		written_files.clear();
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
 	}

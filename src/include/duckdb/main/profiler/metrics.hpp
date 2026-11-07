@@ -78,6 +78,13 @@ struct MetricQueryTotalTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+struct MetricQueryWrittenFiles {
+	using METRIC_TYPE = Value;
+	static constexpr const char *Name = "query.written_files";
+	static constexpr const char *Description = "The files written by the COPY operators of the query";
+	static constexpr const char *Unit = "";
+	static constexpr const char *TypeStr = "list";
+};
 
 // System metrics
 struct MetricSystemBlockedThreadTime {
@@ -367,6 +374,9 @@ struct MetricPhysicalPlannerTotalTime {
 	static constexpr const char *Unit = "seconds";
 	static constexpr const char *TypeStr = "double";
 };
+
+// The metrics marked "opt_in": tracked only when tracked_metrics names them, not through "*" or a prefix
+static constexpr const char *OPT_IN_METRICS[] = {"query.written_files"};
 
 template <class... METRICS>
 struct MetricList {};

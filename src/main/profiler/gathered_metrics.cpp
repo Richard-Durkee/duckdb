@@ -1,5 +1,7 @@
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 
+#include "duckdb/main/profiler/metrics.hpp"
+
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
@@ -49,7 +51,19 @@ void GatheredMetrics::ResetMetrics() {
 	metrics.clear();
 }
 
+static bool IsOptInMetric(const string &key) {
+	for (auto name : OPT_IN_METRICS) {
+		if (key == name) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool GatheredMetrics::MetricIsTracked(const string &key) const {
+	if (IsOptInMetric(key)) {
+		return tracked_exact.find(key) != tracked_exact.end();
+	}
 	if (track_all) {
 		return true;
 	}

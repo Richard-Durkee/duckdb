@@ -15,7 +15,7 @@ namespace duckdb {
 
 struct MetricInfo {
 	string name;
-	string metric_type; // "double" | "uint64" | "string" | "map"
+	string metric_type; // "double" | "uint64" | "string" | "map" | "list"
 	string description;
 	string unit;
 };

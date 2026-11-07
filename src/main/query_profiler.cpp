@@ -10,6 +10,7 @@
 #include "duckdb/common/tree_renderer/text_tree_renderer.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -534,11 +535,16 @@ void OperatorMetrics::MergeInternal(const OperatorMetrics &other) {
 void OperatorMetrics::Accumulate(const OperatorMetrics &other) {
 	MergeInternal(other);
 	total_row_groups_to_scan += other.total_row_groups_to_scan;
+	written_files.insert(written_files.end(), other.written_files.begin(), other.written_files.end());
 }
 
 void OperatorMetrics::Merge(const OperatorMetrics &other) {
 	MergeInternal(other);
 	total_row_groups_to_scan = MaxValue<idx_t>(total_row_groups_to_scan, other.total_row_groups_to_scan);
+	// a copy's source runs on one thread and reports the copy's whole list, so it replaces rather than adds
+	if (!other.written_files.empty()) {
+		written_files = other.written_files;
+	}
 }
 
 void OperatorProfiler::EndOperator(optional_ptr<DataChunk> chunk) {
@@ -571,6 +577,9 @@ void OperatorProfiler::FinishSource(const PhysicalOperator &phys_op, GlobalSourc
 		const auto &table_scan = phys_op.Cast<PhysicalTableScan>();
 		auto &scan_metrics = GetOperatorMetrics(phys_op);
 		table_scan.GetMetrics(context, gstate, lstate, scan_metrics);
+	} else if (phys_op.type == PhysicalOperatorType::COPY_TO_FILE &&
+	           QueryProfiler::Get(context).MetricIsTracked(MetricQueryWrittenFiles::Name)) {
+		phys_op.Cast<PhysicalCopyToFile>().GetMetrics(context, GetOperatorMetrics(phys_op));
 	}
 }
 
@@ -860,6 +869,13 @@ static JSONMutableValue ValueToJSON(JSONWriter &writer, const Value &val) {
 			}
 		}
 		return obj;
+	}
+	if (type.id() == LogicalTypeId::LIST) {
+		auto arr = writer.CreateArray();
+		for (auto &child : ListValue::GetChildren(val)) {
+			arr.Append(ValueToJSON(writer, child));
+		}
+		return arr;
 	}
 	if (type.IsIntegral()) {
 		return writer.CreateUnsignedInteger(val.GetValue<uint64_t>());
@@ -1248,6 +1264,13 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		// left out if a scan doesn't count the bytes it scans, as the total would leave that scan out
 		if (!HasScanWithoutBytesScanned(*root)) {
 			metrics->SetMetric<MetricQueryTotalBytesScanned>(cumulative_metrics.bytes_scanned);
+		}
+		if (!cumulative_metrics.written_files.empty()) {
+			vector<Value> files;
+			for (auto &file : cumulative_metrics.written_files) {
+				files.emplace_back(file);
+			}
+			metrics->SetMetric<MetricQueryWrittenFiles>(Value::LIST(LogicalType::VARCHAR, std::move(files)));
 		}
 	}
 	query_metrics.FinalizeMetrics(*metrics);
