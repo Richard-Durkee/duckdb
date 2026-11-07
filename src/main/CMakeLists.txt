@@ -16,6 +16,7 @@ endif()
 add_library_unity(
   duckdb_main
   OBJECT
+  query_written_files.cpp
   appender.cpp
   attached_database.cpp
   client_config.cpp

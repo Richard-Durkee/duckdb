@@ -22,6 +22,7 @@ add_library_unity(
   duckdb_log_contexts.cpp
   duckdb_indexes.cpp
   duckdb_live_query_metrics.cpp
+  duckdb_last_query_written_files.cpp
   duckdb_memory.cpp
   duckdb_eviction_queues.cpp
   duckdb_metrics.cpp

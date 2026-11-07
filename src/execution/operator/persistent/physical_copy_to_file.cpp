@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
+#include "duckdb/main/query_written_files.hpp"
 
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -1932,9 +1933,8 @@ PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,
 	PendingFileState result;
 	result.output_path = std::move(output_path);
 
-	if (GetCopyFunctionBaseReturnType(op.return_type) != CopyFunctionReturnType::CHANGED_ROWS) {
-		result.written_file_info = AddFile(result.output_path);
-	}
+	// every file is registered, so the files a query wrote can be reported whatever the copy returns
+	result.written_file_info = AddFile(result.output_path);
 
 	if (result.written_file_info && !op.partition_columns.empty()) {
 		D_ASSERT(partition_values);
@@ -5283,6 +5283,7 @@ public:
 	idx_t MaxThreads() override {
 		return 1;
 	}
+	bool reported_written_files = false;
 };
 
 unique_ptr<GlobalSourceState> PhysicalCopyToFile::GetGlobalSourceState(ClientContext &context) const {
@@ -5294,6 +5295,16 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 	auto &gstate = sink_state->Cast<CopyToFileGlobalState>();
 	gstate.WaitForLifecycleTasks();
 	annotated_lock_guard<annotated_mutex> global_guard(gstate.lock);
+	auto &report_state = input.global_state.Cast<CopyToFileGlobalSourceState>();
+	if (!report_state.reported_written_files) {
+		// every file is finished here, partitioned ones too
+		report_state.reported_written_files = true;
+		vector<string> files;
+		for (auto &file_info : gstate.output_files.GetWrittenFiles()) {
+			files.push_back(use_tmp_file ? GetNonTmpFile(context.client, file_info->file_path) : file_info->file_path);
+		}
+		QueryWrittenFiles::Get(context.client).AddFiles(std::move(files));
+	}
 	auto base_return_type = GetCopyFunctionBaseReturnType(return_type);
 	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
 	if (base_return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
