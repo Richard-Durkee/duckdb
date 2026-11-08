@@ -122,7 +122,9 @@ TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[a
 	auto read_ahead = ScanReadAhead::Create(*con.context);
 	REQUIRE(read_ahead);
 	struct JobState {};
-	const idx_t job_count = 32;
+	// jobs without reads are charged the minimum I/O size, so the budget admits far more of them than it admits
+	// row groups; the count only needs to exceed what the budget can hold
+	const idx_t job_count = 4096;
 	idx_t produced = 0;
 	auto produce = [&](duckdb::vector<duckdb::unique_ptr<AsyncTask>> &) -> duckdb::unique_ptr<ScanReadAheadJob> {
 		if (produced == job_count) {

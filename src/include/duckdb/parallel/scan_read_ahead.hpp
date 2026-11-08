@@ -236,8 +236,10 @@ private:
 	idx_t ProgressEpoch() const;
 
 private:
-	//! Minimum budget charge per job, beyond its scheduled I/O a job carries scan-state overhead (decode buffers)
+	//! Admission charge TryReserveSlot takes before a job's reads are known, PushJob settles it against the bytes they read
 	static constexpr idx_t MINIMUM_JOB_IO_CHARGE = 16ULL * 1024 * 1024;
+	//! Smallest I/O size a scheduled job is charged for, covering jobs whose reads report no size
+	static constexpr idx_t MINIMUM_JOB_IO_SIZE = 1ULL * 1024 * 1024;
 	//! How long a thread yields for another thread to push a job before it waits for it
 	static constexpr idx_t PRODUCER_YIELD_MICROS = 1000;
 

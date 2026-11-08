@@ -335,9 +335,14 @@ void ScanReadAhead::PushJob(unique_ptr<ScanReadAheadJob> job, vector<unique_ptr<
 		job->io_bytes += task->GetIOSize();
 		read_tasks.push_back(make_uniq<ReadAheadIOTask>(*executor, std::move(task), completion, *this));
 	}
-	job->io_bytes = MaxValue<idx_t>(job->io_bytes, MINIMUM_JOB_IO_CHARGE);
-	// the minimum charge was taken by TryReserveSlot, charge the remainder
-	pending_io_bytes += job->io_bytes - MINIMUM_JOB_IO_CHARGE;
+	// TryReserveSlot took the admission charge before the job's reads were known; settle it against the bytes the job
+	// actually reads, so the budget admits as many small jobs as it has room for instead of one per 16 MiB
+	job->io_bytes = MaxValue<idx_t>(job->io_bytes, MINIMUM_JOB_IO_SIZE);
+	if (job->io_bytes >= MINIMUM_JOB_IO_CHARGE) {
+		pending_io_bytes += job->io_bytes - MINIMUM_JOB_IO_CHARGE;
+	} else {
+		pending_io_bytes -= MINIMUM_JOB_IO_CHARGE - job->io_bytes;
+	}
 	// schedule the reads detached on the async pool right away, logged under their own label
 	if (!read_tasks.empty()) {
 		DUCKDB_LOG(context, AsyncTaskScheduleLogType, "READ_AHEAD", read_tasks.size());
