@@ -2581,7 +2581,9 @@ struct TrackedMetricsSetting {
 	using RETURN_TYPE = vector<string>;
 	static constexpr const char *Name = "tracked_metrics";
 	static constexpr const char *Description =
-	    "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*'].";
+	    "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*']. A pattern starting "
+	    "with '-' leaves the metrics it matches out, e.g. ['*', '-operator.*'], or ['-operator.*'] alone for every "
+	    "other metric.";
 	static constexpr const char *InputType = "VARCHAR[]";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;

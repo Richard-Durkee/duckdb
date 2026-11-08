@@ -64,6 +64,22 @@ private:
 	}
 };
 
+//! A set of metric name patterns: "*", exact names, prefixes ("query.*") and other globs
+struct MetricPatterns {
+	void Add(const string &pattern);
+	bool Matches(const string &key) const;
+	bool Empty() const {
+		return !all && exact.empty() && prefixes.empty() && globs.empty();
+	}
+
+	//! "*" matches every metric, so the other patterns are not checked
+	bool all = false;
+	unordered_set<string> exact;
+	//! The prefixes of "prefix*" patterns, without the trailing '*'
+	set<string> prefixes;
+	vector<string> globs;
+};
+
 class GatheredMetrics {
 public:
 	GatheredMetrics() = default;
@@ -90,8 +106,9 @@ public:
 		if (MetricIsTracked(operator_prefix)) {
 			return true;
 		}
-		for (const auto &key : tracked_exact) {
-			if (key.size() > operator_prefix.size() && key.compare(0, operator_prefix.size(), operator_prefix) == 0) {
+		for (const auto &key : tracked.exact) {
+			if (key.size() > operator_prefix.size() && key.compare(0, operator_prefix.size(), operator_prefix) == 0 &&
+			    !excluded.Matches(key)) {
 				return true;
 			}
 		}
@@ -116,14 +133,10 @@ private:
 	void InitTrackedMetrics(const vector<string> &patterns);
 
 private:
-	//! When tracked_metrics contains "*", all metrics are enabled and pattern matching is skipped.
-	bool track_all = false;
-	//! Exact metric names from tracked_metrics globs with no wildcard characters.
-	unordered_set<string> tracked_exact;
-	//! Prefix strings from tracked_metrics patterns of the form "prefix*" (stored without the trailing '*').
-	set<string> tracked_prefixes;
-	//! Arbitrary glob patterns from tracked_metrics that don't fit the prefix category.
-	vector<string> tracked_globs;
+	//! The metrics tracked_metrics enables
+	MetricPatterns tracked;
+	//! The metrics tracked_metrics leaves out with a "-pattern", even when tracked matches them
+	MetricPatterns excluded;
 	//! Contains all enabled metrics.
 	profiler_metrics_t metrics;
 };

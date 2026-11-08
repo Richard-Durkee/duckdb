@@ -30,18 +30,53 @@ GatheredMetrics::GatheredMetrics(const vector<string> &tracked_metrics) {
 	ResetMetrics();
 }
 
+void MetricPatterns::Add(const string &pattern) {
+	if (pattern == "*") {
+		all = true;
+	} else if (!FileSystem::HasGlob(pattern)) {
+		exact.insert(pattern);
+	} else if (IsPrefixPattern(pattern)) {
+		prefixes.insert(pattern.substr(0, pattern.size() - 1));
+	} else {
+		globs.push_back(pattern);
+	}
+}
+
+bool MetricPatterns::Matches(const string &key) const {
+	if (all) {
+		return true;
+	}
+	if (exact.find(key) != exact.end()) {
+		return true;
+	}
+	// walk backwards from the largest prefix <= key
+	auto it = prefixes.upper_bound(key);
+	while (it != prefixes.begin()) {
+		--it;
+		const auto &prefix = *it;
+		if (prefix.size() <= key.size() && key.compare(0, prefix.size(), prefix) == 0) {
+			return true;
+		}
+	}
+	for (const auto &glob : globs) {
+		if (Glob(key.c_str(), key.size(), glob.c_str(), glob.size())) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void GatheredMetrics::InitTrackedMetrics(const vector<string> &patterns) {
 	for (const auto &pattern : patterns) {
-		if (pattern == "*") {
-			track_all = true;
-			return;
-		} else if (!FileSystem::HasGlob(pattern)) {
-			tracked_exact.insert(pattern);
-		} else if (IsPrefixPattern(pattern)) {
-			tracked_prefixes.insert(pattern.substr(0, pattern.size() - 1));
+		if (StringUtil::StartsWith(pattern, "-")) {
+			excluded.Add(pattern.substr(1));
 		} else {
-			tracked_globs.push_back(pattern);
+			tracked.Add(pattern);
 		}
+	}
+	// only exclusions, e.g. ['-operator.*']: every other metric is tracked
+	if (tracked.Empty() && !excluded.Empty()) {
+		tracked.all = true;
 	}
 }
 
@@ -50,31 +85,7 @@ void GatheredMetrics::ResetMetrics() {
 }
 
 bool GatheredMetrics::MetricIsTracked(const string &key) const {
-	if (track_all) {
-		return true;
-	}
-	// Exact match from tracked_metrics
-	if (tracked_exact.find(key) != tracked_exact.end()) {
-		return true;
-	}
-	// Prefix match: walk backwards from the largest prefix <= key
-	{
-		auto it = tracked_prefixes.upper_bound(key);
-		while (it != tracked_prefixes.begin()) {
-			--it;
-			const auto &prefix = *it;
-			if (prefix.size() <= key.size() && key.compare(0, prefix.size(), prefix) == 0) {
-				return true;
-			}
-		}
-	}
-	// Arbitrary glob patterns
-	for (const auto &glob : tracked_globs) {
-		if (Glob(key.c_str(), key.size(), glob.c_str(), glob.size())) {
-			return true;
-		}
-	}
-	return false;
+	return tracked.Matches(key) && !excluded.Matches(key);
 }
 
 void GatheredMetrics::SetMetric(const string &key, Value new_value) {

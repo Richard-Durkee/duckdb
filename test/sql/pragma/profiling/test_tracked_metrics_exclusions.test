@@ -1,0 +1,82 @@
+# name: test/sql/pragma/profiling/test_tracked_metrics_exclusions.test
+# description: Test leaving metrics out of tracked_metrics with '-' patterns
+# group: [profiling]
+
+require json
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+CREATE TABLE t AS SELECT range AS i FROM range(1000);
+
+# every metric but one
+statement ok
+SET tracked_metrics = ['*', '-query.total_time'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/exclude_one.json';
+
+statement ok
+SELECT sum(i) FROM t;
+
+query II
+SELECT json_extract(content, '$.query.total_time') IS NULL, json_extract(content, '$.query.cpu_time') IS NOT NULL
+FROM read_text('{TEST_DIR}/exclude_one.json');
+----
+true	true
+
+# only exclusions: every other metric
+statement ok
+SET tracked_metrics = ['-operator.*'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/exclude_operators.json';
+
+statement ok
+SELECT sum(i) FROM t;
+
+query II
+SELECT json_extract(content, '$.query.total_time') IS NOT NULL, json_extract(content, '$.children[0].operator') IS NULL
+FROM read_text('{TEST_DIR}/exclude_operators.json');
+----
+true	true
+
+# an exclusion narrows a prefix
+statement ok
+SET tracked_metrics = ['query.*', '-query.cpu_time'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/exclude_from_prefix.json';
+
+statement ok
+SELECT sum(i) FROM t;
+
+query III
+SELECT json_extract(content, '$.query.total_time') IS NOT NULL, json_extract(content, '$.query.cpu_time') IS NULL,
+	json_extract(content, '$.io') IS NULL
+FROM read_text('{TEST_DIR}/exclude_from_prefix.json');
+----
+true	true	true
+
+# a glob exclusion
+statement ok
+SET tracked_metrics = ['query.*', '-query.total_*'];
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/exclude_glob.json';
+
+statement ok
+SELECT sum(i) FROM t;
+
+query II
+SELECT json_extract(content, '$.query.total_time') IS NULL, json_extract(content, '$.query.cpu_time') IS NOT NULL
+FROM read_text('{TEST_DIR}/exclude_glob.json');
+----
+true	true
+
+# the setting keeps the patterns as given
+query I
+SELECT current_setting('tracked_metrics');
+----
+[query.*, -query.total_*]

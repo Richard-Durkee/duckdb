@@ -1561,7 +1561,7 @@
     },
     {
         "name": "tracked_metrics",
-        "description": "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*'].",
+        "description": "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*']. A pattern starting with '-' leaves the metrics it matches out, e.g. ['*', '-operator.*'], or ['-operator.*'] alone for every other metric.",
         "type": "VARCHAR[]",
         "scope": "local",
         "custom_implementation": true
