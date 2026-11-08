@@ -232,6 +232,7 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::Step(unique_ptr<typename FORMAT::T
 			return HandleExecutionError(ErrorData(ex));
 		}
 		if (!unit) {
+			written_files = stream ? stream->GetWrittenFiles() : handle->GetWrittenFiles();
 			stream.reset();
 			handle.reset();
 			state = State::FINISHED;
@@ -457,6 +458,36 @@ DUCKDB_V2_ERROR duckdb_v2_result_drain(duckdb_v2_result_handle result, idx_t *ou
 	DUCKDB_CHECK_ARG(result);
 	DUCKDB_CHECK_ARG(out_rows_changed);
 	return WithErrorHandler(err, [&]() { *out_rows_changed = Convert(result)->Drain<duckdb::ChunkFormat>(); });
+}
+
+static const duckdb::vector<duckdb::string> &FinishedWrittenFiles(ResultWrapperV2 &wrapper) {
+	if (wrapper.state != ResultWrapperV2::State::FINISHED) {
+		throw duckdb::InvalidInputException("the files a statement wrote are only known once its result is finished");
+	}
+	return wrapper.written_files;
+}
+
+DUCKDB_V2_ERROR duckdb_v2_result_get_written_file_count(duckdb_v2_result_handle result, idx_t *out_count,
+                                                        duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_count);
+	return WithErrorHandler(err, [&]() { *out_count = FinishedWrittenFiles(*Convert(result)).size(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_result_get_written_file(duckdb_v2_result_handle result, idx_t index, const char **out_path,
+                                                  idx_t *out_path_length, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_path);
+	DUCKDB_CHECK_ARG(out_path_length);
+	return WithErrorHandler(err, [&]() {
+		auto &files = FinishedWrittenFiles(*Convert(result));
+		if (index >= files.size()) {
+			throw duckdb::InvalidInputException(
+			    "written file index %llu is out of range: the statement wrote %llu files", index, files.size());
+		}
+		*out_path = files[index].c_str();
+		*out_path_length = files[index].size();
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_result_render_box(duckdb_v2_result_handle *result, idx_t max_rows, idx_t max_width,

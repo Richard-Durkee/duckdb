@@ -64,6 +64,10 @@ public:
 	DUCKDB_API idx_t ColumnCount() const;
 	DUCKDB_API StatementType GetStatementType() const;
 	DUCKDB_API const StatementProperties &GetStatementProperties() const;
+	//! The files the copies of the statement wrote, set once the stream has ended without an error
+	const vector<string> &GetWrittenFiles() const {
+		return handle->GetWrittenFiles();
+	}
 	DUCKDB_API const ClientProperties &GetClientProperties() const;
 	DUCKDB_API ClientProperties &GetClientProperties();
 

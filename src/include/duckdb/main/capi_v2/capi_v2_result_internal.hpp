@@ -65,6 +65,8 @@ struct ResultWrapperV2 {
 
 	//! Sticky error, recorded when state == ERRORED.
 	ErrorData error;
+	//! The files the copies of the statement wrote, captured when the result finishes
+	vector<string> written_files;
 
 	//! Close() the live engine result so an abandoned active query is cleaned
 	//! up (freeing the executor, which breaks the ClientContext ref cycle). The

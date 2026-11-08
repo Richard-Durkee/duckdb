@@ -188,6 +188,16 @@ void ClientContext::EndQueryProfiling(ErrorData &error) {
 	} // LCOV_EXCL_STOP
 }
 
+void ClientContext::AddWrittenFiles(vector<string> files) {
+	if (!active_query || files.empty()) {
+		return;
+	}
+	lock_guard<mutex> guard(active_query->written_files_lock);
+	for (auto &file : files) {
+		active_query->written_files.push_back(std::move(file));
+	}
+}
+
 void ClientContext::CleanupInternal(ClientContextLock &lock, BaseQueryResult *result, bool invalidate_transaction) {
 	if (!active_query) {
 		// no query currently active
@@ -211,7 +221,15 @@ void ClientContext::CleanupInternal(ClientContextLock &lock, BaseQueryResult *re
 	if (result && result->HasError()) {
 		passed_error = result->GetErrorObject();
 	}
+	vector<string> written_files;
+	{
+		lock_guard<mutex> guard(active_query->written_files_lock);
+		written_files = std::move(active_query->written_files);
+	}
 	auto error = EndQueryInternal(lock, result ? !result->HasError() : false, invalidate_transaction, passed_error);
+	if (result && !result->HasError() && !error.HasError()) {
+		result->written_files = std::move(written_files);
+	}
 	if (result && !result->HasError()) {
 		// if an error occurred while ending the statement or committing report it in the result
 		result->SetError(error);

@@ -32,7 +32,15 @@ class PreparedStatementData;
 class QueryResult;
 
 class BaseQueryResult {
+	friend class ClientContext;
+
 public:
+	//! The files the copies of the statement wrote, e.g. the data files of COPY ... TO or of an INSERT into a table an
+	//! extension writes as files. Set once the statement has succeeded.
+	const vector<string> &GetWrittenFiles() const {
+		return written_files;
+	}
+
 	//! Creates a successful query result with the specified names and types
 	DUCKDB_API BaseQueryResult(StatementType statement_type, StatementProperties properties, vector<LogicalType> types,
 	                           vector<Identifier> names);
@@ -75,6 +83,7 @@ private:
 	StatementType statement_type;
 	//! Properties of the statement
 	StatementProperties properties;
+	vector<string> written_files;
 	//! The SQL types of the result
 	vector<LogicalType> types;
 	//! The names of the result

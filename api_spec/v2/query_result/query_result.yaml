@@ -421,6 +421,68 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
+  result_get_written_file_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-08" ]
+    description: |
+      Returns how many files the COPY operators of the statement wrote.
+
+      These are the files of COPY ... TO, and of a statement that writes a table an extension stores as files, such
+      as an INSERT into an Iceberg table. They are the statement's files: inside a transaction that is rolled back
+      later, they are still reported. A statement that failed wrote none.
+
+      Available once the result is finished, e.g. after result_drain; before that it fails with ERROR_INVALID_INPUT.
+    role: getter
+    belongs_to: result
+    parameters:
+      result:
+        type: result
+        description: The finished result.
+      out_count:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the number of files.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+  result_get_written_file:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-08" ]
+    description: |
+      Returns the path of a file the COPY operators of the statement wrote; see result_get_written_file_count.
+
+      Available once the result is finished; fails with ERROR_INVALID_INPUT before that, or for an index out of
+      range.
+    role: getter
+    belongs_to: result
+    parameters:
+      result:
+        type: result
+        description: The finished result.
+      index:
+        type: idx
+        description: The index of the file, below the count result_get_written_file_count returns.
+      out_path:
+        type: char
+        indirection: 2
+        const: true
+        kind: OUT_BORROW
+        description: Receives a borrowed pointer to the path. Owned by DuckDB; valid until the result is destroyed.
+      out_path_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_path` in bytes. `*out_path` is not guaranteed to be null-terminated.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
   result_get_result_type:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-04" ]

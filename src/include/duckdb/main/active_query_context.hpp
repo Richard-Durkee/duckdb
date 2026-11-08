@@ -51,6 +51,9 @@ public:
 	bool outside_local_transaction = false;
 	//! Whether the registered states saw the begin of the running statement and not yet its end
 	bool statement_began = false;
+	//! The files the copies of the statement wrote, which its result reports once the statement has succeeded
+	vector<string> written_files;
+	mutex written_files_lock;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {

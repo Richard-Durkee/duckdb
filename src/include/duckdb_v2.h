@@ -12854,6 +12854,50 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_drain(duckdb_v2_result_handle resu
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Returns how many files the COPY operators of the statement wrote.
+ *
+ * These are the files of COPY ... TO, and of a statement that writes a table an extension stores as files, such as an
+ * INSERT into an Iceberg table. They are the statement's files: inside a transaction that is rolled back later, they
+ * are still reported. A statement that failed wrote none.
+ *
+ * Available once the result is finished, e.g. after result_drain; before that it fails with ERROR_INVALID_INPUT.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param result The finished result.
+ * @param out_count Receives the number of files.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_get_written_file_count(duckdb_v2_result_handle result, idx_t *out_count,
+                                                                     duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
+ * Returns the path of a file the COPY operators of the statement wrote; see result_get_written_file_count.
+ *
+ * Available once the result is finished; fails with ERROR_INVALID_INPUT before that, or for an index out of range.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param result The finished result.
+ * @param index The index of the file, below the count result_get_written_file_count returns.
+ * @param out_path Receives a borrowed pointer to the path. Owned by DuckDB; valid until the result is destroyed.
+ * @param out_path_length Receives the length of `*out_path` in bytes. `*out_path` is not guaranteed to be
+ * null-terminated.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_get_written_file(duckdb_v2_result_handle result, idx_t index,
+                                                               const char **out_path, idx_t *out_path_length,
+                                                               duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Returns the shape of the result: query, changed rows, or nothing.
  *
  * QUERY_RESULT for statements that produce rows (SELECT, RETURNING, EXPLAIN), CHANGED_ROWS for an INSERT, UPDATE, or

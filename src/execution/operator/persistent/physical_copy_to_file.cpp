@@ -164,6 +164,14 @@ public:
 		return written_files;
 	}
 
+	vector<string> GetWrittenFilePaths() const {
+		vector<string> result;
+		for (auto &file_info : written_files) {
+			result.push_back(file_info->file_path);
+		}
+		return result;
+	}
+
 private:
 	optional_ptr<CopyToFileInfo> AddFile(const string &file_name);
 
@@ -1932,11 +1940,11 @@ PendingFileState CopyOutputFileRegistry::ReserveFile(string output_path,
 	PendingFileState result;
 	result.output_path = std::move(output_path);
 
-	if (GetCopyFunctionBaseReturnType(op.return_type) != CopyFunctionReturnType::CHANGED_ROWS) {
-		result.written_file_info = AddFile(result.output_path);
-	}
+	// every file is registered: the query's result reports the files its copies wrote
+	result.written_file_info = AddFile(result.output_path);
 
-	if (result.written_file_info && !op.partition_columns.empty()) {
+	if (GetCopyFunctionBaseReturnType(op.return_type) == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS &&
+	    !op.partition_columns.empty()) {
 		D_ASSERT(partition_values);
 		vector<Value> partition_keys;
 		vector<Value> partition_values_as_varchar;
@@ -5129,6 +5137,11 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!file_size_bytes.IsValid());
 		D_ASSERT(!Rotate());
 		MoveTmpFile(context, file_path);
+		// the registered files carry their final names from here on
+		annotated_lock_guard<annotated_mutex> guard(gstate.lock);
+		for (auto &file_info : gstate.output_files.GetWrittenFiles()) {
+			file_info->file_path = GetNonTmpFile(context, file_info->file_path);
+		}
 	}
 	gstate.MarkSuccessful();
 
@@ -5283,6 +5296,7 @@ public:
 	idx_t MaxThreads() override {
 		return 1;
 	}
+	bool reported_written_files = false;
 };
 
 unique_ptr<GlobalSourceState> PhysicalCopyToFile::GetGlobalSourceState(ClientContext &context) const {
@@ -5294,6 +5308,12 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 	auto &gstate = sink_state->Cast<CopyToFileGlobalState>();
 	gstate.WaitForLifecycleTasks();
 	annotated_lock_guard<annotated_mutex> global_guard(gstate.lock);
+	auto &copy_source_state = input.global_state.Cast<CopyToFileGlobalSourceState>();
+	if (!copy_source_state.reported_written_files) {
+		// every file is finished here, partitioned ones too
+		copy_source_state.reported_written_files = true;
+		context.client.AddWrittenFiles(gstate.output_files.GetWrittenFilePaths());
+	}
 	auto base_return_type = GetCopyFunctionBaseReturnType(return_type);
 	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
 	if (base_return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
@@ -5302,11 +5322,7 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 		    MinValue<idx_t>(source_state.offset + STANDARD_VECTOR_SIZE, gstate.output_files.WrittenFileCount());
 		idx_t count = next_end - source_state.offset;
 		for (idx_t i = 0; i < count; i++) {
-			auto &file_entry = gstate.output_files.GetWrittenFile(source_state.offset + i);
-			if (use_tmp_file) {
-				file_entry.file_path = GetNonTmpFile(context.client, file_entry.file_path);
-			}
-			ReturnStatistics(chunk, file_entry);
+			ReturnStatistics(chunk, gstate.output_files.GetWrittenFile(source_state.offset + i));
 		}
 		if (return_column_types) {
 			if (gstate.output_files.WrittenFileCount() == 0) {
@@ -5327,12 +5343,8 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST: {
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(gstate.rows_copied.load())));
 		vector<Value> file_name_list;
-		for (auto &file_info : gstate.output_files.GetWrittenFiles()) {
-			if (use_tmp_file) {
-				file_name_list.emplace_back(GetNonTmpFile(context.client, file_info->file_path));
-			} else {
-				file_name_list.emplace_back(file_info->file_path);
-			}
+		for (auto &file_path : gstate.output_files.GetWrittenFilePaths()) {
+			file_name_list.emplace_back(file_path);
 		}
 		chunk.data[1].Append(Value::LIST(LogicalType::VARCHAR, std::move(file_name_list)));
 		break;
