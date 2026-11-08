@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/mutex.hpp"
+
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/result_lifetime.hpp"
 #include "duckdb/common/progress_bar/progress_bar.hpp"
@@ -51,6 +53,9 @@ public:
 	bool outside_local_transaction = false;
 	//! Whether the registered states saw the begin of the running statement and not yet its end
 	bool statement_began = false;
+	//! The files the copies of the query wrote, which its result reports once the query has succeeded
+	vector<string> written_files;
+	mutex written_files_lock;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {
@@ -61,6 +66,9 @@ public:
 	}
 	bool HasOpenResult() const {
 		return open_result != nullptr;
+	}
+	optional_ptr<BaseQueryResult> GetOpenResult() const {
+		return open_result;
 	}
 	//! Whether the user's statement expanded into several
 	bool ExpandsIntoSeveral() const {

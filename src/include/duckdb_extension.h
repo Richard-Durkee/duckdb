@@ -728,6 +728,10 @@ typedef struct {
 	duckdb_value (*duckdb_create_timestamp_tz_ns)(duckdb_timestamp_ns input);
 	duckdb_timestamp_ns (*duckdb_get_timestamp_tz_ns)(duckdb_value val);
 #endif
+#if DUCKDB_API_ALLOW_UNSTABLE
+	idx_t (*duckdb_result_written_file_count)(duckdb_result *result);
+	const char *(*duckdb_result_written_file)(duckdb_result *result, idx_t index);
+#endif
 	// capigen:end appended
 } duckdb_ext_api_v1;
 
@@ -2353,6 +2357,12 @@ typedef struct {
 #endif
 #if DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)
 #define duckdb_get_timestamp_tz_ns duckdb_ext_api.duckdb_get_timestamp_tz_ns
+#endif
+#if DUCKDB_API_ALLOW_UNSTABLE
+#define duckdb_result_written_file_count duckdb_ext_api.duckdb_result_written_file_count
+#endif
+#if DUCKDB_API_ALLOW_UNSTABLE
+#define duckdb_result_written_file duckdb_ext_api.duckdb_result_written_file
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

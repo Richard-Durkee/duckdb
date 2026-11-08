@@ -158,6 +158,41 @@ functions:
       Returns the number of rows changed by the query stored in the result. This is relevant only for INSERT/UPDATE/DELETE
       queries. For other queries the rows_changed will be 0.
     return_description: The number of rows changed.
+  result_written_file_count:
+    offset: 546
+    lifecycle:
+      - ["unstable", "v1.5.6", "2026-11-08"]
+    parameters:
+      result:
+        type: result
+        indirection: 1
+        description: The result object.
+    return_type: idx
+    description: |
+      Returns the number of files the COPY operators of the query wrote, such as the data files of `COPY ... TO` or of
+      an INSERT into a table that an extension writes as files. The files are only reported once the query, including
+      its commit, has succeeded; for a streaming result, no files are reported.
+    return_description: The number of files the query wrote.
+  result_written_file:
+    offset: 547
+    lifecycle:
+      - ["unstable", "v1.5.6", "2026-11-08"]
+    parameters:
+      result:
+        type: result
+        indirection: 1
+        description: The result object.
+      index:
+        type: idx
+        description: The index of the file, below `duckdb_result_written_file_count`.
+    return_type: char
+    return_pointer: 1
+    return_const: true
+    description: |
+      Returns the path of a file the COPY operators of the query wrote.
+
+      The result of this function must not be freed. It will be cleaned up when `duckdb_destroy_result` is called.
+    return_description: The path of the file, or `nullptr` if the index is out of range.
   result_error:
     offset: 21
     lifecycle:

@@ -6,6 +6,9 @@ endif()
 
 project(DuckDB)
 
+# the library implements and exports the unstable C API surface too
+add_definitions(-DDUCKDB_API_ALLOW_UNSTABLE=1)
+
 find_package(Threads REQUIRED)
 
 set(DUCKDB_SYSTEM_LIBS ${CMAKE_DL_LIBS})

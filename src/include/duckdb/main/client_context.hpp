@@ -160,6 +160,8 @@ public:
 	}
 
 	//! Interrupts the running query. Async-signal-safe: sets a flag and nothing else
+	//! Adds files a copy of the running query wrote; the query's result reports them once it has succeeded
+	DUCKDB_API void AddWrittenFiles(vector<string> files);
 	DUCKDB_API void Interrupt();
 	DUCKDB_API bool IsInterrupted() const;
 	DUCKDB_API void ClearInterrupt();

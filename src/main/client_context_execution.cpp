@@ -97,6 +97,16 @@ void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
 	context->SetLogger(db->GetLogManager().CreateLogger(logging_context, log_config));
 }
 
+void ClientContext::AddWrittenFiles(vector<string> files) {
+	if (!active_query || files.empty()) {
+		return;
+	}
+	lock_guard<mutex> guard(active_query->written_files_lock);
+	for (auto &file : files) {
+		active_query->written_files.push_back(std::move(file));
+	}
+}
+
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	D_ASSERT(active_query.get());
@@ -117,6 +127,12 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		previous_error = &statement_error;
 	}
 	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
+	auto written_files_result = active_query->GetOpenResult();
+	vector<string> written_files;
+	{
+		lock_guard<mutex> guard(active_query->written_files_lock);
+		written_files = std::move(active_query->written_files);
+	}
 	active_query.reset();
 	query_deadline.SetInvalid();
 	query_progress.Initialize();
@@ -150,6 +166,11 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	} // LCOV_EXCL_STOP
 
 	EndQueryProfiling(error);
+
+	// the files are part of the tables only once the query, and its commit, succeeded
+	if (success && !error.HasError() && written_files_result) {
+		written_files_result->SetWrittenFiles(std::move(written_files));
+	}
 
 	// Refresh the logger
 	context->GetLogger().Flush();

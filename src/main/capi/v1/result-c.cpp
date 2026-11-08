@@ -542,6 +542,30 @@ idx_t duckdb_row_count(duckdb_result *result) {
 	return result_data.Retained().RowCount();
 }
 
+static const duckdb::vector<std::string> *GetWrittenFiles(duckdb_result *result) {
+	if (!result || !result->internal_data) {
+		return nullptr;
+	}
+	auto &result_data = *(reinterpret_cast<duckdb::DuckDBResultData *>(result->internal_data));
+	if (result_data.IsStreaming() || !result_data.result) {
+		return nullptr;
+	}
+	return &result_data.result->GetWrittenFiles();
+}
+
+idx_t duckdb_result_written_file_count(duckdb_result *result) {
+	auto files = GetWrittenFiles(result);
+	return files ? files->size() : 0;
+}
+
+const char *duckdb_result_written_file(duckdb_result *result, idx_t index) {
+	auto files = GetWrittenFiles(result);
+	if (!files || index >= files->size()) {
+		return nullptr;
+	}
+	return (*files)[index].c_str();
+}
+
 idx_t duckdb_rows_changed(duckdb_result *result) {
 	if (!result) {
 		return 0;

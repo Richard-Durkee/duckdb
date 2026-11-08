@@ -6636,6 +6636,37 @@ DUCKDB_C_API idx_t duckdb_column_count(duckdb_result *result);
 DUCKDB_C_API idx_t duckdb_rows_changed(duckdb_result *result);
 #endif
 
+#if DUCKDB_API_ALLOW_UNSTABLE
+/*!
+ * Returns the number of files the COPY operators of the query wrote, such as the data files of `COPY ... TO` or of an
+ * INSERT into a table that an extension writes as files. The files are only reported once the query, including its
+ * commit, has succeeded; for a streaming result, no files are reported.
+ *
+ * history:
+ * - unstable: v1.5.6
+ *
+ * @param result The result object.
+ * @return idx_t
+ */
+DUCKDB_C_API idx_t duckdb_result_written_file_count(duckdb_result *result);
+#endif
+
+#if DUCKDB_API_ALLOW_UNSTABLE
+/*!
+ * Returns the path of a file the COPY operators of the query wrote.
+ *
+ * The result of this function must not be freed. It will be cleaned up when `duckdb_destroy_result` is called.
+ *
+ * history:
+ * - unstable: v1.5.6
+ *
+ * @param result The result object.
+ * @param index The index of the file, below `duckdb_result_written_file_count`.
+ * @return const char*
+ */
+DUCKDB_C_API const char *duckdb_result_written_file(duckdb_result *result, idx_t index);
+#endif
+
 #if DUCKDB_API_VERSION_AT_LEAST(0, 2, 9)
 /*!
  * Returns the error message contained within the result. The error is only set if `duckdb_query` returns `DuckDBError`.
