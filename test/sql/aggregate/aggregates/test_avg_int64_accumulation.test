@@ -1,0 +1,186 @@
+# name: test/sql/aggregate/aggregates/test_avg_int64_accumulation.test
+# description: AVG of INTEGER, BIGINT and DECIMAL sums runs of values in an int64_t before adding them to the sum
+# group: [aggregates]
+
+# The AVG of a HUGEINT or a DECIMAL(38) accumulates every value in a hugeint_t and finalizes the same way, so it
+# must give bit-identical results. AVG is not rewritten to SUM / COUNT here, which divides differently.
+
+statement ok
+SET threads=16
+
+statement ok
+SET disabled_optimizers='aggregate_function_rewriter'
+
+statement ok
+CREATE TABLE t AS
+SELECT i % 1000 AS g,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 7919 % 2000001 - 1000000)::INTEGER END AS i32,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE i * 104729 % 20000000001 - 10000000000 END AS i64,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE ((i * 7919 % 9999999 - 4999999) / 100)::DECIMAL(7,2) END AS d7,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE ((i * 104729 % 999999999999999 - 499999999999999) / 100)::DECIMAL(15,2) END AS d15,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE ((i * 104729 % 999999999999999999 - 499999999999999999) / 10000)::DECIMAL(18,4) END AS d18,
+       -- values close to the int64_t limits: every partial sum overflows an int64_t
+       CASE WHEN i % 5 = 0 THEN NULL WHEN i % 2 = 0 THEN 9223372036854775807 - i ELSE -9223372036854775807 + i END AS big,
+       -- values around 2^52, where the partial sum of a vector stops being safe
+       CASE WHEN i % 3 = 0 THEN 4503599627370496 + i % 100 ELSE 4503599627370495 - i % 100 END AS edge,
+       -- all values are large and positive, the sum exceeds the int64_t range
+       9223372036854775807 - i % 10 AS huge_pos,
+       ('99999999999999.999' || (9 - i % 10))::DECIMAL(18,4) AS d18_max,
+FROM range(300000) r(i)
+
+# grouped, against the HUGEINT and DECIMAL(38) accumulation
+query I
+SELECT bool_and(a = b) AND count(*) = 1000
+FROM (
+	SELECT avg(i32) IS NOT DISTINCT FROM avg(i32::HUGEINT) AS a,
+	       avg(i64) IS NOT DISTINCT FROM avg(i64::HUGEINT) AS b
+	FROM t GROUP BY g
+)
+----
+true
+
+query I
+SELECT bool_and(a AND b AND c) AND count(*) = 1000
+FROM (
+	SELECT avg(d7) IS NOT DISTINCT FROM avg(d7::DECIMAL(38,2)) AS a,
+	       avg(d15) IS NOT DISTINCT FROM avg(d15::DECIMAL(38,2)) AS b,
+	       avg(d18) IS NOT DISTINCT FROM avg(d18::DECIMAL(38,4)) AS c
+	FROM t GROUP BY g
+)
+----
+true
+
+query I
+SELECT bool_and(a AND b AND c AND d) AND count(*) = 1000
+FROM (
+	SELECT avg(big) IS NOT DISTINCT FROM avg(big::HUGEINT) AS a,
+	       avg(edge) IS NOT DISTINCT FROM avg(edge::HUGEINT) AS b,
+	       avg(huge_pos) IS NOT DISTINCT FROM avg(huge_pos::HUGEINT) AS c,
+	       avg(d18_max) IS NOT DISTINCT FROM avg(d18_max::DECIMAL(38,4)) AS d
+	FROM t GROUP BY g
+)
+----
+true
+
+# few groups: long runs of the same group in a vector
+query I
+SELECT bool_and(a AND b AND c AND d AND e) AND count(*) = 3
+FROM (
+	SELECT avg(i32) = avg(i32::HUGEINT) AS a,
+	       avg(i64) = avg(i64::HUGEINT) AS b,
+	       avg(d18) = avg(d18::DECIMAL(38,4)) AS c,
+	       avg(big) = avg(big::HUGEINT) AS d,
+	       avg(huge_pos) = avg(huge_pos::HUGEINT) AS e
+	FROM t GROUP BY g % 3
+)
+----
+true
+
+query IRR
+SELECT g % 3 AS k, avg(huge_pos), avg(d18_max) FROM t GROUP BY k ORDER BY k
+----
+0	9223372036854775802.5	99999999999999.99945
+1	9223372036854775802.5	99999999999999.99945
+2	9223372036854775802.5	99999999999999.99945
+
+# with a filter the input is a selection of the scanned vector
+query I
+SELECT bool_and(a AND b AND c) AND count(*) = 1000
+FROM (
+	SELECT avg(i64) = avg(i64::HUGEINT) AS a,
+	       avg(big) = avg(big::HUGEINT) AS b,
+	       avg(d15) = avg(d15::DECIMAL(38,2)) AS c
+	FROM t WHERE i32 % 3 <> 0 GROUP BY g
+)
+----
+true
+
+# ungrouped
+query IIIIIIIII
+SELECT avg(i32) = avg(i32::HUGEINT), avg(i64) = avg(i64::HUGEINT), avg(d7) = avg(d7::DECIMAL(38,2)),
+       avg(d15) = avg(d15::DECIMAL(38,2)), avg(d18) = avg(d18::DECIMAL(38,4)), avg(big) = avg(big::HUGEINT),
+       avg(edge) = avg(edge::HUGEINT), avg(huge_pos) = avg(huge_pos::HUGEINT),
+       avg(d18_max) = avg(d18_max::DECIMAL(38,4))
+FROM t
+----
+true	true	true	true	true	true	true	true	true
+
+query RR
+SELECT avg(huge_pos), avg(d18_max) FROM t
+----
+9223372036854775802.5	99999999999999.99945
+
+# constant input
+query RRR
+SELECT avg(9223372036854775807), avg(-9223372036854775807), avg(99999999999999.9999::DECIMAL(18,4)) FROM range(100000)
+----
+9223372036854775807	-9223372036854775807	99999999999999.9999
+
+query I
+SELECT bool_and(a) AND count(*) = 7
+FROM (SELECT avg(9223372036854775807) = avg(9223372036854775807::HUGEINT) AS a FROM range(100000) r(i) GROUP BY i % 7)
+----
+true
+
+# empty input and only NULLs
+query RRRR
+SELECT avg(i32), avg(i64), avg(d7), avg(d18) FROM t WHERE g < 0
+----
+NULL	NULL	NULL	NULL
+
+query RRRR
+SELECT avg(NULL::INTEGER), avg(NULL::BIGINT), avg(NULL::DECIMAL(7,2)), avg(NULL::DECIMAL(18,4)) FROM range(5000)
+----
+NULL	NULL	NULL	NULL
+
+query IRRRR
+SELECT g, avg(NULL::INTEGER), avg(NULL::BIGINT), avg(CASE WHEN g = 0 THEN NULL ELSE d7 END),
+       avg(CASE WHEN g = 1 THEN NULL ELSE d18 END)
+FROM t WHERE g < 3 GROUP BY g ORDER BY g
+----
+0	NULL	NULL	NULL	-49999998430171.29
+1	NULL	NULL	-120.98931407942239	NULL
+2	NULL	NULL	-118.94797833935019	-49999998431920.414
+
+query IRRR
+SELECT g, avg(i32), avg(i64), avg(d15) FROM t WHERE g < 0 GROUP BY g
+----
+
+# window AVG: constant aggregates over whole partitions and framed aggregates
+query I
+SELECT bool_and(a AND b AND c)
+FROM (
+	SELECT avg(i64) OVER (PARTITION BY g) IS NOT DISTINCT FROM avg(i64::HUGEINT) OVER (PARTITION BY g) AS a,
+	       avg(big) OVER (PARTITION BY g % 3) = avg(big::HUGEINT) OVER (PARTITION BY g % 3) AS b,
+	       avg(d18) OVER (PARTITION BY g % 3) = avg(d18::DECIMAL(38,4)) OVER (PARTITION BY g % 3) AS c
+	FROM t
+)
+----
+true
+
+query I
+SELECT bool_and(a AND b)
+FROM (
+	SELECT avg(huge_pos) OVER w = avg(huge_pos::HUGEINT) OVER w AS a,
+	       avg(d15) OVER w IS NOT DISTINCT FROM avg(d15::DECIMAL(38,2)) OVER w AS b
+	FROM (SELECT row_number() OVER () AS rn, * FROM t WHERE g < 10)
+	WINDOW w AS (ORDER BY rn ROWS BETWEEN 100 PRECEDING AND CURRENT ROW)
+)
+----
+true
+
+# statistics prove that the sum of a small range fits in an int64_t
+statement ok
+CREATE TABLE small AS SELECT i % 100 AS g, i AS b, (i / 100)::DECIMAL(15,2) AS d FROM range(1000000) r(i)
+
+query I
+SELECT bool_and(a AND b) AND count(*) = 100
+FROM (SELECT avg(b) = avg(b::HUGEINT) AS a, avg(d) = avg(d::DECIMAL(38,2)) AS b FROM small GROUP BY g)
+----
+true
+
+query IRR
+SELECT g, avg(b), avg(d) FROM small WHERE g IN (0, 99) GROUP BY g ORDER BY g
+----
+0	499950.0	4999.5
+99	500049.0	5000.49

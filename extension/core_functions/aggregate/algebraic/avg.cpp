@@ -1,11 +1,14 @@
 #include "core_functions/aggregate/algebraic_functions.hpp"
 #include "core_functions/aggregate/sum_helpers.hpp"
+#include "duckdb/common/clustered_aggregate.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/likely.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 namespace duckdb {
 
@@ -108,7 +111,53 @@ struct IntegerAverageOperation : public BaseSumOperation<AverageSetOperation, Re
 	}
 };
 
+//! The clustered update of a run of integers sums them in an int64_t and adds that to the hugeint_t sum once
+struct IntegerAverageLocalState {
+	uint64_t count;
+	hugeint_t value;
+	int64_t partial;
+};
+
+//! Without statistics, an INT64 value that could overflow the partial sum of a run (at most STANDARD_VECTOR_SIZE
+//! values, see I64VectorSumSafe) is added to the hugeint_t directly. Statistics can prove that no sum overflows.
+template <bool CHECK_PARTIAL_OVERFLOW>
 struct IntegerAverageOperationHugeint : public BaseSumOperation<AverageSetOperation, AddToHugeint> {
+	template <class STATE>
+	struct ClusteredLocalState {
+		typedef IntegerAverageLocalState Type;
+	};
+
+	template <class STATE>
+	static void InitializeClusteredLocal(IntegerAverageLocalState &local, const STATE &state) {
+		local.count = state.count;
+		local.value = state.value;
+		local.partial = 0;
+	}
+
+	template <class INPUT_TYPE, class LOCAL>
+	static void UpdateClusteredLocal(LOCAL &local, const INPUT_TYPE &input) {
+		local.count++;
+		const auto value = static_cast<int64_t>(input);
+		if (sizeof(INPUT_TYPE) < sizeof(int64_t) || !CHECK_PARTIAL_OVERFLOW || I64VectorSumSafe(value)) {
+			local.partial += value;
+		} else {
+			AddToHugeint::AddNumber<LOCAL, int64_t>(local, value);
+		}
+	}
+
+	template <class INPUT_TYPE, class LOCAL>
+	static void UpdateClusteredLocal(LOCAL &local, const INPUT_TYPE &input, idx_t count) {
+		local.count += count;
+		AddToHugeint::AddConstant<LOCAL, INPUT_TYPE>(local, input, count);
+	}
+
+	template <class STATE>
+	static void FlushClusteredLocal(STATE &state, const IntegerAverageLocalState &local, bool) {
+		state.count = local.count;
+		state.value = local.value;
+		AddToHugeint::AddNumber<STATE, int64_t>(state, local.partial);
+	}
+
 	template <class STATE, class OP>
 	static void RepeatedCombine(const STATE &source, STATE &target, AggregateInputData &input, idx_t count) {
 		RepeatedAverageState::Combine(source, target, input, count);
@@ -495,6 +544,32 @@ struct TimeTZAverageOperation : public BaseSumOperation<AverageSetOperation, Add
 	}
 };
 
+//! Statistics that bound the sum of all values to an int64_t also bound every partial sum
+unique_ptr<BaseStatistics> IntegerAveragePropagateStats(ClientContext &context, BoundAggregateExpression &expr,
+                                                        AggregateStatisticsInput &input) {
+	if (!input.node_stats || !input.node_stats->has_max_cardinality) {
+		return nullptr;
+	}
+	auto &numeric_stats = input.child_stats[0];
+	if (numeric_stats.GetType().InternalType() != PhysicalType::INT64 || !NumericStats::HasMinMax(numeric_stats)) {
+		return nullptr;
+	}
+	const hugeint_t min_value = NumericStats::Min(numeric_stats).GetValueUnsafe<int64_t>();
+	const hugeint_t max_value = NumericStats::Max(numeric_stats).GetValueUnsafe<int64_t>();
+	const auto max_card = Hugeint::Convert(input.node_stats->max_cardinality);
+	hugeint_t wide_negative;
+	hugeint_t wide_positive;
+	if (!Hugeint::TryMultiply(min_value, max_card, wide_negative) ||
+	    !Hugeint::TryMultiply(max_value, max_card, wide_positive)) {
+		return nullptr;
+	}
+	if (wide_negative > NumericLimits<int64_t>::Minimum() && wide_positive < NumericLimits<int64_t>::Maximum()) {
+		expr.FunctionMutable().SetStateClusterUpdateCallback(
+		    AggregateFunction::UnaryClusterUpdate<AvgState<hugeint_t>, int64_t, IntegerAverageOperationHugeint<false>>);
+	}
+	return nullptr;
+}
+
 static AggregateFunction NameXParameter(AggregateFunction fun) {
 	fun.GetSignature().GetParameter(0).SetName("x");
 	return fun;
@@ -508,14 +583,16 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 		        LogicalType::SMALLINT, LogicalType::DOUBLE));
 	}
 	case PhysicalType::INT32: {
-		return NameXParameter(
-		    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int32_t, double, IntegerAverageOperationHugeint>(
-		        LogicalType::INTEGER, LogicalType::DOUBLE));
+		return NameXParameter(AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int32_t, double,
+		                                                        IntegerAverageOperationHugeint<true>>(
+		    LogicalType::INTEGER, LogicalType::DOUBLE));
 	}
 	case PhysicalType::INT64: {
-		return NameXParameter(
-		    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, double, IntegerAverageOperationHugeint>(
-		        LogicalType::BIGINT, LogicalType::DOUBLE));
+		auto function = AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, int64_t, double,
+		                                                  IntegerAverageOperationHugeint<true>>(LogicalType::BIGINT,
+		                                                                                        LogicalType::DOUBLE);
+		function.SetStatisticsCallback(IntegerAveragePropagateStats);
+		return NameXParameter(std::move(function));
 	}
 	case PhysicalType::INT128: {
 		auto function =
