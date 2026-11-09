@@ -649,21 +649,28 @@ private:
 		for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
 			auto validity_entry = input_validity.GetValidityEntry(entry_idx);
 			auto next = MinValue<idx_t>(base_idx + ValidityMask::BITS_PER_VALUE, count);
-			if (ValidityMask::AllValid(validity_entry)) {
-				if constexpr (UseBooleanSelectionBatch<ARGS...>()) {
-					if (local_sink.CanAppendBatch() && !sel.IsSet() &&
-					    next - base_idx == ValidityMask::BITS_PER_VALUE) {
-						bool matches[ValidityMask::BITS_PER_VALUE];
-						for (idx_t i = 0; i < ValidityMask::BITS_PER_VALUE; i++) {
-							const bool comparison_result = adapter.Operation(
-							    std::get<Is>(input_data)[InputIndex<Is, CONSTANT_MASK>(base_idx + i)]...);
-							matches[i] = comparison_result;
-						}
-						local_sink.AppendBatch(matches, ValidityMask::BITS_PER_VALUE, base_idx);
-						base_idx = next;
-						continue;
+			if constexpr (UseBooleanSelectionBatch<ARGS...>()) {
+				// Masked batches also evaluate NULL rows, so they need an operation that is safe on any input.
+				constexpr bool MASKED = ADAPTER::TOTAL_OPERATION && UseMaskedBooleanSelectionBatch<ARGS...>();
+				if (local_sink.CanAppendBatch() && !sel.IsSet() && next - base_idx == ValidityMask::BITS_PER_VALUE &&
+				    (ValidityMask::AllValid(validity_entry) || (MASKED && !ValidityMask::NoneValid(validity_entry)))) {
+					bool matches[ValidityMask::BITS_PER_VALUE];
+					for (idx_t i = 0; i < ValidityMask::BITS_PER_VALUE; i++) {
+						const bool comparison_result =
+						    adapter.Operation(std::get<Is>(input_data)[InputIndex<Is, CONSTANT_MASK>(base_idx + i)]...);
+						matches[i] = comparison_result;
 					}
+					if constexpr (MASKED) {
+						if (!ValidityMask::AllValid(validity_entry)) {
+							MaskBooleanSelection(matches, validity_entry);
+						}
+					}
+					local_sink.AppendBatch(matches, ValidityMask::BITS_PER_VALUE, base_idx);
+					base_idx = next;
+					continue;
 				}
+			}
+			if (ValidityMask::AllValid(validity_entry)) {
 				for (; base_idx < next; base_idx++) {
 					auto result_idx = sel.get_index(base_idx);
 					bool comparison_result =

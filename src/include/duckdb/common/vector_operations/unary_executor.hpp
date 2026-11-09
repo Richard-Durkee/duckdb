@@ -74,6 +74,9 @@ struct UnaryScalarAdapter {
 
 template <class INPUT_TYPE, class FUNC>
 struct UnarySelectAdapter {
+	//! The callback may rely on valid inputs, so batches must not call it on NULL rows.
+	static constexpr bool TOTAL_OPERATION = false;
+
 	explicit UnarySelectAdapter(FUNC &fun_p) : fun(fun_p) {
 	}
 

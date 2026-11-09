@@ -164,13 +164,21 @@ private:
 		auto &mask = vdata.validity;
 		idx_t result_count = 0;
 		idx_t i = 0;
-		if constexpr (UseBooleanSelectionBatch<T>() && !CAN_HAVE_NULL) {
+		if constexpr (CAN_HAVE_NULL ? UseMaskedBooleanSelectionBatch<T>() : UseBooleanSelectionBatch<T>()) {
 			if (!sel.IsSet() && !vdata.sel->IsSet()) {
 				array_ptr<sel_t> output(result_sel.data(), result_sel.Capacity());
 				for (; i + 64 <= approved_tuple_count; i += 64) {
+					const auto validity_entry =
+					    CAN_HAVE_NULL ? mask.GetValidityEntry(i / 64) : ValidityMask::ValidityBuffer::MAX_ENTRY;
+					if (ValidityMask::NoneValid(validity_entry)) {
+						continue;
+					}
 					bool matches[64];
 					for (idx_t j = 0; j < 64; j++) {
 						matches[j] = OP::Operation(data[i + j], predicate);
+					}
+					if (!ValidityMask::AllValid(validity_entry)) {
+						MaskBooleanSelection(matches, validity_entry);
 					}
 					auto destination = output.SubArray(result_count, 64);
 					result_count += SelectionVector::SelectFromBoolean(matches, nullptr, 64, destination, {}, i);
