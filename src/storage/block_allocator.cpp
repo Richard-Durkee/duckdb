@@ -148,6 +148,41 @@ idx_t BlockAllocator::RetentionTarget(const idx_t now_ms) const {
 //===--------------------------------------------------------------------===//
 // Memory Helpers
 //===--------------------------------------------------------------------===//
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+static idx_t GetHugePageSize() {
+	auto file = fopen("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", "r");
+	if (!file) {
+		return 0;
+	}
+	int64_t huge_page_size = 0;
+	char trailing;
+	auto fields = fscanf(file, "%" SCNd64 " %c", &huge_page_size, &trailing);
+	fclose(file);
+	auto page_size = sysconf(_SC_PAGESIZE);
+	if (fields != 1 || page_size <= 0 || huge_page_size < page_size || (huge_page_size & (huge_page_size - 1)) != 0 ||
+	    huge_page_size % page_size != 0) {
+		return 0;
+	}
+	return NumericCast<idx_t>(huge_page_size);
+}
+#endif
+
+static void AdviseHugePages(data_ptr_t pointer, idx_t size) {
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+	static constexpr idx_t MIN_ADVISE_SIZE = 8ULL * 1024 * 1024;
+	if (size >= MIN_ADVISE_SIZE) {
+		static const idx_t huge_page_size = GetHugePageSize();
+		if (huge_page_size != 0 && size / huge_page_size >= 4) {
+			const auto base = reinterpret_cast<uintptr_t>(pointer);
+			const auto offset = (huge_page_size - base % huge_page_size) % huge_page_size;
+			const auto length = ((size - offset) / huge_page_size) * huge_page_size;
+			// Only advise complete huge pages contained in this allocation.
+			madvise(pointer + offset, length, MADV_HUGEPAGE);
+		}
+	}
+#endif
+}
+
 static data_ptr_t AllocateVirtualMemory(const idx_t size) {
 #if INTPTR_MAX == INT32_MAX
 	// Disable on 32-bit
@@ -163,8 +198,27 @@ static data_ptr_t AllocateVirtualMemory(const idx_t size) {
 	// Reserve address space without charging the entire pool against the commit limit.
 	flags |= MAP_NORESERVE;
 #endif
-	const auto ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-	return ptr == MAP_FAILED ? nullptr : data_ptr_cast(ptr);
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+	// Align the pool to the huge page size so that each huge page backs whole blocks.
+	const auto huge_page_size = GetHugePageSize();
+#else
+	const idx_t huge_page_size = 0;
+#endif
+	const auto ptr = mmap(nullptr, size + huge_page_size, PROT_READ | PROT_WRITE, flags, -1, 0);
+	if (ptr == MAP_FAILED) {
+		return nullptr;
+	}
+	auto pointer = data_ptr_cast(ptr);
+	if (huge_page_size != 0) {
+		const auto offset = (huge_page_size - reinterpret_cast<uintptr_t>(pointer) % huge_page_size) % huge_page_size;
+		if (offset != 0) {
+			munmap(pointer, offset);
+		}
+		munmap(pointer + offset + size, huge_page_size - offset);
+		pointer += offset;
+		AdviseHugePages(pointer, size);
+	}
+	return pointer;
 #endif
 }
 
@@ -718,41 +772,6 @@ data_ptr_t BlockAllocator::ReallocateData(const data_ptr_t pointer, const idx_t 
 	memcpy(new_pointer, pointer, MinValue(old_size, new_size));
 	FreeData(pointer, old_size);
 	return new_pointer;
-}
-
-#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
-static idx_t GetHugePageSize() {
-	auto file = fopen("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", "r");
-	if (!file) {
-		return 0;
-	}
-	int64_t huge_page_size = 0;
-	char trailing;
-	auto fields = fscanf(file, "%" SCNd64 " %c", &huge_page_size, &trailing);
-	fclose(file);
-	auto page_size = sysconf(_SC_PAGESIZE);
-	if (fields != 1 || page_size <= 0 || huge_page_size < page_size || (huge_page_size & (huge_page_size - 1)) != 0 ||
-	    huge_page_size % page_size != 0) {
-		return 0;
-	}
-	return NumericCast<idx_t>(huge_page_size);
-}
-#endif
-
-static void AdviseHugePages(data_ptr_t pointer, idx_t size) {
-#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
-	static constexpr idx_t MIN_ADVISE_SIZE = 8ULL * 1024 * 1024;
-	if (size >= MIN_ADVISE_SIZE) {
-		static const idx_t huge_page_size = GetHugePageSize();
-		if (huge_page_size != 0 && size / huge_page_size >= 4) {
-			const auto base = reinterpret_cast<uintptr_t>(pointer);
-			const auto offset = (huge_page_size - base % huge_page_size) % huge_page_size;
-			const auto length = ((size - offset) / huge_page_size) * huge_page_size;
-			// Only advise complete huge pages contained in this allocation.
-			madvise(pointer + offset, length, MADV_HUGEPAGE);
-		}
-	}
-#endif
 }
 
 data_ptr_t BlockAllocator::AllocateHugeData(const idx_t size) const {

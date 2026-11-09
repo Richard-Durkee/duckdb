@@ -1,0 +1,57 @@
+# name: test/sql/parallelism/block_allocator_huge_pages.test_slow
+# description: Allocate, reclaim and reuse block pool memory (backed by huge pages where available) across threads
+# group: [parallelism]
+
+require 64bit
+
+require notmingw
+
+statement ok
+SET enable_block_allocator=true
+
+statement ok
+SET memory_limit='512MiB'
+
+statement ok
+CREATE TABLE build AS SELECT i AS k, i * 2 AS v FROM range(3000000) t(i)
+
+statement ok
+CREATE TABLE probe AS SELECT (i * 7919) % 3000000 AS k FROM range(6000000) t(i)
+
+loop thread_count 1 9
+
+statement ok
+SET threads={thread_count}
+
+query III
+SELECT count(*), sum(b.v), count(b.v) FROM probe p LEFT JOIN build b USING (k)
+----
+6000000	17999994000000	6000000
+
+endloop
+
+# Free the tables so the pool reclaims their blocks, then reuse the reclaimed blocks
+statement ok
+DROP TABLE probe
+
+statement ok
+DROP TABLE build
+
+statement ok
+SET threads=8
+
+statement ok
+CREATE TABLE build AS SELECT i AS k, CASE WHEN i % 10 = 0 THEN NULL ELSE repeat('x', i % 50) END AS s FROM range(2000000) t(i)
+
+query III
+SELECT count(*), count(s), sum(length(s)) FROM range(2000000) r(k) JOIN build USING (k)
+----
+2000000	1800000	45000000
+
+query I
+SELECT count(*) FROM build WHERE k < 0
+----
+0
+
+statement ok
+DROP TABLE build
