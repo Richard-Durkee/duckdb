@@ -775,6 +775,8 @@ static data_ptr_t LoadPointer(const const_data_ptr_t &source) {
 //! If we consider to insert into an entry we expect to be empty, if it was filled in the meantime the insert will not
 //! happen and we need to return the pointer to the to row with which the new entry would have collided. In any other
 //! case we return a nullptr
+//! All accesses to the entries can be relaxed: the key bytes behind an entry were written during Sink, and the next
+//! pointers written here are only read when probing. Both are ordered by the event barriers around the build.
 template <bool PARALLEL, bool EXPECT_EMPTY>
 static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_ptr_t &row_ptr_to_insert,
                                           const hash_t &salt, const idx_t &pointer_offset) {
@@ -785,20 +787,20 @@ static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_
 			StorePointer(nullptr, row_ptr_to_insert + pointer_offset);
 
 			ht_entry_t expected_entry;
-			entry.compare_exchange_strong(expected_entry, desired_entry, std::memory_order_release,
-			                              std::memory_order_acquire);
+			entry.compare_exchange_strong(expected_entry, desired_entry, std::memory_order_relaxed,
+			                              std::memory_order_relaxed);
 
 			// The expected entry is updated with the encountered entry by the compare exchange
 			// So, this returns a nullptr if it was empty, and a non-null if it was not (which cancels the insert)
 			return expected_entry.GetPointerOrNull();
 		} else {
 			// At this point we know that the keys match, so we can try to insert until we succeed
-			ht_entry_t expected_entry = entry.load(std::memory_order_acquire);
+			ht_entry_t expected_entry = entry.load(std::memory_order_relaxed);
 			D_ASSERT(expected_entry.IsOccupied());
 			do {
 				data_ptr_t current_row_pointer = expected_entry.GetPointer();
 				StorePointer(current_row_pointer, row_ptr_to_insert + pointer_offset);
-			} while (!entry.compare_exchange_weak(expected_entry, desired_entry, std::memory_order_release,
+			} while (!entry.compare_exchange_weak(expected_entry, desired_entry, std::memory_order_relaxed,
 			                                      std::memory_order_relaxed));
 
 			return nullptr;
@@ -807,7 +809,7 @@ static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_
 		// If we are not in parallel mode, we can just do the operation without any checks
 		data_ptr_t current_row_pointer = entry.load(std::memory_order_relaxed).GetPointerOrNull();
 		StorePointer(current_row_pointer, row_ptr_to_insert + pointer_offset);
-		entry = desired_entry;
+		entry.store(desired_entry, std::memory_order_relaxed);
 		return nullptr;
 	}
 }
@@ -954,7 +956,7 @@ static void InsertHashesLoop(unsafe_optional_ptr<atomic<ht_entry_t>> entries, Ve
 			bool occupied;
 			while (true) {
 				atomic<ht_entry_t> &atomic_entry = entries.get()[ht_offset];
-				entry = atomic_entry.load(std::memory_order_acquire);
+				entry = atomic_entry.load(std::memory_order_relaxed);
 				occupied = entry.IsOccupied();
 
 				// condition for incrementing the ht_offset: occupied and row_salt does not match -> move to next entry

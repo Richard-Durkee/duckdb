@@ -1,0 +1,49 @@
+# name: test/sql/join/hash_join/hash_join_build_duplicates.test
+# description: Serial and parallel hash join builds with many duplicate keys
+# group: [hash_join]
+
+statement ok
+SET perfect_ht_threshold=0
+
+# 50,000 distinct keys with 12 duplicates each, NULL keys, and multiple key columns
+statement ok
+CREATE TABLE dups AS
+SELECT CASE WHEN i % 11 = 5 THEN NULL ELSE (i % 50000)::INTEGER END AS k, (i % 50000 % 7)::BIGINT AS k2, i AS v
+FROM range(600000) t(i)
+
+foreach threads 1 4 16
+
+statement ok
+SET threads=${threads}
+
+statement ok
+PRAGMA verify_parallelism
+
+query I
+SELECT (SELECT count(*) FROM dups a JOIN dups b USING (k)) =
+       (SELECT sum(c * c) FROM (SELECT count(*) c FROM dups WHERE k IS NOT NULL GROUP BY k))
+----
+true
+
+query I
+SELECT (SELECT count(*) FROM dups a JOIN dups b ON a.k IS NOT DISTINCT FROM b.k AND a.k2 = b.k2) =
+       (SELECT sum(c * c) FROM (SELECT count(*) c FROM dups GROUP BY k, k2))
+----
+true
+
+# the build side keeps its NULL keys in outer joins
+query II
+SELECT count(*), count(*) FILTER (WHERE a.v IS NULL) FROM (SELECT * FROM dups WHERE v % 3 = 0) a RIGHT JOIN dups b USING (k)
+----
+2039404	54545
+
+statement ok
+PRAGMA disable_verify_parallelism
+
+endloop
+
+statement ok
+RESET perfect_ht_threshold
+
+statement ok
+RESET threads
