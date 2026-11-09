@@ -26,6 +26,9 @@ public:
 
 	void Evaluate(ExecutionContext &context, const DataChunk &bounds, Vector &result, idx_t count, idx_t row_idx,
 	              OperatorSinkInput &sink) const override;
+
+	//! Whether frames that grow from a fixed start can be computed from the previous row's state
+	const bool can_accumulate;
 };
 
 } // namespace duckdb

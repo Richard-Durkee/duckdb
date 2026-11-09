@@ -30,8 +30,61 @@ bool WindowSegmentTree::CanAggregate(const BoundWindowExpression &wexpr) {
 	return !wexpr.Distinct() && wexpr.ArgOrders().empty() && !wexpr.GetChildren().empty();
 }
 
+//	Accumulating combines the states in a different order than the tree does,
+//	so we only accumulate aggregates whose results cannot depend on that order.
+static bool CanAccumulate(const BoundWindowExpression &wexpr) {
+	if (wexpr.WindowExclude() != WindowExcludeMode::NO_OTHER || wexpr.GetChildren().size() != 1) {
+		return false;
+	}
+	auto &aggr = *wexpr.AggregateFunction();
+	if (aggr.HasStateDestructorCallback() || aggr.GetOrderDependent() != AggregateOrderDependent::NOT_ORDER_DEPENDENT ||
+	    aggr.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR) {
+		return false;
+	}
+
+	const auto &name = aggr.GetName();
+	if (name == "count") {
+		return true;
+	}
+
+	const auto &arg_type = wexpr.GetChildren()[0]->GetReturnType();
+	const bool is_sum = name == "sum" || name == "sum_no_overflow" || name == "avg";
+	if (!is_sum && name != "min" && name != "max") {
+		return false;
+	}
+	switch (arg_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+		return true;
+	case LogicalTypeId::DECIMAL:
+		//	128-bit sums can overflow for some combinations of the inputs but not others
+		return !is_sum || arg_type.InternalType() != PhysicalType::INT128;
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		//	Equal values are identical for these types, so MIN/MAX don't depend on the order.
+		//	(Unlike, e.g., -0.0 and 0.0 for floating point, which also has inexact sums.)
+		return !is_sum;
+	default:
+		return false;
+	}
+}
+
 WindowSegmentTree::WindowSegmentTree(const BoundWindowExpression &wexpr, WindowSharedExpressions &shared)
-    : WindowAggregator(wexpr, shared) {
+    : WindowAggregator(wexpr, shared), can_accumulate(CanAccumulate(wexpr)) {
 }
 
 class WindowSegmentTreeGlobalState : public WindowAggregatorGlobalState {
@@ -99,6 +152,11 @@ public:
 protected:
 	//! Initialises the accumulation state vector (statef)
 	void Initialize(idx_t count);
+	//! Replaces frames that extend the previous row's frame with just the added rows.
+	//! Returns the number of rows that will be accumulated.
+	idx_t ExtendFrames(const idx_t *begins, const idx_t *ends, idx_t count);
+	//! Combines the previous row's state into each extended row's state
+	void AccumulateFrames(idx_t count);
 	//! Accumulate upper tree levels
 	void EvaluateUpperLevels(const WindowSegmentTreeGlobalState &tree, const idx_t *begins, const idx_t *ends,
 	                         const idx_t *bounds, idx_t count, idx_t row_idx, FramePart frame_part);
@@ -145,6 +203,11 @@ public:
 	idx_t live_count;
 	//! Cache of right side tree ranges for ordered aggregates
 	vector<RightEntry> right_stack;
+	//! The rows added to the previous row's frame when accumulating
+	vector<idx_t> extend_begins;
+	vector<idx_t> extend_ends;
+	//! Whether each row extends the previous row's frame
+	vector<bool> extends_previous;
 };
 
 class WindowSegmentTreeLocalState : public WindowAggregatorLocalState {
@@ -535,6 +598,17 @@ void WindowSegmentTreePart::Evaluate(const WindowSegmentTreeGlobalState &tree, c
                                      FramePart frame_part) {
 	Initialize(count);
 
+	//	Running aggregates (e.g., UNBOUNDED PRECEDING to CURRENT ROW) only add a few rows to the previous frame,
+	//	so we just aggregate those rows and then combine the previous row's state into the result.
+	idx_t extended = 0;
+	if (frame_part == FramePart::FULL && tree.tree.can_accumulate && order_insensitive) {
+		extended = ExtendFrames(begins, ends, count);
+		if (extended) {
+			begins = extend_begins.data();
+			ends = extend_ends.data();
+		}
+	}
+
 	if (order_insensitive) {
 		//	First pass: aggregate the segment tree nodes with sharing
 		EvaluateUpperLevels(tree, begins, ends, bounds, count, row_idx, frame_part);
@@ -547,6 +621,49 @@ void WindowSegmentTreePart::Evaluate(const WindowSegmentTreeGlobalState &tree, c
 		EvaluateUpperLevels(tree, begins, ends, bounds, count, row_idx, frame_part);
 		EvaluateLeaves(tree, begins, ends, bounds, count, row_idx, frame_part, FramePart::RIGHT);
 	}
+
+	if (extended) {
+		AccumulateFrames(count);
+	}
+}
+
+idx_t WindowSegmentTreePart::ExtendFrames(const idx_t *begins, const idx_t *ends, idx_t count) {
+	extend_begins.resize(STANDARD_VECTOR_SIZE);
+	extend_ends.resize(STANDARD_VECTOR_SIZE);
+	extends_previous.resize(STANDARD_VECTOR_SIZE);
+
+	//	The first row of each chunk (and of each partition) is computed from the tree
+	idx_t extended = 0;
+	for (idx_t rid = 0; rid < count; ++rid) {
+		const auto begin = begins[rid];
+		const auto end = ends[rid];
+		const auto prev_end = rid ? MaxValue(ends[rid - 1], begins[rid - 1]) : 0;
+		const bool extends = rid && begin == begins[rid - 1] && prev_end <= end;
+		extends_previous[rid] = extends;
+		extend_begins[rid] = extends ? prev_end : begin;
+		extend_ends[rid] = end;
+		extended += extends;
+	}
+
+	return extended;
+}
+
+void WindowSegmentTreePart::AccumulateFrames(idx_t count) {
+	//	Combines are applied in order, so each previous state is complete before we combine it into the next one.
+	auto fdata = FlatVector::GetDataMutable<data_ptr_t>(statef);
+	auto ldata = FlatVector::GetDataMutable<data_ptr_t>(statel);
+	auto pdata = FlatVector::GetDataMutable<data_ptr_t>(statep);
+	for (idx_t rid = 1; rid < count; ++rid) {
+		if (!extends_previous[rid]) {
+			continue;
+		}
+		ldata[flush_count] = fdata[rid - 1];
+		pdata[flush_count] = fdata[rid];
+		if (++flush_count >= STANDARD_VECTOR_SIZE) {
+			FlushStates(true);
+		}
+	}
+	FlushStates(true);
 }
 
 void WindowSegmentTreePart::Initialize(idx_t count) {

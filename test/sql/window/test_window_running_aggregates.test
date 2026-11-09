@@ -1,0 +1,198 @@
+# name: test/sql/window/test_window_running_aggregates.test
+# description: Frames that grow from a fixed start are accumulated from the previous row
+# group: [window]
+
+# Three partitions larger than a vector and an evaluation block, plus many small partitions.
+# The ORDER BY key has many peers, and v and d have NULLs.
+statement ok
+CREATE TABLE t AS
+SELECT i,
+       CASE WHEN i < 300009 THEN i // 100003 ELSE 3 + i % 997 END AS p,
+       (i * 7919) % 1009 AS o,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 37) % 2001 - 1000 END AS v,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE (((i * 53) % 100001 - 50000) / 100)::DECIMAL(9, 2) END AS d
+FROM range(400000) r(i)
+
+# The references are DOUBLE aggregates, which are not accumulated, but are exact for these inputs.
+foreach threads 1 8
+
+statement ok
+SET threads={threads}
+
+foreach frame ROWS RANGE
+
+query I
+SELECT count(*) FROM (
+    SELECT
+        sum(v) OVER w AS sum_v,
+        sum(v::HUGEINT) OVER w AS sum_h,
+        sum(v::DOUBLE) OVER w AS ref_sum_v,
+        count(v) OVER w AS count_v,
+        sum((v IS NOT NULL)::DOUBLE) OVER w AS ref_count_v,
+        min(v) OVER w AS min_v,
+        min(v::DOUBLE) OVER w AS ref_min_v,
+        max(v) OVER w AS max_v,
+        max(v::DOUBLE) OVER w AS ref_max_v,
+        sum(d) OVER w AS sum_d,
+        sum(d::DECIMAL(38, 2)) OVER w AS sum_wide_d,
+        sum((d * 100)::DOUBLE) OVER w AS ref_sum_d,
+        min(d) OVER w AS min_d,
+        min(d::DOUBLE) OVER w AS ref_min_d,
+        max(d::DECIMAL(38, 2)) OVER w AS max_d,
+        max(d::DOUBLE) OVER w AS ref_max_d,
+        sum(v) FILTER (WHERE i % 3 <> 0) OVER w AS sum_f,
+        sum(v::DOUBLE) FILTER (WHERE i % 3 <> 0) OVER w AS ref_sum_f
+    FROM t
+    WINDOW w AS (PARTITION BY p ORDER BY o, i % 2 {frame} BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+) r
+WHERE sum_v IS DISTINCT FROM ref_sum_v
+   OR sum_h IS DISTINCT FROM ref_sum_v
+   OR count_v IS DISTINCT FROM coalesce(ref_count_v, 0)
+   OR min_v IS DISTINCT FROM ref_min_v
+   OR max_v IS DISTINCT FROM ref_max_v
+   OR (sum_d * 100)::DOUBLE IS DISTINCT FROM ref_sum_d
+   OR (sum_wide_d * 100)::DOUBLE IS DISTINCT FROM ref_sum_d
+   OR min_d IS DISTINCT FROM ref_min_d
+   OR max_d IS DISTINCT FROM ref_max_d
+   OR sum_f IS DISTINCT FROM ref_sum_f
+----
+0
+
+endloop
+
+# The default frame with ORDER BY is RANGE ... CURRENT ROW, so peers share the same result.
+query II
+SELECT p, o FROM (
+    SELECT p, o, sum(v) OVER (PARTITION BY p ORDER BY o) AS s
+    FROM t
+) r
+GROUP BY p, o
+HAVING count(DISTINCT s) > 1
+----
+
+# Frames that grow from a fixed start, but not to the current row.
+query I
+SELECT count(*) FROM (
+    SELECT
+        sum(v) OVER w AS sum_v,
+        sum(v::DOUBLE) OVER w AS ref_sum_v,
+        max(d) OVER w AS max_d,
+        max(d::DOUBLE) OVER w AS ref_max_d
+    FROM t
+    WINDOW w AS (PARTITION BY p ORDER BY o, i ROWS BETWEEN UNBOUNDED PRECEDING AND 2500 FOLLOWING)
+) r
+WHERE sum_v IS DISTINCT FROM ref_sum_v OR max_d IS DISTINCT FROM ref_max_d
+----
+0
+
+# A single partition spanning the whole table.
+query I
+SELECT count(*) FROM (
+    SELECT
+        sum(v) OVER w AS sum_v,
+        sum(v::DOUBLE) OVER w AS ref_sum_v,
+        min(d) OVER w AS min_d,
+        min(d::DOUBLE) OVER w AS ref_min_d
+    FROM t
+    WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+) r
+WHERE sum_v IS DISTINCT FROM ref_sum_v OR min_d IS DISTINCT FROM ref_min_d
+----
+0
+
+endloop
+
+# Exact values (including AVG) against the naive aggregator, with partitions larger than a vector.
+statement ok
+CREATE TABLE s AS
+SELECT i, i % 4 AS p, i // 20 AS o,
+       CASE WHEN i % 4 = 0 OR i % 9 = 0 THEN NULL ELSE i % 23 END AS v,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE ((i % 1999) / 8)::DECIMAL(5, 1) END AS d
+FROM range(20000) r(i)
+
+statement ok
+CREATE TABLE windowed AS
+SELECT i,
+       sum(v) OVER rows_w AS a, min(v) OVER rows_w AS b, max(v) OVER rows_w AS c,
+       count(v) OVER rows_w AS e, avg(v) OVER rows_w AS f, avg(d) OVER rows_w AS g,
+       avg(d::DECIMAL(38, 1)) OVER rows_w AS h,
+       sum(v) OVER range_w AS j, min(v) OVER range_w AS k, count(v) OVER range_w AS l,
+       avg(d) OVER range_w AS m, avg(d::DECIMAL(38, 1)) OVER range_w AS n,
+       sum(v) FILTER (WHERE i % 3 = 0) OVER range_w AS q
+FROM s
+WINDOW rows_w AS (PARTITION BY p ORDER BY o, i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+       range_w AS (PARTITION BY p ORDER BY o DESC)
+
+statement ok
+SET debug_window_mode='separate'
+
+statement ok
+CREATE TABLE naive AS
+SELECT i,
+       sum(v) OVER rows_w AS a, min(v) OVER rows_w AS b, max(v) OVER rows_w AS c,
+       count(v) OVER rows_w AS e, avg(v) OVER rows_w AS f, avg(d) OVER rows_w AS g,
+       avg(d::DECIMAL(38, 1)) OVER rows_w AS h,
+       sum(v) OVER range_w AS j, min(v) OVER range_w AS k, count(v) OVER range_w AS l,
+       avg(d) OVER range_w AS m, avg(d::DECIMAL(38, 1)) OVER range_w AS n,
+       sum(v) FILTER (WHERE i % 3 = 0) OVER range_w AS q
+FROM s
+WINDOW rows_w AS (PARTITION BY p ORDER BY o, i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+       range_w AS (PARTITION BY p ORDER BY o DESC)
+
+statement ok
+RESET debug_window_mode
+
+query I
+SELECT count(*) FROM (SELECT * FROM windowed EXCEPT ALL SELECT * FROM naive)
+----
+0
+
+query I
+SELECT count(*) FROM windowed
+----
+20000
+
+# Leading NULLs and empty input.
+query IIII
+SELECT i, sum(v) OVER w, min(v) OVER w, count(v) OVER w
+FROM (VALUES (1, NULL), (2, NULL), (3, 5), (4, NULL), (5, 2)) t(i, v)
+WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+ORDER BY i
+----
+1	NULL	NULL	0
+2	NULL	NULL	0
+3	5	5	1
+4	5	5	1
+5	7	2	2
+
+query I
+SELECT sum(i) OVER (PARTITION BY i % 2 ORDER BY i) FROM range(0) t(i)
+----
+
+# 128-bit sums still raise an overflow error for the rows that overflow.
+statement error
+SELECT sum(v) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+FROM (SELECT i, 170141183460469231731687303715884105727::HUGEINT // 3 AS v FROM range(5) t(i))
+----
+Overflow
+
+# For the row ending at 527, the tree adds rows 512-527 to rows 0-255 before rows 256-511, which overflows.
+# 128-bit sums are not accumulated, so they raise the same error.
+foreach type HUGEINT DECIMAL(38,0)
+
+statement error
+SELECT max(s) FROM (
+    SELECT sum(v) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s
+    FROM (
+        SELECT i, CASE i
+            WHEN 0 THEN 90000000000000000000000000000000000000
+            WHEN 256 THEN -99999999999999999999999999999999999999
+            WHEN 512 THEN 90000000000000000000000000000000000000
+            ELSE 0 END::{type} AS v
+        FROM range(600) t(i)
+    )
+)
+----
+Overflow
+
+endloop
