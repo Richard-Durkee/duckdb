@@ -29,7 +29,9 @@ public:
 	~CopyOutputLifecycle();
 
 public:
-	void RegisterFile(string path) DUCKDB_EXCLUDES(lock);
+	//! A path with a 'unique_name' (e.g. one with a fresh UUID) can not have existed before, so it is removed on
+	//! failure without checking whether it exists
+	void RegisterFile(string path, bool unique_name = false) DUCKDB_EXCLUDES(lock);
 	void RegisterCreatedDirectory(string path) DUCKDB_EXCLUDES(lock);
 	void MarkSuccessful() noexcept DUCKDB_EXCLUDES(lock);
 

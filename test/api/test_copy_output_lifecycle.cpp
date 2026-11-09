@@ -605,6 +605,30 @@ TEST_CASE("A failed COPY to remote storage keeps its outputs", "[api][copy]") {
 	REQUIRE(counting.removed_files == 0);
 }
 
+TEST_CASE("A failed COPY to remote storage removes the outputs it named with a UUID", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(connection.Query("SET async_threads=0"));
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto counting_fs = make_uniq<ExistenceCountingFileSystem>();
+	auto &counting = *counting_fs;
+	fs.RegisterSubSystem(std::move(counting_fs));
+
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	info->fail_finalize_after = 1;
+	RegisterLifecycleCopyFunction(db, "copy_remote_uuid_failure", info);
+	auto result = connection.Query("COPY (SELECT i AS p, 42 AS v FROM range(4) t(i)) TO "
+	                               "'s3://existence-check-test/failed_uuid' (FORMAT copy_remote_uuid_failure, "
+	                               "PARTITION_BY (p), FILENAME_PATTERN 'data_{uuid}')");
+	REQUIRE_FAIL(result);
+	result.reset();
+	REQUIRE(!info->initialized_paths.empty());
+	// a name with a fresh UUID can not have existed before, so every output is removed without checking
+	REQUIRE(counting.removed_files == info->initialized_paths.size());
+	REQUIRE(counting.existence_checks == 0);
+}
+
 TEST_CASE("COPY output lifecycle removes owned files after failure", "[api][copy]") {
 	DuckDB db(nullptr);
 	Connection connection(db);

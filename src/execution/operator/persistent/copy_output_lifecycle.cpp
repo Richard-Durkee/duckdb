@@ -72,8 +72,8 @@ void CopyOutputLifecycle::Cleanup() {
 	}
 }
 
-void CopyOutputLifecycle::RegisterFile(string path) {
-	auto ownership = GetOwnership(path);
+void CopyOutputLifecycle::RegisterFile(string path, bool unique_name) {
+	auto ownership = unique_name ? CopyOutputOwnership::REMOVE_ON_FAILURE : GetOwnership(path);
 	annotated_lock_guard<annotated_mutex> guard(lock);
 	files.push_back({std::move(path), ownership});
 }
