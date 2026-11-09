@@ -1498,6 +1498,8 @@ typedef struct {
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_connection_create_from_v1_database)
 	(void *v1_database, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_connection_create_from_v1_connection)
+	(void *v1_connection, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err);
 } duckdb_ext_api_v2;
 
 //===--------------------------------------------------------------------===//
@@ -2180,6 +2182,7 @@ inline duckdb_ext_api_v2 CreateAPIv2(void) {
 	result.duckdb_v2_query_metrics_node_get_name = duckdb_v2_query_metrics_node_get_name;
 	result.duckdb_v2_statement_add_collection = duckdb_v2_statement_add_collection;
 	result.duckdb_v2_connection_create_from_v1_database = duckdb_v2_connection_create_from_v1_database;
+	result.duckdb_v2_connection_create_from_v1_connection = duckdb_v2_connection_create_from_v1_connection;
 	return result;
 }
 

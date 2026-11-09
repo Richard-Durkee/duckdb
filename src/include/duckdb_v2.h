@@ -1992,6 +1992,32 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(void *
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
+ * Creates a connection handle that shares the session of a V1 `duckdb_connection`.
+ *
+ * Unlike `duckdb_v2_connection_create()`, the handle does not get a client context of its own. It shares the V1
+ * connection's session: its settings, including session-scoped (LOCAL) ones, its open transaction, its temporary tables
+ * and prepared statements, and its profiler. Statements run through either API are serialized on that session, so a
+ * statement fails while the other API still has a result open. Interrupting through the V1 connection stops a running
+ * V2 statement with an error; only `duckdb_v2_connection_interrupt()` reports a cancel.
+ *
+ * The V1 connection must stay open until the handle is destroyed via `duckdb_v2_connection_destroy()`.
+ *
+ * history:
+ * - unstable: v2.0.0
+ *
+ * @param v1_connection The `duckdb_connection` handle itself, as filled in by `duckdb_connect`.
+ * @param out_conn Receives the new connection handle.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
+ * `duckdb_v2_error_info_destroy()`.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_connection(void *v1_connection,
+                                                                            duckdb_v2_connection_handle *out_conn,
+                                                                            duckdb_v2_error_info_handle *err);
+#endif
+
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+/*!
  * Destroys the connection.
  *
  * Always succeeds. Releases the connection's reference on the underlying database instance, which survives for as long

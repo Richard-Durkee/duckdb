@@ -28,6 +28,20 @@ DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(void *v1_database, 
 	});
 }
 
+DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_connection(void *v1_connection,
+                                                               duckdb_v2_connection_handle *out_conn,
+                                                               duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(v1_connection);
+	DUCKDB_CHECK_ARG(out_conn);
+	*out_conn = nullptr;
+	return WithErrorHandler(err, [&]() {
+		// a duckdb_connection points at the V1 API's Connection
+		auto &v1 = *reinterpret_cast<duckdb::Connection *>(v1_connection);
+		auto connection = duckdb::make_uniq<CV2Connection>(v1);
+		*out_conn = Convert(connection.release());
+	});
+}
+
 DUCKDB_V2_ERROR duckdb_v2_connection_destroy(duckdb_v2_connection_handle *conn) {
 	return WithErrorHandler(nullptr, [&]() {
 		if (!conn) {

@@ -117,9 +117,9 @@ DUCKDB_V2_ERROR duckdb_v2_connection_enable_profiling(duckdb_v2_connection_handl
 	return WithErrorHandler(err, [&]() {
 		auto &connection = *Convert(conn);
 		if (enabled) {
-			connection.EnableProfiling();
+			connection.context->EnableProfiling();
 		} else {
-			connection.DisableProfiling();
+			connection.context->DisableProfiling();
 		}
 	});
 }

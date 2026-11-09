@@ -43,7 +43,7 @@ struct ResultWrapperV2 {
 	shared_ptr<ResultFormat> format;
 
 	//! Preserves the guarantee that an undrained result survives disconnect:
-	//! the connection handle (a bare Connection *) may be destroyed while a
+	//! the connection handle may be destroyed while a
 	//! result is live, but the context it shared with us stays alive here.
 	shared_ptr<ClientContext> context;
 	//! True once the metadata has been captured. For a statement that expands into several, that is once execution

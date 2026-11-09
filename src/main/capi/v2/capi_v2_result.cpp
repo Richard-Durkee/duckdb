@@ -399,7 +399,7 @@ auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLState
                         idx_t parameter_count, const char *function_name, shared_ptr<ResultFormat> format)
     -> unique_ptr<ResultWrapperV2> {
 	auto wrapper = make_uniq<ResultWrapperV2>();
-	// The busy slot lives in the context's registered-state map, so the connection handle stays a bare Connection *
+	// The busy slot lives in the context's registered-state map, so the connection handle needs no field for it
 	wrapper->busy_slot = GetBusySlot(*context);
 	wrapper->cancel_requests_at_start = wrapper->busy_slot->cancel_requests.load();
 

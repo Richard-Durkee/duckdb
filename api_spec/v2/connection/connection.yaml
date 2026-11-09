@@ -60,6 +60,37 @@ functions:
         kind: OUT
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
+  connection_create_from_v1_connection:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-09" ]
+    description: |
+      Creates a connection handle that shares the session of a V1 `duckdb_connection`.
+
+      Unlike `[[connection_create]]`, the handle does not get a client context of its own. It shares the V1
+      connection's session: its settings, including session-scoped (LOCAL) ones, its open transaction, its temporary
+      tables and prepared statements, and its profiler. Statements run through either API are serialized on that
+      session, so a statement fails while the other API still has a result open. Interrupting through the V1
+      connection stops a running V2 statement with an error; only `[[connection_interrupt]]` reports a cancel.
+
+      The V1 connection must stay open until the handle is destroyed via `[[connection_destroy]]`.
+    role: constructor
+    belongs_to: connection
+    parameters:
+      v1_connection:
+        type: void
+        indirection: 1
+        description: "The `duckdb_connection` handle itself, as filled in by `duckdb_connect`."
+      out_conn:
+        type: connection
+        indirection: 1
+        kind: OUT
+        description: "Receives the new connection handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
   connection_destroy:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-04" ]

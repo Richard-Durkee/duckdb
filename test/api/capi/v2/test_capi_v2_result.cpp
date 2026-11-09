@@ -3,6 +3,7 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context_state.hpp"
+#include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 #include "duckdb/main/connection.hpp"
 
 #include <atomic>
@@ -1152,7 +1153,7 @@ public:
 
 TEST_CASE("V2: a cancel requested while a statement is submitted cancels it", "[capi_v2][query_result]") {
 	EnvFixture fx;
-	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
+	auto &con = *duckdb::capiv2::Convert(fx.conn);
 	con.context->GetContext().GetRegisteredState().Insert("cancel_while_planning",
 	                                                      duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
 	duckdb_v2_result_handle result = nullptr;

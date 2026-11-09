@@ -470,12 +470,24 @@ inline auto Convert(CV2Context *ctx) -> duckdb_v2_context_handle {
 	return reinterpret_cast<duckdb_v2_context_handle>(ctx);
 }
 
-//! A connection handle: the connection plus the context handle it lends out.
-class CV2Connection : public Connection {
+//! A connection handle: the client context it runs on plus the context handle it lends out.
+class CV2Connection {
 public:
-	explicit CV2Connection(DuckDB &database) : Connection(database), context_handle(*context) {
+	//! A new connection of its own to the database.
+	explicit CV2Connection(DuckDB &database)
+	    : owned_connection(make_uniq<Connection>(database)), context(owned_connection->context),
+	      context_handle(*context) {
+	}
+	//! A handle on the client context of an existing connection, which must outlive it.
+	explicit CV2Connection(Connection &connection) : context(connection.context), context_handle(*context) {
 	}
 
+private:
+	//! Declared before context, which the owning constructor initializes from it
+	unique_ptr<Connection> owned_connection;
+
+public:
+	shared_ptr<ClientContext> context;
 	CV2ConnectionContext context_handle;
 };
 
