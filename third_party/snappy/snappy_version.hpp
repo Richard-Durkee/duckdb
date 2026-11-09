@@ -1,11 +1,6 @@
 #pragma once
 
-//! The new version of snappy is much faster when compiled with clang, but slower when compiled with GCC
-//! For DuckDB, we default to the old version if the compiler is not clang
+//! The new version of snappy is faster than the old version with both clang and GCC
 #ifndef SNAPPY_NEW_VERSION
-#ifdef __clang__
 #define SNAPPY_NEW_VERSION true
-#else
-#define SNAPPY_NEW_VERSION false
-#endif
 #endif
