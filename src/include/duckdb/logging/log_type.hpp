@@ -218,6 +218,21 @@ public:
 	static string ConstructLogMessage(idx_t pending_bytes, idx_t budget_bytes, idx_t active_jobs);
 };
 
+class ReadAheadScanLogType : public LogType {
+public:
+	static constexpr const char *NAME = "ReadAheadScan";
+	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
+
+	ReadAheadScanLogType();
+
+	static LogicalType GetLogType();
+
+	//! One entry per scan that opened files ahead: how much of the open-ahead window it used and how long it waited
+	static string ConstructLogMessage(idx_t files_opened, idx_t open_window, idx_t async_threads, double open_seconds,
+	                                  double span_seconds, double avg_opens_in_flight, double avg_opens_running,
+	                                  double idle_seconds, idx_t stalls, double stall_seconds);
+};
+
 class ProgressVerificationLogType : public LogType {
 public:
 	static constexpr const char *NAME = "ProgressVerification";

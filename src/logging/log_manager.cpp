@@ -319,6 +319,7 @@ void LogManager::RegisterDefaultLogTypes() {
 	RegisterLogType(make_uniq<ParquetPrefetchLogType>());
 	RegisterLogType(make_uniq<AsyncTaskScheduleLogType>());
 	RegisterLogType(make_uniq<ReadAheadBudgetLogType>());
+	RegisterLogType(make_uniq<ReadAheadScanLogType>());
 	RegisterLogType(make_uniq<ExternalResourceLogType>());
 	RegisterLogType(make_uniq<ProgressVerificationLogType>());
 }

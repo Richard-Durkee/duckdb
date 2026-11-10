@@ -163,6 +163,33 @@ ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
 
 ScanReadAhead::~ScanReadAhead() {
 	CancelAndDrain();
+	auto &timeline = open_timeline;
+	lock_guard<mutex> guard(timeline.lock);
+	if (timeline.files_opened == 0) {
+		return;
+	}
+	const auto span = std::chrono::duration<double>(timeline.last_finished - timeline.first_scheduled).count();
+	DUCKDB_LOG(context, ReadAheadScanLogType, timeline.files_opened, open_window,
+	           TaskScheduler::GetScheduler(context).NumberOfAsyncThreads(), timeline.open_seconds, span,
+	           span > 0 ? timeline.in_flight_seconds_at_last / span : 0.0,
+	           span > 0 ? timeline.running_seconds_at_last / span : 0.0, timeline.idle_seconds_at_last, timeline.stalls,
+	           timeline.stall_seconds);
+}
+
+void ScanReadAhead::OpenTimeline::Advance(clock::time_point now) {
+	const auto elapsed = std::chrono::duration<double>(now - last_event).count();
+	in_flight_seconds += static_cast<double>(in_flight) * elapsed;
+	running_seconds += static_cast<double>(running) * elapsed;
+	if (in_flight == 0) {
+		idle_seconds += elapsed;
+	}
+	last_event = now;
+}
+
+void ScanReadAhead::NoteOpenStall(std::chrono::steady_clock::duration duration) {
+	lock_guard<mutex> guard(open_timeline.lock);
+	open_timeline.stalls++;
+	open_timeline.stall_seconds += std::chrono::duration<double>(duration).count();
 }
 
 void ScanReadAhead::CancelAndDrain() {
@@ -370,7 +397,46 @@ void ScanReadAhead::PushError(ErrorData error) {
 }
 
 void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::function<void()> cancel_fn) {
-	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, std::move(open_fn), std::move(cancel_fn)));
+	{
+		lock_guard<mutex> guard(open_timeline.lock);
+		const auto now = OpenTimeline::clock::now();
+		if (!open_timeline.started) {
+			open_timeline.started = true;
+			open_timeline.first_scheduled = now;
+			open_timeline.last_event = now;
+		}
+		open_timeline.Advance(now);
+		open_timeline.in_flight++;
+	}
+	auto timed_open = [this, open_fn]() {
+		const auto start = OpenTimeline::clock::now();
+		{
+			lock_guard<mutex> guard(open_timeline.lock);
+			open_timeline.Advance(start);
+			open_timeline.running++;
+		}
+		open_fn();
+		lock_guard<mutex> guard(open_timeline.lock);
+		const auto end = OpenTimeline::clock::now();
+		open_timeline.Advance(end);
+		open_timeline.running--;
+		open_timeline.in_flight--;
+		open_timeline.files_opened++;
+		open_timeline.open_seconds += std::chrono::duration<double>(end - start).count();
+		open_timeline.last_finished = end;
+		open_timeline.in_flight_seconds_at_last = open_timeline.in_flight_seconds;
+		open_timeline.running_seconds_at_last = open_timeline.running_seconds;
+		open_timeline.idle_seconds_at_last = open_timeline.idle_seconds;
+	};
+	auto counted_cancel = [this, cancel_fn]() {
+		{
+			lock_guard<mutex> guard(open_timeline.lock);
+			open_timeline.Advance(OpenTimeline::clock::now());
+			open_timeline.in_flight--;
+		}
+		cancel_fn();
+	};
+	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, std::move(timed_open), std::move(counted_cancel)));
 }
 
 bool ScanReadAhead::CanScheduleOpen(idx_t files_ahead) const {

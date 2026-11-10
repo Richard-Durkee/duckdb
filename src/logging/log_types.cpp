@@ -25,6 +25,7 @@ constexpr LogLevel AdaptiveFilterLogType::LEVEL;
 constexpr LogLevel ParquetPrefetchLogType::LEVEL;
 constexpr LogLevel AsyncTaskScheduleLogType::LEVEL;
 constexpr LogLevel ReadAheadBudgetLogType::LEVEL;
+constexpr LogLevel ReadAheadScanLogType::LEVEL;
 constexpr LogLevel ProgressVerificationLogType::LEVEL;
 
 //===--------------------------------------------------------------------===//
@@ -585,6 +586,42 @@ string ReadAheadBudgetLogType::ConstructLogMessage(idx_t pending_bytes, idx_t bu
 	    {"pending_bytes", Value::UBIGINT(pending_bytes)},
 	    {"budget_bytes", Value::UBIGINT(budget_bytes)},
 	    {"active_jobs", Value::UBIGINT(active_jobs)},
+	};
+	return Value::STRUCT(std::move(child_list)).ToString();
+}
+
+//===--------------------------------------------------------------------===//
+// ReadAheadScanLogType
+//===--------------------------------------------------------------------===//
+ReadAheadScanLogType::ReadAheadScanLogType() : LogType(NAME, LEVEL, GetLogType()) {
+}
+
+LogicalType ReadAheadScanLogType::GetLogType() {
+	child_list_t<LogicalType> child_list = {
+	    {"files_opened", LogicalType::UBIGINT},     {"open_window", LogicalType::UBIGINT},
+	    {"async_threads", LogicalType::UBIGINT},    {"open_seconds", LogicalType::DOUBLE},
+	    {"span_seconds", LogicalType::DOUBLE},      {"avg_opens_in_flight", LogicalType::DOUBLE},
+	    {"avg_opens_running", LogicalType::DOUBLE}, {"idle_seconds", LogicalType::DOUBLE},
+	    {"stalls", LogicalType::UBIGINT},           {"stall_seconds", LogicalType::DOUBLE},
+	};
+	return LogicalType::STRUCT(child_list);
+}
+
+string ReadAheadScanLogType::ConstructLogMessage(idx_t files_opened, idx_t open_window, idx_t async_threads,
+                                                 double open_seconds, double span_seconds, double avg_opens_in_flight,
+                                                 double avg_opens_running, double idle_seconds, idx_t stalls,
+                                                 double stall_seconds) {
+	child_list_t<Value> child_list = {
+	    {"files_opened", Value::UBIGINT(files_opened)},
+	    {"open_window", Value::UBIGINT(open_window)},
+	    {"async_threads", Value::UBIGINT(async_threads)},
+	    {"open_seconds", Value::DOUBLE(open_seconds)},
+	    {"span_seconds", Value::DOUBLE(span_seconds)},
+	    {"avg_opens_in_flight", Value::DOUBLE(avg_opens_in_flight)},
+	    {"avg_opens_running", Value::DOUBLE(avg_opens_running)},
+	    {"idle_seconds", Value::DOUBLE(idle_seconds)},
+	    {"stalls", Value::UBIGINT(stalls)},
+	    {"stall_seconds", Value::DOUBLE(stall_seconds)},
 	};
 	return Value::STRUCT(std::move(child_list)).ToString();
 }

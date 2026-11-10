@@ -23,6 +23,7 @@
 #include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
+#include <chrono>
 #include <functional>
 
 namespace duckdb {
@@ -180,6 +181,8 @@ public:
 	//! Cancel the tasks that have not started yet and wait for the ones that are running. The scheduled closures
 	//! reference the scan they were scheduled for, so they must not outlive it
 	void CancelAndDrain();
+	//! A scan thread waited this long for the open of the file it reads next
+	void NoteOpenStall(std::chrono::steady_clock::duration duration);
 
 private:
 	//! Settles the reservation taken by TryReserveSlot
@@ -241,6 +244,34 @@ private:
 	//! How long a thread yields for another thread to push a job before it waits for it
 	static constexpr idx_t PRODUCER_YIELD_MICROS = 1000;
 
+	//! How the scan's file opens overlapped in time, logged as one ReadAheadScan entry when the read-ahead is destroyed
+	struct OpenTimeline {
+		using clock = std::chrono::steady_clock;
+		mutex lock;
+		bool started = false;
+		clock::time_point last_event;
+		clock::time_point first_scheduled;
+		clock::time_point last_finished;
+		//! opens scheduled and not finished, and those of them running on an async thread
+		idx_t in_flight = 0;
+		idx_t running = 0;
+		idx_t files_opened = 0;
+		idx_t stalls = 0;
+		double open_seconds = 0;
+		double stall_seconds = 0;
+		//! the time integrals of in_flight and running, and the time with no open in flight, since the first open was
+		//! scheduled; the values at the last finished open exclude the tail after the scan's last open
+		double in_flight_seconds = 0;
+		double running_seconds = 0;
+		double idle_seconds = 0;
+		double in_flight_seconds_at_last = 0;
+		double running_seconds_at_last = 0;
+		double idle_seconds_at_last = 0;
+
+		//! Accumulate the integrals up to now, the caller holds the lock
+		void Advance(clock::time_point now);
+	};
+
 private:
 	ClientContext &context;
 	//! Maximum number of jobs scheduled ahead of decoding, unlimited in the -1 auto mode
@@ -274,6 +305,7 @@ private:
 	condition_variable progress;
 	//! Async I/O executor (async pool)
 	shared_ptr<TaskExecutor> executor;
+	OpenTimeline open_timeline;
 };
 
 } // namespace duckdb

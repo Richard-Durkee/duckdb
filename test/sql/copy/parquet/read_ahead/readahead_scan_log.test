@@ -1,0 +1,70 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_scan_log.test
+# description: A scan that opens files ahead logs one ReadAheadScan entry with how its opens overlapped and how long it waited for them
+# group: [read_ahead]
+
+require parquet
+
+statement ok
+SET threads=1
+
+statement ok
+SET async_threads=4
+
+loop i 0 32
+
+statement ok
+COPY (SELECT range AS b FROM range(100)) TO '{TEST_DIR}/scan_log_{i}.parquet' (FORMAT parquet)
+
+endloop
+
+# slow opens, so that the scan waits for some of them
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=5
+
+statement ok
+CALL enable_logging('ReadAheadScan')
+
+query I
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/scan_log_*.parquet')
+----
+158400
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=0
+
+# one entry for the scan, which opened every file once
+query II
+SELECT count(*), sum(files_opened) FROM duckdb_logs_parsed('ReadAheadScan')
+----
+1	32
+
+# opens overlap within the window and the async pool, and their time adds up across the overlap
+query I
+SELECT avg_opens_in_flight > 0 AND avg_opens_in_flight <= open_window AND avg_opens_running <= async_threads
+	AND open_seconds > 0 AND span_seconds > 0 AND idle_seconds >= 0 AND idle_seconds <= span_seconds
+FROM duckdb_logs_parsed('ReadAheadScan')
+----
+true
+
+# the delay makes the scan wait for the open of its next file at least once
+query I
+SELECT stalls > 0 AND stall_seconds > 0 FROM duckdb_logs_parsed('ReadAheadScan')
+----
+true
+
+# a scan without read-ahead logs nothing
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET read_ahead_depth=0
+
+query I
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/scan_log_*.parquet')
+----
+158400
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ReadAheadScan')
+----
+0

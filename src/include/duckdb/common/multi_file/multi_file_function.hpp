@@ -598,6 +598,10 @@ public:
 			return HasFilesToRead(gstate, parallel_lock) && !gstate.error_opening_file &&
 			       gstate.readers[gstate.file_index]->file_state == MultiFileFileState::OPENING;
 		};
+		if (!still_opening()) {
+			return;
+		}
+		const auto wait_start = std::chrono::steady_clock::now();
 		while (still_opening()) {
 			parallel_lock.unlock();
 			// the open may be queued behind other async work or the async pool may be gone, so run tasks inline
@@ -613,6 +617,7 @@ public:
 			context.InterruptCheck();
 			parallel_lock.lock();
 		}
+		read_ahead.NoteOpenStall(std::chrono::steady_clock::now() - wait_start);
 	}
 
 	static void InitializeDecodeChunk(ClientContext &context, MultiFileLocalState &lstate,
