@@ -1,0 +1,257 @@
+# name: test/sql/join/inner/test_join_multi_key_runtime_filters.test
+# description: Joins with several equality keys push a bloom or prefix-range filter per key column
+# group: [inner]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET threads=4;
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+# item is not selective (the build side covers most items), ticket is (the build side holds 2% of the tickets)
+# sparse_ticket spans too wide a range for a prefix-range filter, so it gets a bloom filter
+statement ok
+CREATE TABLE probe AS
+SELECT i AS v,
+       (i % 3000)::INTEGER AS item,
+       (i // 12)::BIGINT AS ticket,
+       ((i // 12) * 1000003)::BIGINT AS sparse_ticket,
+       (i % 2)::INTEGER AS flag,
+       ('s' || (i // 12))::VARCHAR AS str_ticket,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 3000)::INTEGER END AS null_item,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE ((i // 12) * 1000003)::BIGINT END AS null_ticket
+FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE build AS
+SELECT item, ticket, sparse_ticket, flag, str_ticket, null_item, null_ticket
+FROM probe
+WHERE ticket % 50 = 0;
+
+# reference results without any join filters
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,join_filter_pushdown';
+
+statement ok
+CREATE TABLE e_dense AS SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket;
+
+statement ok
+CREATE TABLE e_sparse AS SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
+
+statement ok
+CREATE TABLE e_three AS
+SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag;
+
+statement ok
+CREATE TABLE e_semi AS SELECT p.v FROM probe p SEMI JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
+
+statement ok
+CREATE TABLE e_mixed AS SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket;
+
+statement ok
+CREATE TABLE e_nulls AS SELECT p.v FROM probe p JOIN build b ON p.null_item = b.null_item AND p.null_ticket = b.null_ticket;
+
+statement ok
+CREATE TABLE e_ndf AS
+SELECT p.v FROM probe p JOIN build b
+ON p.null_item IS NOT DISTINCT FROM b.null_item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket;
+
+statement ok
+CREATE TABLE e_ndf_mixed AS
+SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket;
+
+statement ok
+CREATE TABLE e_inequality AS
+SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag >= b.flag;
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+# a dense key column gets a prefix-range filter
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket;
+----
+analyzed_plan	<REGEX>:.*ticket IN PRF\(ticket\).*
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket EXCEPT ALL TABLE e_dense)
+    UNION ALL
+    (TABLE e_dense EXCEPT ALL SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket)
+);
+----
+0
+
+# a sparse key column gets a bloom filter
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
+----
+analyzed_plan	<REGEX>:.*sparse_ticket IN BF\(sparse_ticket\).*
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket
+     EXCEPT ALL TABLE e_sparse)
+    UNION ALL
+    (TABLE e_sparse EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket)
+);
+----
+0
+
+# three keys
+query II
+EXPLAIN ANALYZE
+SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag;
+----
+analyzed_plan	<REGEX>:.*sparse_ticket IN BF\(sparse_ticket\).*
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag
+     EXCEPT ALL TABLE e_three)
+    UNION ALL
+    (TABLE e_three EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag)
+);
+----
+0
+
+# SEMI join
+query II
+EXPLAIN ANALYZE
+SELECT count(*) FROM probe p SEMI JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
+----
+analyzed_plan	<REGEX>:.*sparse_ticket IN BF\(sparse_ticket\).*
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p SEMI JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket
+     EXCEPT ALL TABLE e_semi)
+    UNION ALL
+    (TABLE e_semi EXCEPT ALL
+     SELECT p.v FROM probe p SEMI JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket)
+);
+----
+0
+
+# a VARCHAR key column next to an INTEGER one
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket;
+----
+analyzed_plan	<REGEX>:.*str_ticket IN (BF|PRF)\(str_ticket\).*
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket EXCEPT ALL TABLE e_mixed)
+    UNION ALL
+    (TABLE e_mixed EXCEPT ALL SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.str_ticket = b.str_ticket)
+);
+----
+0
+
+# NULL keys on both sides
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.null_item = b.null_item AND p.null_ticket = b.null_ticket
+     EXCEPT ALL TABLE e_nulls)
+    UNION ALL
+    (TABLE e_nulls EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.null_item = b.null_item AND p.null_ticket = b.null_ticket)
+);
+----
+0
+
+# NOT DISTINCT FROM keys keep the probe rows with NULL keys
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b
+     ON p.null_item IS NOT DISTINCT FROM b.null_item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket
+     EXCEPT ALL TABLE e_ndf)
+    UNION ALL
+    (TABLE e_ndf EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b
+     ON p.null_item IS NOT DISTINCT FROM b.null_item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket
+     EXCEPT ALL TABLE e_ndf_mixed)
+    UNION ALL
+    (TABLE e_ndf_mixed EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.null_ticket IS NOT DISTINCT FROM b.null_ticket)
+);
+----
+0
+
+# NULL probe keys must survive a NOT DISTINCT FROM key filter
+query I
+SELECT count(*) > 0 FROM e_ndf JOIN probe USING (v) WHERE probe.null_ticket IS NULL;
+----
+true
+
+# two equality keys next to an inequality condition
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag >= b.flag
+     EXCEPT ALL TABLE e_inequality)
+    UNION ALL
+    (TABLE e_inequality EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag >= b.flag)
+);
+----
+0
+
+# RIGHT_SEMI: the small side becomes the build side and the large side is filtered
+statement ok
+SET disabled_optimizers = 'join_order,compressed_materialization';
+
+query I
+SELECT count(*) FROM (
+    (SELECT b.ticket FROM build b SEMI JOIN probe p ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket
+     EXCEPT ALL SELECT ticket FROM build)
+    UNION ALL
+    (SELECT ticket FROM build EXCEPT ALL
+     SELECT b.ticket FROM build b SEMI JOIN probe p ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket)
+);
+----
+0
+
+# the same results single-threaded, where finalize runs as one task
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization';
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket EXCEPT ALL TABLE e_dense)
+    UNION ALL
+    (TABLE e_dense EXCEPT ALL SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.ticket = b.ticket)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+    (SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag
+     EXCEPT ALL TABLE e_three)
+    UNION ALL
+    (TABLE e_three EXCEPT ALL
+     SELECT p.v FROM probe p JOIN build b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket AND p.flag = b.flag)
+);
+----
+0
+
+# an empty build side
+query I
+SELECT count(*) FROM probe p JOIN (FROM build WHERE ticket < 0) b ON p.item = b.item AND p.sparse_ticket = b.sparse_ticket;
+----
+0
