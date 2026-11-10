@@ -7,6 +7,12 @@
 #include "duckdb/parallel/concurrentqueue.hpp"
 #include "duckdb/common/bit_utils.hpp"
 
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX
+#include <cinttypes>
+#include <cstdio>
+#include <unistd.h>
+#endif
+
 #if defined(_WIN32)
 #include "duckdb/common/windows.hpp"
 #else
@@ -21,6 +27,41 @@ namespace duckdb {
 //===--------------------------------------------------------------------===//
 // Memory Helpers
 //===--------------------------------------------------------------------===//
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+static idx_t GetHugePageSize() {
+	auto file = fopen("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", "r");
+	if (!file) {
+		return 0;
+	}
+	int64_t huge_page_size = 0;
+	char trailing;
+	auto fields = fscanf(file, "%" SCNd64 " %c", &huge_page_size, &trailing);
+	fclose(file);
+	auto page_size = sysconf(_SC_PAGESIZE);
+	if (fields != 1 || page_size <= 0 || huge_page_size < page_size || (huge_page_size & (huge_page_size - 1)) != 0 ||
+	    huge_page_size % page_size != 0) {
+		return 0;
+	}
+	return NumericCast<idx_t>(huge_page_size);
+}
+#endif
+
+static void AdviseHugePages(data_ptr_t pointer, idx_t size) {
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+	static constexpr idx_t MIN_ADVISE_SIZE = 8ULL * 1024 * 1024;
+	if (size >= MIN_ADVISE_SIZE) {
+		static const idx_t huge_page_size = GetHugePageSize();
+		if (huge_page_size != 0 && size / huge_page_size >= 4) {
+			const auto base = reinterpret_cast<uintptr_t>(pointer);
+			const auto offset = (huge_page_size - base % huge_page_size) % huge_page_size;
+			const auto length = ((size - offset) / huge_page_size) * huge_page_size;
+			// Only advise complete huge pages contained in this allocation.
+			madvise(pointer + offset, length, MADV_HUGEPAGE);
+		}
+	}
+#endif
+}
+
 static data_ptr_t AllocateVirtualMemory(const idx_t size) {
 #if INTPTR_MAX == INT32_MAX
 	// Disable on 32-bit
@@ -31,8 +72,27 @@ static data_ptr_t AllocateVirtualMemory(const idx_t size) {
 	// This returns nullptr on failure
 	return data_ptr_t(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS));
 #else
-	const auto ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	return ptr == MAP_FAILED ? nullptr : data_ptr_cast(ptr);
+#if defined(__linux__) && INTPTR_MAX == INT64_MAX && defined(MADV_HUGEPAGE)
+	// Align the pool to the huge page size so that each huge page backs whole blocks.
+	const auto huge_page_size = GetHugePageSize();
+#else
+	const idx_t huge_page_size = 0;
+#endif
+	const auto ptr = mmap(nullptr, size + huge_page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (ptr == MAP_FAILED) {
+		return nullptr;
+	}
+	auto pointer = data_ptr_cast(ptr);
+	if (huge_page_size != 0) {
+		const auto offset = (huge_page_size - reinterpret_cast<uintptr_t>(pointer) % huge_page_size) % huge_page_size;
+		if (offset != 0) {
+			munmap(pointer, offset);
+		}
+		munmap(pointer + offset + size, huge_page_size - offset);
+		pointer += offset;
+		AdviseHugePages(pointer, size);
+	}
+	return pointer;
 #endif
 }
 
