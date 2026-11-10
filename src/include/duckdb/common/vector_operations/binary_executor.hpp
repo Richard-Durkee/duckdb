@@ -104,6 +104,8 @@ struct BinaryScalarAdapter {
 
 template <class LEFT_TYPE, class RIGHT_TYPE, class OP>
 struct BinarySelectAdapter {
+	static constexpr bool TOTAL_OPERATION = true;
+
 	inline bool Operation(LEFT_TYPE left, RIGHT_TYPE right) {
 		return OP::Operation(left, right);
 	}

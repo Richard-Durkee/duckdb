@@ -1,0 +1,138 @@
+# name: test/sql/filter/nullable_batched_selection.test
+# description: Batched comparisons on nullable narrow columns mask NULL rows and preserve row mappings
+# group: [filter]
+
+require parquet
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE nbs_src AS
+SELECT i,
+       (hash(i) % 100)::INT AS h,
+       ((hash(i * 7 + 1) % 1000)::INT - 500) AS x,
+       ((hash(i * 3 + 2) % 1000)::INT - 500) AS y
+FROM range(100003) t(i);
+
+# pct is the NULL percentage; blk has whole 64-row (and longer) runs of NULLs between valid runs
+foreach pct 0 5 50 100 blk
+
+statement ok
+CREATE TABLE nbs_{pct} AS
+SELECT i, v,
+       v::INTEGER AS i32,
+       v::SMALLINT AS i16,
+       (v % 100)::TINYINT AS i8,
+       ((v + 500) % 250)::UTINYINT AS u8,
+       (v + 500)::UINTEGER AS u32,
+       (v * 0.1)::DECIMAL(9,2) AS dec,
+       v::BIGINT AS i64,
+       DATE '2000-01-01' + v AS dt,
+       CASE WHEN h % 3 = 0 THEN NULL ELSE y END AS w
+FROM (
+	SELECT i, h, y,
+	       CASE WHEN (CASE '{pct}' WHEN 'blk' THEN (i // 200) % 3 = 0 ELSE h < TRY_CAST('{pct}' AS INT) END)
+	            THEN NULL ELSE x END AS v
+	FROM nbs_src
+);
+
+statement ok
+COPY nbs_{pct} TO '{TEST_DIR}/nbs_{pct}.parquet' (FORMAT parquet, ROW_GROUP_SIZE 30000);
+
+foreach op < <= > >= = <>
+
+foreach col i32 i16 i8 u8 u32 dec i64
+
+# filter pushed into the native table scan
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE {col} {op} 7) AS a, (SELECT row(coalesce(sum(({col} {op} 7)::BIGINT), 0), coalesce(sum(i * ({col} {op} 7)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+# filter pushed into the Parquet scan
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM '{TEST_DIR}/nbs_{pct}.parquet' WHERE {col} {op} 7) AS a, (SELECT row(coalesce(sum(({col} {op} 7)::BIGINT), 0), coalesce(sum(i * ({col} {op} 7)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+# true and false outputs
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(sum(CASE WHEN {col} {op} 7 THEN i ELSE 2 * i END)) FROM nbs_{pct}) AS a, (SELECT row(sum(i * (2 - coalesce(({col} {op} 7)::BIGINT, 0)))) FROM nbs_{pct}) AS b)
+----
+true
+
+# column against column
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE {col} {op} w) AS a, (SELECT row(coalesce(sum(({col} {op} w)::BIGINT), 0), coalesce(sum(i * ({col} {op} w)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop
+
+# dates
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE dt {op} DATE '2000-01-08') AS a, (SELECT row(coalesce(sum((dt {op} DATE '2000-01-08')::BIGINT), 0), coalesce(sum(i * (dt {op} DATE '2000-01-08')::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM '{TEST_DIR}/nbs_{pct}.parquet' WHERE dt {op} DATE '2000-01-08') AS a, (SELECT row(coalesce(sum((dt {op} DATE '2000-01-08')::BIGINT), 0), coalesce(sum(i * (dt {op} DATE '2000-01-08')::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop
+
+# ranges
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE i32 BETWEEN -100 AND 300) AS a, (SELECT row(coalesce(sum((i32 BETWEEN -100 AND 300)::BIGINT), 0), coalesce(sum(i * (i32 BETWEEN -100 AND 300)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM '{TEST_DIR}/nbs_{pct}.parquet' WHERE i32 BETWEEN -100 AND 300) AS a, (SELECT row(coalesce(sum((i32 BETWEEN -100 AND 300)::BIGINT), 0), coalesce(sum(i * (i32 BETWEEN -100 AND 300)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop
+
+# keep the comparisons in a FILTER operator so they run through the scalar executor
+statement ok
+SET disabled_optimizers TO 'filter_pushdown,statistics_propagation';
+
+foreach pct 0 5 50 100 blk
+
+foreach op < <= > >= = <>
+
+foreach col i32 i16 i8 u8 u32 dec i64
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE {col} {op} 7) AS a, (SELECT row(coalesce(sum(({col} {op} 7)::BIGINT), 0), coalesce(sum(i * ({col} {op} 7)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM '{TEST_DIR}/nbs_{pct}.parquet' WHERE {col} {op} 7) AS a, (SELECT row(coalesce(sum(({col} {op} 7)::BIGINT), 0), coalesce(sum(i * ({col} {op} 7)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(sum(CASE WHEN {col} {op} 7 THEN i ELSE 2 * i END)) FROM nbs_{pct}) AS a, (SELECT row(sum(i * (2 - coalesce(({col} {op} 7)::BIGINT, 0)))) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE dt {op} DATE '2000-01-08') AS a, (SELECT row(coalesce(sum((dt {op} DATE '2000-01-08')::BIGINT), 0), coalesce(sum(i * (dt {op} DATE '2000-01-08')::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop
+
+query I
+SELECT a IS NOT DISTINCT FROM b FROM (SELECT (SELECT row(count(*), coalesce(sum(i), 0)) FROM nbs_{pct} WHERE i32 BETWEEN -100 AND 300) AS a, (SELECT row(coalesce(sum((i32 BETWEEN -100 AND 300)::BIGINT), 0), coalesce(sum(i * (i32 BETWEEN -100 AND 300)::BIGINT), 0)) FROM nbs_{pct}) AS b)
+----
+true
+
+endloop

@@ -12,6 +12,7 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector_operations/selection_helpers.hpp"
 
 #include <array>
 #include <functional>
@@ -472,7 +473,8 @@ private:
 
 		StaticSelectionSink(SelectionVector *true_selection_p, SelectionVector *false_selection_p)
 		    : true_selection(true_selection_p ? true_selection_p->data() : nullptr),
-		      false_selection(false_selection_p ? false_selection_p->data() : nullptr) {
+		      false_selection(false_selection_p ? false_selection_p->data() : nullptr),
+		      true_capacity(true_selection_p ? true_selection_p->Capacity() : 0) {
 			D_ASSERT(!HAS_TRUE_SELECTION || true_selection);
 			D_ASSERT(!HAS_FALSE_SELECTION || false_selection);
 		}
@@ -486,6 +488,17 @@ private:
 				false_selection[false_count] = UnsafeNumericCast<sel_t>(result_idx);
 				false_count += !comparison_result;
 			}
+		}
+
+		inline bool CanAppendBatch() const {
+			return HAS_TRUE_SELECTION && !HAS_FALSE_SELECTION;
+		}
+
+		inline void AppendBatch(const uint8_t *matches, idx_t count, idx_t offset) {
+			D_ASSERT(CanAppendBatch());
+			D_ASSERT(true_count <= true_capacity);
+			array_ptr<sel_t> destination(true_selection + true_count, true_capacity - true_count);
+			true_count += SelectionVector::SelectFromBoolean(matches, count, destination, offset);
 		}
 
 		inline void AppendInvalidRange(const SelectionVector &sel, idx_t start, idx_t end) {
@@ -522,6 +535,7 @@ private:
 
 		sel_t *true_selection;
 		sel_t *false_selection;
+		idx_t true_capacity;
 		idx_t true_count = 0;
 		idx_t false_count = 0;
 	};
@@ -540,6 +554,17 @@ private:
 				false_selection->set_index(false_count, result_idx);
 				false_count += !comparison_result;
 			}
+		}
+
+		inline bool CanAppendBatch() const {
+			return true_selection && !false_selection;
+		}
+
+		inline void AppendBatch(const uint8_t *matches, idx_t count, idx_t offset) {
+			D_ASSERT(CanAppendBatch());
+			D_ASSERT(true_count <= true_selection->Capacity());
+			array_ptr<sel_t> destination(true_selection->data() + true_count, true_selection->Capacity() - true_count);
+			true_count += SelectionVector::SelectFromBoolean(matches, count, destination, offset);
 		}
 
 		inline void AppendInvalidRange(const SelectionVector &sel, idx_t start, idx_t end) {
@@ -603,6 +628,27 @@ private:
 		for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
 			auto validity_entry = input_validity.GetValidityEntry(entry_idx);
 			auto next = MinValue<idx_t>(base_idx + ValidityMask::BITS_PER_VALUE, count);
+			if constexpr (UseBooleanSelectionBatch<ARGS...>()) {
+				// Masked batches also evaluate NULL rows, so they need an operation that is safe on any input.
+				constexpr bool MASKED = ADAPTER::TOTAL_OPERATION && UseMaskedBooleanSelectionBatch<ARGS...>();
+				if (local_sink.CanAppendBatch() && !sel.IsSet() && next - base_idx == ValidityMask::BITS_PER_VALUE &&
+				    (ValidityMask::AllValid(validity_entry) || (MASKED && !ValidityMask::NoneValid(validity_entry)))) {
+					uint8_t matches[ValidityMask::BITS_PER_VALUE];
+					for (idx_t i = 0; i < ValidityMask::BITS_PER_VALUE; i++) {
+						const bool comparison_result =
+						    adapter.Operation(std::get<Is>(input_data)[InputIndex<Is, CONSTANT_MASK>(base_idx + i)]...);
+						matches[i] = comparison_result;
+					}
+					if constexpr (MASKED) {
+						if (!ValidityMask::AllValid(validity_entry)) {
+							MaskBooleanSelection(matches, validity_entry);
+						}
+					}
+					local_sink.AppendBatch(matches, ValidityMask::BITS_PER_VALUE, base_idx);
+					base_idx = next;
+					continue;
+				}
+			}
 			if (ValidityMask::AllValid(validity_entry)) {
 				for (; base_idx < next; base_idx++) {
 					auto result_idx = sel.get_index(base_idx);

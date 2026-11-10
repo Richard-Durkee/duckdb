@@ -71,6 +71,8 @@ struct VariadicStandardAdapter {
 
 template <class OP, class... ARGS>
 struct VariadicSelectAdapter {
+	static constexpr bool TOTAL_OPERATION = true;
+
 	inline bool Operation(ARGS... args) {
 		return OP::Operation(args...);
 	}
