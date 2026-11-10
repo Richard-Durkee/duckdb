@@ -32,11 +32,11 @@ SELECT sum(b) FROM read_parquet('{TEST_DIR}/scan_log_*.parquet')
 statement ok
 SET GLOBAL debug_local_file_system_delay_ms=0
 
-# one entry for the scan, which opened every file once
+# one entry for the scan, which opened every file but the first ahead: bind opened that one to read the schema
 query II
 SELECT count(*), sum(files_opened) FROM duckdb_logs_parsed('ReadAheadScan')
 ----
-1	32
+1	31
 
 # opens overlap within the window and the async pool, and their time adds up across the overlap
 query I
