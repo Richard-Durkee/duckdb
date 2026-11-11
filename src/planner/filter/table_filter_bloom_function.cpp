@@ -38,13 +38,14 @@ static_assert(BITS_PER_SECTOR == sizeof(uint64_t) * 8, "a bloom filter sector mu
 //! A filter is sized from a cardinality estimate, so never let it claim more than this share of the memory budget
 static constexpr idx_t MAX_MEMORY_FRACTION = 64;
 
-void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows) {
+void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows, idx_t budget_share) {
 	BufferManager &buffer_manager = BufferManager::GetBufferManager(context_p);
 
 	// a capped filter stays complete - fewer sectors only raise the false positive rate, and Seal drops a
 	// filter that ended up too dense to reject anything
 	const idx_t min_sectors = MIN_NUM_BITS >> LOG_SECTOR_SIZE;
-	const idx_t budget_bytes = buffer_manager.GetMaxMemory() / MAX_MEMORY_FRACTION;
+	D_ASSERT(budget_share > 0);
+	const idx_t budget_bytes = buffer_manager.GetMaxMemory() / MAX_MEMORY_FRACTION / budget_share;
 	const idx_t budget_sectors = MaxValue(PreviousPowerOfTwo(budget_bytes / sizeof(uint64_t)), min_sectors);
 	num_sectors = MinValue(GetNumberOfSectors(number_of_rows), budget_sectors);
 	bitmask = num_sectors - 1;

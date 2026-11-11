@@ -93,7 +93,8 @@ struct TableFilterFunctions {
 class BloomFilter {
 public:
 	BloomFilter() = default;
-	void Initialize(ClientContext &context_p, idx_t number_of_rows);
+	//! budget_share filters built together split the memory budget of one filter
+	void Initialize(ClientContext &context_p, idx_t number_of_rows, idx_t budget_share = 1);
 
 	//! VectorOperations::Hash writes at the source row positions, so the hashes to insert are the ones sel
 	//! points at rather than the first count entries

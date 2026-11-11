@@ -117,6 +117,8 @@ struct DictSurvivingInfo {
 class JoinHashTable {
 public:
 	using ValidityBytes = TemplatedValidityMask<uint8_t>;
+	//! Prefix-range filter build states, indexed by key column
+	using PrefixRangeBuildStates = vector<unique_ptr<PrefixRangeFilter::BuildState>>;
 
 	struct ResidualPredicateProbeState {
 		//! Evaluation chunk
@@ -325,7 +327,7 @@ public:
 	//! Finalize must be called before any call to Probe, and after Finalize is called Build should no longer be
 	//! ever called.
 	void Finalize(idx_t chunk_idx_from, idx_t chunk_idx_to, bool parallel,
-	              optional_ptr<PrefixRangeFilter::BuildState> prefix_range_state = nullptr,
+	              optional_ptr<PrefixRangeBuildStates> prefix_range_states = nullptr,
 	              bool prefix_range_parallel = false);
 	//! Probe the HT with the given input chunk, resulting in the given result
 	void Probe(ScanStructure &scan_structure, DataChunk &keys, TupleDataChunkState &key_state, ProbeState &probe_state,
@@ -561,7 +563,13 @@ private:
 	//! Whether finalize should build the bloom filter from the materialized build side
 	bool should_build_bloom_filter = false;
 
-	unique_ptr<PrefixRangeFilter> prefix_range_filter;
+	//! With several equality keys the hash table hashes combine all keys, so finalize builds a bloom filter per key
+	//! column from that column hashed alone. Indexed by key column
+	vector<shared_ptr<BloomFilter>> key_bloom_filters;
+	vector<bool> should_build_key_bloom_filters;
+
+	//! Prefix-range filters, indexed by key column. Only a join with several equality keys has more than one
+	vector<unique_ptr<PrefixRangeFilter>> prefix_range_filters;
 	bool should_build_prefix_range_filter = false;
 
 	//! Copying not allowed
@@ -644,47 +652,105 @@ public:
 	void SetBloomFilter(shared_ptr<BloomFilter> filter) {
 		bloom_filter = std::move(filter);
 	}
-	//! Requests a filter built during finalize, from the materialized build side (in-memory joins only)
-	void SetBuildBloomFilter(const bool should_build) {
-		this->should_build_bloom_filter = should_build;
+	//! Whether the hash table hashes are the hashes of a single key column, so a bloom filter over them filters it
+	bool HasSingleEqualityKey() const {
+		return equality_predicate_columns.size() == 1;
+	}
+	//! Requests a key column filter built during finalize, from the materialized build side (in-memory joins only)
+	void SetBuildBloomFilter(idx_t key_idx) {
+		if (HasSingleEqualityKey()) {
+			D_ASSERT(key_idx == 0);
+			should_build_bloom_filter = true;
+			return;
+		}
+		should_build_key_bloom_filters.resize(equality_predicate_columns.size(), false);
+		should_build_key_bloom_filters[key_idx] = true;
 	}
 
 	shared_ptr<BloomFilter> GetBloomFilter() {
 		return bloom_filter;
+	}
+	shared_ptr<BloomFilter> GetBloomFilter(idx_t key_idx) {
+		if (HasSingleEqualityKey()) {
+			D_ASSERT(key_idx == 0);
+			return bloom_filter;
+		}
+		return key_idx < key_bloom_filters.size() ? key_bloom_filters[key_idx] : nullptr;
 	}
 	//! Marks the bloom filter complete. The reference stays, because the thread-local tables hold it too
 	void SealBloomFilter() {
 		if (bloom_filter) {
 			bloom_filter->Seal(context);
 		}
+		for (auto &key_bloom_filter : key_bloom_filters) {
+			if (key_bloom_filter && !key_bloom_filter->IsSealed()) {
+				key_bloom_filter->Seal(context);
+			}
+		}
 	}
 	//! Whether the filter is complete and rejects enough for pushing it into a scan to pay off
 	bool HasPublishableBloomFilter() const {
 		return bloom_filter && bloom_filter->IsSealed() && bloom_filter->IsUseful();
 	}
+	bool HasPublishableBloomFilter(idx_t key_idx) const {
+		if (HasSingleEqualityKey()) {
+			D_ASSERT(key_idx == 0);
+			return HasPublishableBloomFilter();
+		}
+		if (key_idx >= key_bloom_filters.size()) {
+			return false;
+		}
+		auto &filter = key_bloom_filters[key_idx];
+		return filter && filter->IsSealed() && filter->IsUseful();
+	}
 
-	void SetPrefixRangeFilter(unique_ptr<PrefixRangeFilter> filter) {
-		prefix_range_filter = std::move(filter);
+	void SetPrefixRangeFilter(idx_t key_idx, unique_ptr<PrefixRangeFilter> filter) {
+		D_ASSERT(key_idx < equality_predicate_columns.size());
+		prefix_range_filters.resize(equality_predicate_columns.size());
+		prefix_range_filters[key_idx] = std::move(filter);
 	}
 
 	void SetBuildPrefixRangeFilter() {
 		should_build_prefix_range_filter = true;
 	}
 
-	optional_ptr<PrefixRangeFilter> GetPrefixRangeFilter() {
-		return prefix_range_filter;
+	optional_ptr<PrefixRangeFilter> GetPrefixRangeFilter(idx_t key_idx) {
+		if (key_idx >= prefix_range_filters.size()) {
+			return nullptr;
+		}
+		return prefix_range_filters[key_idx].get();
 	}
 
 	bool ShouldBuildPrefixRangeFilter() const {
-		return should_build_prefix_range_filter && prefix_range_filter;
+		if (!should_build_prefix_range_filter) {
+			return false;
+		}
+		for (auto &filter : prefix_range_filters) {
+			if (filter) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	void BuildPrefixRangeFilter();
-	unique_ptr<PrefixRangeFilter::BuildState> InitializePrefixRangeBuildState();
+	//! One build state per key column with a prefix-range filter, null for the other key columns
+	PrefixRangeBuildStates InitializePrefixRangeBuildState();
 	idx_t GetPrefixRangeBuildStateSize() const;
-	void InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count, PrefixRangeFilter::BuildState &state,
+	void InsertPrefixRangeChunk(TupleDataChunkState &chunk_state, idx_t count, PrefixRangeBuildStates &states,
 	                            bool parallel = false);
-	void MergePrefixRangeBuildState(PrefixRangeFilter::BuildState &state);
+	void MergePrefixRangeBuildState(PrefixRangeBuildStates &states);
+	//! Buffers that finalize reuses across chunks to fill the per-key-column bloom filters
+	struct KeyBloomFilterInsertState {
+		explicit KeyBloomFilterInsertState(JoinHashTable &ht);
+		DataChunk keys;
+		Vector hashes;
+		SelectionVector valid_sel;
+	};
+	//! Inserts the rows of a chunk into the per-key-column bloom filters that finalize builds
+	void InsertKeyBloomFilterChunk(TupleDataChunkState &chunk_state, idx_t count, KeyBloomFilterInsertState &state);
+	//! Gathers one key column of a chunk of materialized rows
+	void GatherKeyColumn(TupleDataChunkState &chunk_state, idx_t count, idx_t key_idx, Vector &result);
 
 	//! Get total size of HT if all partitions would be built
 	idx_t GetTotalSize(const vector<reference<JoinHashTable>> &local_hts, idx_t &max_partition_size,

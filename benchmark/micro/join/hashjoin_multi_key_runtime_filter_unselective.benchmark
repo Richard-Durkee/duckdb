@@ -1,0 +1,27 @@
+# name: benchmark/micro/join/hashjoin_multi_key_runtime_filter_unselective.benchmark
+# description: Two-key equi-join with a large build side where neither key column is selective on its own, so the per-column runtime filters only cost time
+# group: [join]
+
+name Hash Join Multi-Key Runtime Filter (Unselective Keys)
+group join
+
+# The build side holds a sixth of the probe rows. Every item and nine in ten tickets appear in it, so a filter
+# on either key column keeps most probe rows. This measures what building the filters costs when they do not help.
+load
+CREATE TABLE fact AS
+  SELECT (i % 300000)::INTEGER AS item,
+         ((i // 12) * 1000003)::BIGINT AS ticket,
+         (i % 997)::INTEGER AS payload
+  FROM range(24000000) t(i);
+CREATE TABLE dim AS
+  SELECT item, ticket
+  FROM fact
+  WHERE hash(ticket * 31 + item) % 6 = 0;
+
+run
+SELECT count(*), sum(f.payload)
+FROM fact f
+JOIN dim d ON f.item = d.item AND f.ticket = d.ticket;
+
+result II
+3999604	1991681839

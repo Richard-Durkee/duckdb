@@ -1,0 +1,27 @@
+# name: benchmark/micro/join/hashjoin_multi_key_runtime_filter.benchmark
+# description: Two-key equi-join where only one key column is selective, so a runtime filter on that column alone skips most probe rows
+# group: [join]
+
+name Hash Join Multi-Key Runtime Filter
+group join
+
+# The build side is a 2% sample of the (item, ticket) pairs of the probe side. Most items appear in the sample, so
+# a filter on item keeps 80% of the probe rows, but a filter on ticket alone keeps only 22% of them.
+load
+CREATE TABLE fact AS
+  SELECT (i % 300000)::INTEGER AS item,
+         (i // 12)::BIGINT AS ticket,
+         (i % 997)::INTEGER AS payload
+  FROM range(24000000) t(i);
+CREATE TABLE dim AS
+  SELECT item, ticket
+  FROM fact
+  WHERE hash(ticket * 31 + item) % 50 = 0;
+
+run
+SELECT count(*), sum(f.payload)
+FROM fact f
+JOIN dim d ON f.item = d.item AND f.ticket = d.ticket;
+
+result II
+480569	239672695

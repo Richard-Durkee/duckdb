@@ -1,0 +1,27 @@
+# name: benchmark/micro/join/hashjoin_multi_key_runtime_filter_sparse.benchmark
+# description: Two-key equi-join where only one key column is selective and its values are too sparse for a prefix-range filter, so it gets a bloom filter
+# group: [join]
+
+name Hash Join Multi-Key Runtime Filter (Sparse Key)
+group join
+
+# Same as hashjoin_multi_key_runtime_filter, but the ticket values are spread over a range far wider than the build
+# side, so the selective key column gets a bloom filter instead of a prefix-range filter.
+load
+CREATE TABLE fact AS
+  SELECT (i % 300000)::INTEGER AS item,
+         ((i // 12) * 1000003)::BIGINT AS ticket,
+         (i % 997)::INTEGER AS payload
+  FROM range(24000000) t(i);
+CREATE TABLE dim AS
+  SELECT item, ticket
+  FROM fact
+  WHERE hash(ticket * 31 + item) % 50 = 0;
+
+run
+SELECT count(*), sum(f.payload)
+FROM fact f
+JOIN dim d ON f.item = d.item AND f.ticket = d.ticket;
+
+result II
+479664	238830267
