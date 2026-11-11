@@ -178,7 +178,7 @@ void QueryProfiler::AddParserTime(const Profiler &parser_timer, timestamp_t star
 	if (!parser_time_ns) {
 		return;
 	}
-	query_metrics.UpdateMetric(MetricParserTotalTime::Name, parser_time_ns, start_time, end_time);
+	query_metrics.AddToFixedTiming(MetricParserTotalTime::Index, parser_time_ns, start_time, end_time);
 }
 
 bool QueryProfiler::OperatorRequiresProfiling(const PhysicalOperatorType op_type) {
@@ -362,6 +362,20 @@ idx_t QueryProfiler::GetBytesWritten() const {
 
 idx_t QueryProfiler::GetBytesScanned() const {
 	return query_metrics.GetBytesScanned();
+}
+
+MetricsTimer QueryProfiler::StartOptimizerTimer(OptimizerType type) {
+	return StartFixedTimer(MetricsManager::OptimizerMetricIndex(type));
+}
+
+MetricsTimer QueryProfiler::StartFixedTimer(idx_t fixed_index) {
+	return MetricsTimer(query_metrics, fixed_index, IsEnabled());
+}
+
+void QueryProfiler::AddToFixedCounter(idx_t fixed_index, const idx_t amount) {
+	if (IsEnabled() && running) {
+		query_metrics.AddToFixedCounter(fixed_index, amount);
+	}
 }
 
 MetricsTimer QueryProfiler::StartTimerInternal(const string &key) {

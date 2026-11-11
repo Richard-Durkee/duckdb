@@ -198,3 +198,57 @@ TEST_CASE("A metric can be set while the query binds", "[api]") {
 	REQUIRE(GetProfiledMetric(con, "test.set_if_tracked").IsNull());
 	REQUIRE(GetProfiledMetric(con, "test.set_always").IsNull());
 }
+
+// Updates the profiler's own metrics by name, as an extension may, from every thread that runs the scan.
+static atomic<bool> added_join_order_time {false};
+static void UpdateOwnMetricsExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &profiler = QueryProfiler::Get(state.GetContext());
+	profiler.AddToMetricCounter("storage.wal_replay_entry_count", args.size());
+	if (!added_join_order_time.exchange(true)) {
+		profiler.AddToMetricTiming("optimizer.join_order", 1000000000);
+	}
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Updates by name to the profiler's own metrics land with its own updates", "[api][intraquery]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("update_own_metrics", {LogicalType::BIGINT}, LogicalType::BIGINT, UpdateOwnMetricsExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	SetUpParallelScan(con, "test_own_metrics_by_name_output.txt");
+
+	added_join_order_time = false;
+	REQUIRE_NO_FAIL(con.Query("SELECT max(update_own_metrics(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "storage.wal_replay_entry_count") == Value::UBIGINT(ROW_COUNT));
+	// the optimizer timed join_order itself, and the function added a second to it
+	REQUIRE(GetProfiledMetric(con, "optimizer.join_order").GetValue<double>() >= 1.0);
+	auto &query_metrics = QueryProfiler::Get(*con.context).GetQueryMetrics();
+	REQUIRE(query_metrics.GetStringCounter("storage.wal_replay_entry_count") == ROW_COUNT);
+	REQUIRE(query_metrics.GetMetricCounters()["storage.wal_replay_entry_count"] == ROW_COUNT);
+	REQUIRE(query_metrics.GetStringMetricInSeconds("optimizer.join_order") >= 1.0);
+
+	// a query that does not update them counts from zero
+	REQUIRE_NO_FAIL(con.Query("SELECT max(i) FROM numbers"));
+	REQUIRE(query_metrics.GetStringCounter("storage.wal_replay_entry_count") == 0);
+	REQUIRE(query_metrics.GetStringMetricInSeconds("optimizer.join_order") < 1.0);
+}
+
+TEST_CASE("An extension cannot register one of the profiler's own metrics", "[api]") {
+	DuckDB db(nullptr);
+	auto &metrics_manager = MetricsManager::Get(*db.instance);
+	auto count = metrics_manager.GetMetricCount();
+	metrics_manager.RegisterMetric({"optimizer.join_order", "uint64", "Not an extension's", "rows"});
+	metrics_manager.RegisterMetric({"storage.wal_replay_entry_count", "double", "Not an extension's", "seconds"});
+	REQUIRE(metrics_manager.GetMetricCount() == count);
+	REQUIRE(!metrics_manager.IsRegisteredMetric("optimizer.join_order"));
+	REQUIRE(!metrics_manager.IsRegisteredMetric("storage.wal_replay_entry_count"));
+	idx_t listed = 0;
+	for (auto &metric : metrics_manager.GetAllMetrics()) {
+		if (metric.name == "optimizer.join_order") {
+			listed++;
+			REQUIRE(metric.metric_type == "double");
+		}
+	}
+	REQUIRE(listed == 1);
+}
