@@ -15,15 +15,16 @@ struct MetricDescriptor {
 	const char *metric_type;
 	const char *description;
 	const char *unit;
+	idx_t index;
 };
 
 } // namespace
 
 // clang-format off
 #define DUCKDB_METRIC(METRIC) \
-	{METRIC::Name, METRIC::TypeStr, METRIC::Description, METRIC::Unit}
+	{METRIC::Name, METRIC::TypeStr, METRIC::Description, METRIC::Unit, METRIC::Index}
 #define FINAL_METRIC \
-	{nullptr, nullptr, nullptr, nullptr}
+	{nullptr, nullptr, nullptr, nullptr, 0}
 
 static const MetricDescriptor internal_metrics[] = {
 	DUCKDB_METRIC(MetricQueryCPUTime),
@@ -89,63 +90,103 @@ MetricsManager &MetricsManager::Get(DatabaseInstance &db) {
 	return db.GetMetricsManager();
 }
 
-// The name of an optimizer's timing, `optimizer.<type>`, as Optimizer::StartProfiler names it.
-static string OptimizerMetricName(const string &optimizer) {
-	return "optimizer." + StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
+struct MetricsManager::FixedMetrics {
+	FixedMetrics() {
+		for (idx_t i = 0; internal_metrics[i].name; i++) {
+			MetricInfo info;
+			info.name = internal_metrics[i].name;
+			info.metric_type = internal_metrics[i].metric_type;
+			info.description = internal_metrics[i].description;
+			info.unit = internal_metrics[i].unit;
+			D_ASSERT(internal_metrics[i].index == i);
+			metrics.push_back(std::move(info));
+		}
+		D_ASSERT(metrics.size() == CORE_METRIC_COUNT);
+		// optimizer metrics are generated at runtime from the list of optimizers
+		for (auto &optimizer : ListAllOptimizers()) {
+			auto type = OptimizerTypeFromString(optimizer);
+			string opt_name = StringUtil::Lower(EnumUtil::ToString(type));
+			MetricInfo info;
+			info.name = "optimizer." + opt_name;
+			info.metric_type = "double";
+			info.description = "Time spent in the " + opt_name + " optimizer";
+			info.unit = "seconds";
+			auto type_value = static_cast<idx_t>(type);
+			if (optimizer_indexes.size() <= type_value) {
+				optimizer_indexes.resize(type_value + 1);
+			}
+			optimizer_indexes[type_value] = metrics.size();
+			metrics.push_back(std::move(info));
+		}
+		for (idx_t i = 0; i < metrics.size(); i++) {
+			indexes[metrics[i].name] = i;
+			is_timing.push_back(metrics[i].metric_type == "double");
+			is_counter.push_back(metrics[i].metric_type == "uint64");
+		}
+	}
+
+	vector<MetricInfo> metrics;
+	unordered_map<string, idx_t> indexes;
+	vector<bool> is_timing;
+	vector<bool> is_counter;
+	//! By the value of the OptimizerType
+	vector<optional_idx> optimizer_indexes;
+};
+
+const MetricsManager::FixedMetrics &MetricsManager::GetFixedMetrics() {
+	static const FixedMetrics fixed_metrics;
+	return fixed_metrics;
+}
+
+idx_t MetricsManager::FixedMetricCount() {
+	return GetFixedMetrics().metrics.size();
+}
+
+const MetricInfo &MetricsManager::GetFixedMetric(idx_t index) {
+	return GetFixedMetrics().metrics[index];
+}
+
+bool MetricsManager::IsFixedTiming(idx_t index) {
+	return GetFixedMetrics().is_timing[index];
+}
+
+bool MetricsManager::IsFixedCounter(idx_t index) {
+	return GetFixedMetrics().is_counter[index];
+}
+
+optional_idx MetricsManager::FindFixedMetric(const string &name) {
+	auto &indexes = GetFixedMetrics().indexes;
+	auto entry = indexes.find(name);
+	return entry == indexes.end() ? optional_idx() : optional_idx(entry->second);
+}
+
+idx_t MetricsManager::OptimizerMetricIndex(OptimizerType type) {
+	auto &optimizer_indexes = GetFixedMetrics().optimizer_indexes;
+	auto type_value = static_cast<idx_t>(type);
+	if (type_value >= optimizer_indexes.size() || !optimizer_indexes[type_value].IsValid()) {
+		throw InternalException("Optimizer %s has no metric: add it to the list of optimizers",
+		                        EnumUtil::ToString(type));
+	}
+	return optimizer_indexes[type_value].GetIndex();
 }
 
 idx_t MetricsManager::GetMetricCount() const {
 	lock_guard<mutex> guard(registered_metrics_lock);
-	idx_t count = sizeof(internal_metrics) / sizeof(MetricDescriptor) - 1;
-	count += ListAllOptimizers().size();
-	count += registered_metrics.size();
-	return count;
+	return FixedMetricCount() + registered_metrics.size();
 }
 
 vector<MetricInfo> MetricsManager::GetAllMetrics() const {
+	vector<MetricInfo> result = GetFixedMetrics().metrics;
 	lock_guard<mutex> guard(registered_metrics_lock);
-	vector<MetricInfo> result;
-	for (idx_t i = 0; internal_metrics[i].name; i++) {
-		MetricInfo info;
-		info.name = internal_metrics[i].name;
-		info.metric_type = internal_metrics[i].metric_type;
-		info.description = internal_metrics[i].description;
-		info.unit = internal_metrics[i].unit;
-		result.push_back(std::move(info));
-	}
-	// Optimizer metrics are generated at runtime from the list of optimizers.
-	for (auto &optimizer : ListAllOptimizers()) {
-		string opt_name = StringUtil::Lower(EnumUtil::ToString(OptimizerTypeFromString(optimizer)));
-		MetricInfo info;
-		info.name = "optimizer." + opt_name;
-		info.metric_type = "double";
-		info.description = "Time spent in the " + opt_name + " optimizer";
-		info.unit = "seconds";
-		result.push_back(std::move(info));
-	}
-	// Extension-registered metrics.
+	// extension-registered metrics
 	for (const auto &m : registered_metrics) {
 		result.push_back(m);
 	}
 	return result;
 }
 
-static bool IsInternalMetric(const string &name) {
-	for (idx_t i = 0; internal_metrics[i].name; i++) {
-		if (name == internal_metrics[i].name) {
-			return true;
-		}
-	}
-	for (auto &optimizer : ListAllOptimizers()) {
-		if (name == OptimizerMetricName(optimizer)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 void MetricsManager::RegisterMetric(MetricInfo info) {
-	if (IsInternalMetric(info.name)) {
+	if (FindFixedMetric(info.name).IsValid()) {
 		return; // the profiler's own metrics are already known, and are not set by extensions
 	}
 	lock_guard<mutex> guard(registered_metrics_lock);

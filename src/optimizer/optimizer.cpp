@@ -91,7 +91,7 @@ MetricsTimer Optimizer::StartProfiler(OptimizerType type) {
 	if (!profiler.IsEnabled()) {
 		return MetricsTimer();
 	}
-	return profiler.StartTimerInternal("optimizer." + StringUtil::Lower(EnumUtil::ToString(type)));
+	return profiler.StartOptimizerTimer(type);
 }
 
 void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &callback) {

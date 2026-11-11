@@ -13,6 +13,7 @@
 #include "duckdb/common/enums/profiling_coverage.hpp"
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/enums/metric_type.hpp"
+#include "duckdb/common/enums/optimizer_type.hpp"
 #include "duckdb/main/profiler/profiler_print_format.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -149,8 +150,17 @@ public:
 	//! Start a timer for a metric identified by its struct type.
 	template <class METRIC>
 	MetricsTimer StartTimer() {
-		return StartTimerInternal(METRIC::Name);
+		static_assert(std::is_same<typename METRIC::METRIC_TYPE, double>::value, "a timer needs a double metric");
+		return StartFixedTimer(METRIC::Index);
 	}
+	//! Add to a counter identified by its struct type (profiling-only, thread-safe).
+	template <class METRIC>
+	void AddToMetricCounter(idx_t amount) {
+		static_assert(std::is_same<typename METRIC::METRIC_TYPE, uint64_t>::value, "a counter needs a uint64 metric");
+		AddToFixedCounter(METRIC::Index, amount);
+	}
+	//! Start the timer of an optimizer.
+	DUCKDB_API MetricsTimer StartOptimizerTimer(OptimizerType type);
 	//! Start a timer for a string-keyed metric (use the template overload when possible).
 	DUCKDB_API MetricsTimer StartTimerInternal(const string &key);
 
@@ -199,6 +209,10 @@ public:
 	bool HasRoot() const;
 
 private:
+	//! Start a timer or add to a counter of one of the profiler's own metrics, by its fixed index
+	DUCKDB_API MetricsTimer StartFixedTimer(idx_t fixed_index);
+	DUCKDB_API void AddToFixedCounter(idx_t fixed_index, idx_t amount);
+
 	unique_ptr<ProfilingNode> CreateTree(const PhysicalOperator &root, const idx_t depth = 0);
 	void Render(const ProfilingNode &node, BaseTreeRenderer &str) const;
 	//! Render the profiler output to a string via the given renderer (nullptr renders nothing), handling the disabled
