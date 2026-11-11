@@ -171,6 +171,8 @@
 #include "duckdb/main/http/http_retry_budget.hpp"
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
+#include "duckdb/main/profiler/metric_info.hpp"
+#include "duckdb/main/profiler/profiling_utils.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/setting_info.hpp"
 #include "duckdb/optimizer/aggregate_rewrite.hpp"
@@ -3405,6 +3407,25 @@ IndexDeltaType EnumUtil::FromString<IndexDeltaType>(const char *value) {
 	return static_cast<IndexDeltaType>(StringUtil::StringToEnum(GetIndexDeltaTypeValues(), 3, "IndexDeltaType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetIndexedMetricStorageValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(IndexedMetricStorage::UINT64), "UINT64" },
+		{ static_cast<uint32_t>(IndexedMetricStorage::DOUBLE), "DOUBLE" },
+		{ static_cast<uint32_t>(IndexedMetricStorage::BY_NAME), "BY_NAME" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<IndexedMetricStorage>(IndexedMetricStorage value) {
+	return StringUtil::EnumToString(GetIndexedMetricStorageValues(), 3, "IndexedMetricStorage", static_cast<uint32_t>(value));
+}
+
+template<>
+IndexedMetricStorage EnumUtil::FromString<IndexedMetricStorage>(const char *value) {
+	return static_cast<IndexedMetricStorage>(StringUtil::StringToEnum(GetIndexedMetricStorageValues(), 3, "IndexedMetricStorage", value));
+}
+
 const StringUtil::EnumStringLiteral *GetInsertColumnOrderValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(InsertColumnOrder::INSERT_BY_POSITION), "INSERT_BY_POSITION" },
@@ -4295,6 +4316,25 @@ const char* EnumUtil::ToChars<MetaPipelineType>(MetaPipelineType value) {
 template<>
 MetaPipelineType EnumUtil::FromString<MetaPipelineType>(const char *value) {
 	return static_cast<MetaPipelineType>(StringUtil::StringToEnum(GetMetaPipelineTypeValues(), 2, "MetaPipelineType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetMetricKindValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(MetricKind::VALUE), "VALUE" },
+		{ static_cast<uint32_t>(MetricKind::COUNTER), "COUNTER" },
+		{ static_cast<uint32_t>(MetricKind::TIMING), "TIMING" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<MetricKind>(MetricKind value) {
+	return StringUtil::EnumToString(GetMetricKindValues(), 3, "MetricKind", static_cast<uint32_t>(value));
+}
+
+template<>
+MetricKind EnumUtil::FromString<MetricKind>(const char *value) {
+	return static_cast<MetricKind>(StringUtil::StringToEnum(GetMetricKindValues(), 3, "MetricKind", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMonotonicityValues() {

@@ -35,6 +35,9 @@ GROUP_ORDER = [
 
 ABBREVIATIONS = {"sql", "cpu", "wal", "io"}
 
+# How the profiler updates a metric, when metrics.json does not give its "kind": doubles are timings, uint64s counters
+DEFAULT_KIND = {"double": "TIMING", "uint64": "COUNTER", "string": "VALUE", "map": "VALUE"}
+
 
 def to_pascal_case(s: str) -> str:
     """'physical_planner.total_time' -> 'MetricPhysicalPlannerTotalTime'
@@ -77,13 +80,15 @@ def generate_header(data: dict) -> str:
         "#pragma once",
         "",
         '#include "duckdb/common/types/value.hpp"',
+        '#include "duckdb/main/profiler/metric_info.hpp"',
         "",
         "namespace duckdb {",
         "",
     ]
 
     current_group = None
-    for group, metric_name, info in iter_metrics(data):
+    metric_count = 0
+    for metric_index, (group, metric_name, info) in enumerate(iter_metrics(data)):
         full_name = f"{group}.{metric_name}"
         struct_name = to_pascal_case(full_name)
         cpp_type = CPP_TYPE_MAP[info["metric_type"]]
@@ -103,11 +108,17 @@ def generate_header(data: dict) -> str:
             f'\tstatic constexpr const char *Description = "{description}";',
             f'\tstatic constexpr const char *Unit = "{unit}";',
             f'\tstatic constexpr const char *TypeStr = "{info["metric_type"]}";',
+            f"\tstatic constexpr idx_t Index = {metric_index};",
+            f"\tstatic constexpr MetricKind Kind = MetricKind::{info.get('kind', DEFAULT_KIND[info['metric_type']])};",
             "};",
         ]
+        metric_count = metric_index + 1
 
     live_metrics = [to_pascal_case(f"{group}.{name}") for group, name, info in iter_metrics(data) if info.get("live")]
     lines += [
+        "",
+        "//! The number of core metrics: they have the indexes 0 to CORE_METRIC_COUNT - 1, in the order listed here",
+        f"static constexpr idx_t CORE_METRIC_COUNT = {metric_count};",
         "",
         "template <class... METRICS>",
         "struct MetricList {};",

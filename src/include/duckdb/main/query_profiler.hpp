@@ -134,6 +134,10 @@ public:
 	//! thread-safe). Unlike a timer it records no start and end time. For time a timer cannot measure, e.g. requests
 	//! that were made on other threads.
 	DUCKDB_API void AddToMetricTiming(const string &key, idx_t elapsed_ns);
+	//! Add to the COUNTER or TIMING (in nanoseconds) of an index, without a lock (profiling-only, thread-safe)
+	DUCKDB_API void AddToMetric(MetricIndex index, idx_t amount);
+	//! Set the VALUE of an index, cast to its type (profiling-only, thread-safe)
+	DUCKDB_API void SetMetric(MetricIndex index, const Value &value);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 
@@ -149,9 +153,11 @@ public:
 	//! Start a timer for a metric identified by its struct type.
 	template <class METRIC>
 	MetricsTimer StartTimer() {
-		return StartTimerInternal(METRIC::Name);
+		return StartTimer(MetricIndex(METRIC::Index));
 	}
-	//! Start a timer for a string-keyed metric (use the template overload when possible).
+	//! Start a scoped timer for the TIMING of an index, which it updates without a lock (profiling-only)
+	DUCKDB_API MetricsTimer StartTimer(MetricIndex index);
+	//! Start a timer for a string-keyed metric (use an index when possible).
 	DUCKDB_API MetricsTimer StartTimerInternal(const string &key);
 
 	DUCKDB_API void StartExplainAnalyze();
@@ -250,7 +256,8 @@ private:
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
 	//! Whether or not we are running as part of a explain_analyze query
-	bool is_explain_analyze;
+	//! Read by IsEnabled, which threads other than the query's may call
+	atomic<bool> is_explain_analyze;
 	//! Whether root metrics have been finalized for output
 	bool metrics_finalized;
 

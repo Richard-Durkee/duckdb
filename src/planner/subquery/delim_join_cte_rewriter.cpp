@@ -23,13 +23,12 @@
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/list.hpp"
+#include "duckdb/main/profiler/metrics_manager.hpp"
 
 #include <algorithm>
 #include <functional>
 
 namespace duckdb {
-
-static constexpr const char *CTE_DELIMINATOR_PROFILER_KEY = "optimizer.deliminator";
 
 static void VerifyNoDelim(LogicalOperator &op) {
 	// Verify that there are no delim joins or delim scans in the plan, as these should have been rewritten to CTEs at
@@ -1999,8 +1998,8 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 	auto dedup_cte_index = binder.GenerateTableIndex();
 	auto dedup_ref_count = RewriteDelimScanReferences(plan->children[1], dedup_cte_index);
 	if (cte_deliminator_enabled) {
-		auto cte_deliminator_timer =
-		    QueryProfiler::Get(binder.context).StartTimerInternal(CTE_DELIMINATOR_PROFILER_KEY);
+		auto cte_deliminator_timer = QueryProfiler::Get(binder.context)
+		                                 .StartTimer(MetricsManager::OptimizerMetricIndex(OptimizerType::DELIMINATOR));
 		GeneratedDedupRefEliminator eliminator(binder, plan, dedup_cte_index, dedup_ref_count, rewrite_root,
 		                                       preserve_evidence_side, preserve_nested_evidence_side);
 		dedup_ref_count = eliminator.Remove();
@@ -2205,8 +2204,8 @@ void DelimJoinCTERewriter::Rewrite(unique_ptr<LogicalOperator> &plan) {
 	} while (filters_pushed);
 	RewriteDelimJoinsToCTEs(plan, *plan);
 	if (cte_deliminator_enabled) {
-		auto cte_deliminator_timer =
-		    QueryProfiler::Get(binder.context).StartTimerInternal(CTE_DELIMINATOR_PROFILER_KEY);
+		auto cte_deliminator_timer = QueryProfiler::Get(binder.context)
+		                                 .StartTimer(MetricsManager::OptimizerMetricIndex(OptimizerType::DELIMINATOR));
 		GeneratedDomainJoinEliminator generated_domain_join_eliminator(binder, plan, generated_dedup_cte_indexes,
 		                                                               preserve_marker_indexes);
 		generated_domain_join_eliminator.Rewrite();

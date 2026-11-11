@@ -322,6 +322,8 @@ enum class IndexConstraintType : uint8_t;
 
 enum class IndexDeltaType : uint8_t;
 
+enum class IndexedMetricStorage : uint8_t;
+
 enum class InsertColumnOrder : uint8_t;
 
 enum class InterruptMode : uint8_t;
@@ -395,6 +397,8 @@ enum class MergeActionCondition : uint8_t;
 enum class MergeActionType : uint8_t;
 
 enum class MetaPipelineType : uint8_t;
+
+enum class MetricKind : uint8_t;
 
 enum class Monotonicity : uint8_t;
 
@@ -1143,6 +1147,9 @@ template<>
 const char* EnumUtil::ToChars<IndexDeltaType>(IndexDeltaType value);
 
 template<>
+const char* EnumUtil::ToChars<IndexedMetricStorage>(IndexedMetricStorage value);
+
+template<>
 const char* EnumUtil::ToChars<InsertColumnOrder>(InsertColumnOrder value);
 
 template<>
@@ -1252,6 +1259,9 @@ const char* EnumUtil::ToChars<MergeActionType>(MergeActionType value);
 
 template<>
 const char* EnumUtil::ToChars<MetaPipelineType>(MetaPipelineType value);
+
+template<>
+const char* EnumUtil::ToChars<MetricKind>(MetricKind value);
 
 template<>
 const char* EnumUtil::ToChars<Monotonicity>(Monotonicity value);
@@ -2155,6 +2165,9 @@ template<>
 IndexDeltaType EnumUtil::FromString<IndexDeltaType>(const char *value);
 
 template<>
+IndexedMetricStorage EnumUtil::FromString<IndexedMetricStorage>(const char *value);
+
+template<>
 InsertColumnOrder EnumUtil::FromString<InsertColumnOrder>(const char *value);
 
 template<>
@@ -2264,6 +2277,9 @@ MergeActionType EnumUtil::FromString<MergeActionType>(const char *value);
 
 template<>
 MetaPipelineType EnumUtil::FromString<MetaPipelineType>(const char *value);
+
+template<>
+MetricKind EnumUtil::FromString<MetricKind>(const char *value);
 
 template<>
 Monotonicity EnumUtil::FromString<Monotonicity>(const char *value);

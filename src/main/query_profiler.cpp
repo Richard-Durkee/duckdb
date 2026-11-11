@@ -126,6 +126,7 @@ QueryProfiler &QueryProfiler::Get(Context &context) {
 void QueryProfiler::Start(const string &query) {
 	Reset();
 	tracked_metric_patterns = make_uniq<GatheredMetrics>(Settings::Get<TrackedMetricsSetting>(context));
+	query_metrics.InitializeIndexedMetrics(MetricsManager::Get(context));
 	running = true;
 	query_metrics.query_sql = query;
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
@@ -178,7 +179,7 @@ void QueryProfiler::AddParserTime(const Profiler &parser_timer, timestamp_t star
 	if (!parser_time_ns) {
 		return;
 	}
-	query_metrics.UpdateMetric(MetricParserTotalTime::Name, parser_time_ns, start_time, end_time);
+	query_metrics.AddTimingToIndexedMetric(MetricParserTotalTime::Index, parser_time_ns, start_time, end_time);
 }
 
 bool QueryProfiler::OperatorRequiresProfiling(const PhysicalOperatorType op_type) {
@@ -328,12 +329,25 @@ void QueryProfiler::AddToMetricTiming(const string &key, const idx_t elapsed_ns)
 	}
 }
 
+void QueryProfiler::AddToMetric(MetricIndex index, const idx_t amount) {
+	if (index.IsValid() && IsEnabled() && running) {
+		query_metrics.AddToIndexedMetric(index.GetIndex(), amount);
+	}
+}
+
+void QueryProfiler::SetMetric(MetricIndex index, const Value &value) {
+	if (index.IsValid() && IsEnabled() && running) {
+		query_metrics.SetIndexedMetric(index.GetIndex(), value);
+	}
+}
+
 void QueryProfiler::SetMetric(const string &key, Value new_value) {
 	if (!IsEnabled() || !running) {
 		return;
 	}
 	// only the metrics extensions registered: the profiler sets its own, and leaves some out on purpose
-	if (!MetricsManager::Get(context).IsRegisteredMetric(key)) {
+	auto index = query_metrics.FindIndexedMetric(key);
+	if (!index.IsValid() || index.GetIndex() < MetricsManager::FixedMetricCount()) {
 		return;
 	}
 	// the query's metrics are only gathered once its plan is built, so the value is kept with the query until then:
@@ -364,7 +378,15 @@ idx_t QueryProfiler::GetBytesScanned() const {
 	return query_metrics.GetBytesScanned();
 }
 
+MetricsTimer QueryProfiler::StartTimer(MetricIndex index) {
+	return MetricsTimer(query_metrics, index, IsEnabled());
+}
+
 MetricsTimer QueryProfiler::StartTimerInternal(const string &key) {
+	auto index = query_metrics.FindIndexedMetric(key);
+	if (index.IsValid()) {
+		return StartTimer(index);
+	}
 	return MetricsTimer(query_metrics, key, IsEnabled());
 }
 

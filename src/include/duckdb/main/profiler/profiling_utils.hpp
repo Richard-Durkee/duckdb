@@ -10,8 +10,11 @@
 
 #include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
+#include "duckdb/main/profiler/metric_info.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
 #include "duckdb/common/profiler.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -23,7 +26,36 @@ struct yyjson_mut_val;
 
 namespace duckdb {
 
+class MetricsManager;
 struct MetricsTimer;
+
+//! How a metric with an index stores its value
+enum class IndexedMetricStorage : uint8_t { UINT64, DOUBLE, BY_NAME };
+
+//! A metric with an index, as the running query updated it, with atomics from any thread
+struct IndexedMetric {
+	//! A counter's count, a timing's nanoseconds, or a value's bits
+	atomic<uint64_t> value {0};
+	//! The earliest start and latest end of a timing, in microseconds since the epoch
+	atomic<int64_t> start {NumericLimits<int64_t>::Maximum()};
+	atomic<int64_t> end {NumericLimits<int64_t>::Minimum()};
+	atomic<bool> set {false};
+	//! Fixed when the slot is made, as the metric of an index never changes
+	MetricKind kind = MetricKind::VALUE;
+	IndexedMetricStorage storage = IndexedMetricStorage::UINT64;
+};
+
+//! The slots of the metrics with an index, for the metrics as they were when the slots were made
+struct IndexedMetricSlots {
+	explicit IndexedMetricSlots(shared_ptr<const IndexedMetrics> metrics);
+
+	shared_ptr<const IndexedMetrics> metrics;
+	unsafe_unique_array<IndexedMetric> values;
+	idx_t count;
+
+private:
+	static IndexedMetricStorage StorageOf(const MetricInfo &metric);
+};
 
 // Top level query metrics
 struct QueryMetrics {
@@ -54,25 +86,21 @@ public:
 	atomic<idx_t> total_memory_allocated;
 
 public:
-	void UpdateMetric(const string &key, idx_t addition) {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		string_timings[key].Add(addition);
-	}
+	//! Add to a timing or a counter by name, through its index when it has one in the running query
+	void UpdateMetric(const string &key, idx_t addition);
+	void UpdateMetric(const string &key, idx_t addition, timestamp_t start_time, timestamp_t end_time);
+	void UpdateMetricCounter(const string &key, idx_t addition);
+	//! Set a value by name, through its index when it has one in the running query
+	void SetMetricValue(const string &key, Value value);
 
-	void UpdateMetric(const string &key, idx_t addition, timestamp_t start_time, timestamp_t end_time) {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		string_timings[key].Add(addition, start_time, end_time);
-	}
-
-	void UpdateMetricCounter(const string &key, idx_t addition) {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		string_counters[key] += addition;
-	}
-
-	void SetMetricValue(const string &key, Value value) {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		string_values[key] = std::move(value);
-	}
+	//! The index of the metric `key` in the running query; invalid when it has none
+	MetricIndex FindIndexedMetric(const string &key) const;
+	//! Add to the counter or timing of an index, without a lock. Does nothing for a VALUE.
+	void AddToIndexedMetric(idx_t index, idx_t amount);
+	void AddTimingToIndexedMetric(idx_t index, idx_t elapsed_ns, timestamp_t start_time, timestamp_t end_time);
+	//! Set the VALUE of an index, cast to its type. Does nothing for a counter or timing, or a value that does not
+	//! cast.
+	void SetIndexedMetric(idx_t index, const Value &value);
 
 	void UpdateBytesRead(idx_t n, idx_t elapsed_us) {
 		bytes_read += n;
@@ -97,23 +125,10 @@ public:
 		total_memory_allocated += n;
 	}
 
-	double GetStringMetricInSeconds(const string &key) const {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		auto it = string_timings.find(key);
-		if (it == string_timings.end()) {
-			return 0.0;
-		}
-		return static_cast<double>(it->second.duration) / 1e9;
-	}
-
-	idx_t GetStringCounter(const string &key) const {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		auto it = string_counters.find(key);
-		if (it == string_counters.end()) {
-			return 0;
-		}
-		return it->second;
-	}
+	//! A timing by name, in seconds: 0 when the query has not timed it
+	double GetStringMetricInSeconds(const string &key) const;
+	//! A counter by name: 0 when the query has not counted it
+	idx_t GetStringCounter(const string &key) const;
 
 	idx_t GetBytesRead() const {
 		return bytes_read.load();
@@ -150,16 +165,9 @@ public:
 		return total_memory_allocated.load();
 	}
 
-	//! A copy, as timers and counters may still be updated from other threads
-	unordered_map<string, MetricTiming> GetMetricTimings() const {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		return string_timings;
-	}
-
-	unordered_map<string, idx_t> GetMetricCounters() const {
-		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-		return string_counters;
-	}
+	//! The timings and counters of the query, by name: a copy, as they may still be updated from other threads
+	unordered_map<string, MetricTiming> GetMetricTimings() const;
+	unordered_map<string, idx_t> GetMetricCounters() const;
 
 	//! Reset the counters that are tracked without profiling; Reset keeps them, so they outlive their query.
 	void ResetLiveMetrics() {
@@ -175,7 +183,7 @@ public:
 	}
 
 	void Reset() {
-		// ended before taking the lock: the timer adds its time to string_timings
+		// ended before the metrics are reset, as the timer adds its time to them
 		latency_timer.reset();
 		{
 			annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
@@ -183,6 +191,8 @@ public:
 			string_counters.clear();
 			string_values.clear();
 		}
+		// the slots are kept: an update from another thread that comes late lands in them
+		active_indexed_count.store(0, std::memory_order_release);
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -191,50 +201,39 @@ public:
 		blocked_thread_time = 0;
 	}
 
-	//! Write the values set with QueryProfiler::SetMetric into the given GatheredMetrics, before the metrics the
-	//! profiler computes itself, which take precedence.
+	//! Make the slots of the metrics with an index ready for the query that starts. A metric registered while the
+	//! query runs is reported from the next query on.
+	void InitializeIndexedMetrics(const MetricsManager &manager);
+	//! Write the values set with QueryProfiler::SetMetric and the metrics extensions registered into the given
+	//! GatheredMetrics, before the metrics the profiler computes itself, which take precedence.
 	void FinalizeMetricValues(GatheredMetrics &info);
 	//! Write all query-level metrics into the given GatheredMetrics.
 	void FinalizeMetrics(GatheredMetrics &info);
 	//! The metrics backed by atomic counters, which can be read from any thread while the query runs
 	profiler_metrics_t GetLiveMetrics() const;
 
-	void Merge(const QueryMetrics &other) {
-		auto other_timings = other.GetMetricTimings();
-		auto other_counters = other.GetMetricCounters();
-		{
-			annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
-			for (const auto &entry : other_timings) {
-				string_timings[entry.first].Merge(entry.second);
-			}
-			for (const auto &entry : other_counters) {
-				string_counters[entry.first] += entry.second;
-			}
-		}
-		bytes_read += other.bytes_read.load();
-		read_operations += other.read_operations.load();
-		read_time_us += other.read_time_us.load();
-		bytes_written += other.bytes_written.load();
-		write_operations += other.write_operations.load();
-		write_time_us += other.write_time_us.load();
-		bytes_spilled += other.bytes_spilled.load();
-		bytes_scanned += other.bytes_scanned.load();
-		total_memory_allocated += other.total_memory_allocated.load();
-	}
-
 private:
-	// Guards the string-keyed metrics below, which operators, timers and extensions update from any thread
+	//! The slot of an index in the running query, or nullptr
+	optional_ptr<IndexedMetric> GetIndexedSlot(idx_t index) const;
+	//! The metrics with an index from begin to end that the query updated
+	void FinalizeIndexedMetrics(GatheredMetrics &info, idx_t begin, idx_t end) const;
+	void SetStringValue(const string &key, Value value);
+	static Value IndexedMetricValue(const IndexedMetric &metric);
+
+	// Guards the metrics below that have no index in the running query, which threads update by name
 	mutable annotated_mutex string_metrics_lock;
-	// String-keyed timings for optimizer, storage and phase timing metrics
 	unordered_map<string, MetricTiming> string_timings DUCKDB_GUARDED_BY(string_metrics_lock);
-	// String-keyed counters for storage counter metrics (e.g. "storage.wal_replay_entry_count")
 	unordered_map<string, idx_t> string_counters DUCKDB_GUARDED_BY(string_metrics_lock);
-	// Values set by QueryProfiler::SetMetric, kept until the query's metrics are gathered
+	// Values set by name, including "string" and "map" values of an index, kept until the metrics are gathered
 	profiler_metrics_t string_values DUCKDB_GUARDED_BY(string_metrics_lock);
+	// Every set of slots this profiler made, kept until it is destroyed, since a late update may still use one
+	vector<unique_ptr<IndexedMetricSlots>> all_indexed_slots;
+	// The slots of the running query, published before active_indexed_count, which is zero between queries
+	atomic<IndexedMetricSlots *> indexed_slots {nullptr};
+	atomic<idx_t> active_indexed_count {0};
 
 public:
-	// Declared after string_timings and string_metrics_lock so it is destroyed first; its destructor writes to
-	// string_timings.
+	// Declared last so it is destroyed first, as its destructor adds its time to the metrics above
 	unique_ptr<MetricsTimer> latency_timer;
 };
 
@@ -245,6 +244,15 @@ public:
 	MetricsTimer(QueryMetrics &query_metrics, string key, const bool is_active = true)
 	    : query_metrics(query_metrics), metric_name(std::move(key)), is_active(is_active) {
 		if (!is_active) {
+			return;
+		}
+		start_time = Timestamp::GetCurrentTimestamp();
+		profiler.Start();
+	}
+	//! A timer for a metric with an index, which it updates without looking up a name or taking a lock
+	MetricsTimer(QueryMetrics &query_metrics, MetricIndex index, const bool is_active = true)
+	    : query_metrics(query_metrics), metric_index(index), is_active(is_active && index.IsValid()) {
+		if (!this->is_active) {
 			return;
 		}
 		start_time = Timestamp::GetCurrentTimestamp();
@@ -262,6 +270,7 @@ public:
 	MetricsTimer(MetricsTimer &&other) noexcept : is_active(false) {
 		std::swap(query_metrics, other.query_metrics);
 		std::swap(metric_name, other.metric_name);
+		std::swap(metric_index, other.metric_index);
 		std::swap(profiler, other.profiler);
 		std::swap(start_time, other.start_time);
 		std::swap(is_active, other.is_active);
@@ -269,6 +278,7 @@ public:
 	MetricsTimer &operator=(MetricsTimer &&other) noexcept {
 		std::swap(query_metrics, other.query_metrics);
 		std::swap(metric_name, other.metric_name);
+		std::swap(metric_index, other.metric_index);
 		std::swap(profiler, other.profiler);
 		std::swap(start_time, other.start_time);
 		std::swap(is_active, other.is_active);
@@ -282,7 +292,13 @@ public:
 		}
 		is_active = false;
 		profiler.End();
-		query_metrics->UpdateMetric(metric_name, profiler.ElapsedNanos(), start_time, Timestamp::GetCurrentTimestamp());
+		auto end_time = Timestamp::GetCurrentTimestamp();
+		if (metric_index.IsValid()) {
+			query_metrics->AddTimingToIndexedMetric(metric_index.GetIndex(), profiler.ElapsedNanos(), start_time,
+			                                        end_time);
+		} else {
+			query_metrics->UpdateMetric(metric_name, profiler.ElapsedNanos(), start_time, end_time);
+		}
 	}
 
 	void Reset() {
@@ -296,6 +312,8 @@ public:
 private:
 	optional_ptr<QueryMetrics> query_metrics;
 	string metric_name;
+	//! Valid for a timer of a metric with an index, which then has no metric_name
+	MetricIndex metric_index;
 	Profiler profiler;
 	timestamp_t start_time = timestamp_t::epoch();
 	bool is_active;

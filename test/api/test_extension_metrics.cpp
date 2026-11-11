@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -197,4 +198,370 @@ TEST_CASE("A metric can be set while the query binds", "[api]") {
 	REQUIRE(!tracked_while_binding);
 	REQUIRE(GetProfiledMetric(con, "test.set_if_tracked").IsNull());
 	REQUIRE(GetProfiledMetric(con, "test.set_always").IsNull());
+}
+
+// The indexes of the metrics the next test registers, for the scalar function to update.
+static MetricIndex rows_index;
+static MetricIndex time_index;
+static MetricIndex count_value_index;
+static MetricIndex ratio_value_index;
+static atomic<idx_t> indexed_calls {0};
+
+// Updates registered metrics by index for every chunk, from every thread that runs the scan.
+static void UpdateByIndexExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &profiler = QueryProfiler::Get(state.GetContext());
+	profiler.AddToMetric(rows_index, args.size());
+	profiler.AddToMetric(time_index, 1000000);
+	profiler.SetMetric(count_value_index, Value::UBIGINT(7));
+	profiler.SetMetric(ratio_value_index, Value::DOUBLE(2.5));
+	indexed_calls++;
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Registered metrics can be updated by index from several threads at once", "[api][intraquery]") {
+	if (STANDARD_VECTOR_SIZE < 1024) {
+		// hundreds of thousands of chunks would take too long
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &metrics_manager = MetricsManager::Get(*con.context);
+	rows_index = metrics_manager.RegisterMetric(
+	    {"test.indexed_rows", "uint64", "Rows counted by index", "rows", MetricKind::COUNTER});
+	time_index = metrics_manager.RegisterMetric(
+	    {"test.indexed_time", "double", "Time added by index", "seconds", MetricKind::TIMING});
+	count_value_index =
+	    metrics_manager.RegisterMetric({"test.indexed_count", "uint64", "A count set by index", "values"});
+	ratio_value_index =
+	    metrics_manager.RegisterMetric({"test.indexed_ratio", "double", "A ratio set by index", "ratio"});
+	ScalarFunction fn("update_by_index", {LogicalType::BIGINT}, LogicalType::BIGINT, UpdateByIndexExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	SetUpParallelScan(con, "test_indexed_metrics_output.txt");
+
+	indexed_calls = 0;
+	REQUIRE_NO_FAIL(con.Query("SELECT max(update_by_index(i)) FROM numbers"));
+	REQUIRE(indexed_calls > 1);
+	REQUIRE(GetProfiledMetric(con, "test.indexed_rows") == Value::UBIGINT(ROW_COUNT));
+	auto seconds = GetProfiledMetric(con, "test.indexed_time");
+	REQUIRE(!seconds.IsNull());
+	REQUIRE(seconds.GetValue<double>() == Approx(static_cast<double>(indexed_calls.load()) / 1000.0));
+	REQUIRE(GetProfiledMetric(con, "test.indexed_count") == Value::UBIGINT(7));
+	REQUIRE(GetProfiledMetric(con, "test.indexed_ratio") == Value::DOUBLE(2.5));
+
+	// a query that does not update them does not report them
+	REQUIRE_NO_FAIL(con.Query("SELECT max(i) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.indexed_rows").IsNull());
+}
+
+TEST_CASE("Registering a metric returns its index", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &metrics_manager = MetricsManager::Get(*con.context);
+	auto first = metrics_manager.RegisterMetric({"test.first", "uint64", "First", "rows", MetricKind::COUNTER});
+	auto second = metrics_manager.RegisterMetric({"test.second", "uint64", "Second", "rows", MetricKind::COUNTER});
+	REQUIRE(first.IsValid());
+	REQUIRE(second.IsValid());
+	REQUIRE(first.GetIndex() != second.GetIndex());
+	// registering a name again returns the index it already has
+	auto again = metrics_manager.RegisterMetric({"test.first", "uint64", "First", "rows", MetricKind::COUNTER});
+	REQUIRE(again.GetIndex() == first.GetIndex());
+	// the profiler's own metrics get no index, and updating through it does nothing
+	auto own = metrics_manager.RegisterMetric({"query.cpu_time", "double", "Not an extension's", "seconds"});
+	REQUIRE(!own.IsValid());
+	auto &profiler = QueryProfiler::Get(*con.context);
+	profiler.AddToMetric(own, 1);
+	profiler.SetMetric(own, Value::DOUBLE(1));
+}
+
+TEST_CASE("The profiler's own timings are kept by index, with their start and end", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(1000)"));
+	con.EnableProfiling();
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_core_indexed_output.txt");
+	REQUIRE_NO_FAIL(con.Query("SELECT max(i) FROM numbers WHERE i % 7 = 0"));
+
+	// reported as before
+	auto planner_time = GetProfiledMetric(con, "planner.total_time");
+	REQUIRE(!planner_time.IsNull());
+	REQUIRE(planner_time.GetValue<double>() > 0);
+	REQUIRE(!GetProfiledMetric(con, "query.total_time").IsNull());
+	REQUIRE(!GetProfiledMetric(con, "optimizer.filter_pushdown").IsNull());
+
+	// and read back by name, with the bounds the metrics log uses
+	auto &query_metrics = QueryProfiler::Get(*con.context).GetQueryMetrics();
+	REQUIRE(query_metrics.GetStringMetricInSeconds("planner.total_time") == Approx(planner_time.GetValue<double>()));
+	auto timings = query_metrics.GetMetricTimings();
+	REQUIRE(timings.count("planner.total_time") == 1);
+	REQUIRE(timings["planner.total_time"].has_bounds);
+	REQUIRE(timings["planner.total_time"].start_time <= timings["planner.total_time"].end_time);
+}
+
+// Registers a metric the first time it runs, while the query is running, and counts by it.
+static atomic<bool> registered_while_running {false};
+static MetricIndex late_index;
+static void RegisterWhileRunningExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &context = state.GetClientContext();
+	if (!registered_while_running.exchange(true)) {
+		late_index = MetricsManager::Get(context).RegisterMetric(
+		    {"test.registered_while_running", "uint64", "Registered while a query ran", "rows", MetricKind::COUNTER});
+	}
+	QueryProfiler::Get(context).AddToMetric(late_index, args.size());
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("A metric registered while a query runs is reported from the next query on", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	ScalarFunction fn("register_while_running", {LogicalType::BIGINT}, LogicalType::BIGINT, RegisterWhileRunningExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(100)"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 1"));
+	con.EnableProfiling();
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_late_registration_output.txt");
+
+	registered_while_running = false;
+	REQUIRE_NO_FAIL(con.Query("SELECT max(register_while_running(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.registered_while_running").IsNull());
+
+	REQUIRE_NO_FAIL(con.Query("SELECT max(register_while_running(i)) FROM numbers"));
+	REQUIRE(GetProfiledMetric(con, "test.registered_while_running") == Value::UBIGINT(100));
+}
+
+// Times every chunk with a scoped timer for a registered timing, by its index, from every thread that runs the scan.
+static MetricIndex chunk_timer_index;
+static void TimeByIndexExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto timer = QueryProfiler::Get(state.GetContext()).StartTimer(chunk_timer_index);
+	result.Reference(args.data[0]);
+}
+
+TEST_CASE("Scoped timers of registered timings can end on several threads at once", "[api][intraquery]") {
+	if (STANDARD_VECTOR_SIZE < 1024) {
+		// hundreds of thousands of chunks would take too long
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	chunk_timer_index = MetricsManager::Get(*con.context)
+	                        .RegisterMetric({"test.chunk_time_by_index", "double", "Time spent per chunk", "seconds",
+	                                         MetricKind::TIMING});
+	ScalarFunction fn("time_by_index", {LogicalType::BIGINT}, LogicalType::BIGINT, TimeByIndexExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	SetUpParallelScan(con, "test_index_timers_output.txt");
+
+	REQUIRE_NO_FAIL(con.Query("SELECT max(time_by_index(i)) FROM numbers"));
+	auto seconds = GetProfiledMetric(con, "test.chunk_time_by_index");
+	REQUIRE(!seconds.IsNull());
+	REQUIRE(seconds.GetValue<double>() > 0);
+}
+
+// Runs a callback for every chunk, as an extension's scalar function would, so a test can update metrics in a query.
+static std::function<void(QueryProfiler &, idx_t)> chunk_callback;
+static void ChunkCallbackExec(DataChunk &args, ExpressionState &state, Vector &result) {
+	chunk_callback(QueryProfiler::Get(state.GetContext()), args.size());
+	result.Reference(args.data[0]);
+}
+
+static void SetUpChunkCallback(Connection &con, const string &profile_name) {
+	ScalarFunction fn("chunk_callback", {LogicalType::BIGINT}, LogicalType::BIGINT, ChunkCallbackExec);
+	fn.SetStability(FunctionStability::VOLATILE);
+	RegisterFunction(con, std::move(fn));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(10000)"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 1"));
+	con.EnableProfiling();
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath(profile_name);
+}
+
+static constexpr const char *CHUNK_CALLBACK_QUERY = "SELECT max(chunk_callback(i)) FROM numbers";
+
+TEST_CASE("A registered metric updated by name and by index adds up in one place", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &metrics_manager = MetricsManager::Get(*con.context);
+	auto count_index = metrics_manager.RegisterMetric(
+	    {"test.mixed_count", "uint64", "Counted both ways", "rows", MetricKind::COUNTER});
+	auto time_index =
+	    metrics_manager.RegisterMetric({"test.mixed_time", "double", "Timed both ways", "seconds", MetricKind::TIMING});
+	auto value_index = metrics_manager.RegisterMetric({"test.mixed_value", "uint64", "Set both ways", "values"});
+	SetUpChunkCallback(con, "test_mixed_updates_output.txt");
+
+	atomic<bool> updated {false};
+	chunk_callback = [&](QueryProfiler &profiler, idx_t) {
+		if (updated.exchange(true)) {
+			return;
+		}
+		for (idx_t i = 0; i < 5; i++) {
+			profiler.AddToMetric(count_index, 1);
+		}
+		for (idx_t i = 0; i < 3; i++) {
+			profiler.AddToMetricCounter("test.mixed_count", 1);
+		}
+		profiler.AddToMetric(time_index, 1000000000);
+		profiler.AddToMetricTiming("test.mixed_time", 2000000000);
+		profiler.SetMetric(value_index, Value::UBIGINT(1));
+		profiler.SetMetric("test.mixed_value", Value::UBIGINT(2));
+	};
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	REQUIRE(GetProfiledMetric(con, "test.mixed_count") == Value::UBIGINT(8));
+	REQUIRE(GetProfiledMetric(con, "test.mixed_time").GetValue<double>() == Approx(3.0));
+	REQUIRE(GetProfiledMetric(con, "test.mixed_value") == Value::UBIGINT(2));
+	// the timings and counters the HTML renderer and the metrics log read agree with the profile
+	auto &query_metrics = QueryProfiler::Get(*con.context).GetQueryMetrics();
+	REQUIRE(query_metrics.GetMetricCounters()["test.mixed_count"] == 8);
+	REQUIRE(static_cast<double>(query_metrics.GetMetricTimings()["test.mixed_time"].duration) / 1e9 == Approx(3.0));
+	// a timer started by name times through the index
+	updated = false;
+	chunk_callback = [&](QueryProfiler &profiler, idx_t) {
+		if (!updated.exchange(true)) {
+			auto timer = profiler.StartTimerInternal("test.mixed_time");
+		}
+	};
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	REQUIRE(!GetProfiledMetric(con, "test.mixed_time").IsNull());
+	REQUIRE(query_metrics.GetMetricTimings()["test.mixed_time"].has_bounds);
+}
+
+TEST_CASE("A metric's kind must fit its type", "[api]") {
+	DuckDB db(nullptr);
+	auto &metrics_manager = MetricsManager::Get(*db.instance);
+	REQUIRE_THROWS_WITH(
+	    metrics_manager.RegisterMetric({"test.bad_counter", "double", "Not a uint64", "rows", MetricKind::COUNTER}),
+	    Catch::Contains("cannot have type"));
+	REQUIRE_THROWS_WITH(
+	    metrics_manager.RegisterMetric({"test.bad_timing", "uint64", "Not a double", "seconds", MetricKind::TIMING}),
+	    Catch::Contains("cannot have type"));
+	REQUIRE_THROWS_WITH(metrics_manager.RegisterMetric({"test.bad_type", "integer", "No such type", "rows"}),
+	                    Catch::Contains("expected"));
+	// a name registered again must keep its type and kind
+	metrics_manager.RegisterMetric({"test.kept", "uint64", "Kept", "rows", MetricKind::COUNTER});
+	REQUIRE_THROWS_WITH(metrics_manager.RegisterMetric({"test.kept", "uint64", "Kept", "rows", MetricKind::VALUE}),
+	                    Catch::Contains("already registered"));
+	REQUIRE_THROWS_WITH(metrics_manager.RegisterMetric({"test.kept", "double", "Kept", "rows", MetricKind::VALUE}),
+	                    Catch::Contains("already registered"));
+	REQUIRE(!metrics_manager.IsRegisteredMetric("test.bad_counter"));
+}
+
+TEST_CASE("Updates that do not fit a metric are left out", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &metrics_manager = MetricsManager::Get(*con.context);
+	auto counter =
+	    metrics_manager.RegisterMetric({"test.fit_counter", "uint64", "A counter", "rows", MetricKind::COUNTER});
+	auto count = metrics_manager.RegisterMetric({"test.fit_count", "uint64", "A count", "rows"});
+	auto ratio = metrics_manager.RegisterMetric({"test.fit_ratio", "double", "A ratio", "ratio"});
+	auto label = metrics_manager.RegisterMetric({"test.fit_label", "string", "A label", ""});
+	SetUpChunkCallback(con, "test_fitting_updates_output.txt");
+
+	chunk_callback = [&](QueryProfiler &profiler, idx_t) {
+		// a counter is added to, not set
+		profiler.SetMetric(counter, Value::UBIGINT(100));
+		profiler.AddToMetric(counter, 1);
+		// a value is set, not added to, and only when it casts to the metric's type
+		profiler.AddToMetric(count, 100);
+		profiler.SetMetric(count, Value::BIGINT(3));
+		profiler.SetMetric(count, Value::BIGINT(-1));
+		profiler.SetMetric(count, Value("not a number"));
+		profiler.SetMetric(ratio, Value::INTEGER(2));
+		// a string is kept by name
+		profiler.SetMetric(label, Value("hello"));
+	};
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	auto chunks = GetProfiledMetric(con, "test.fit_counter");
+	REQUIRE(!chunks.IsNull());
+	REQUIRE(chunks.GetValue<uint64_t>() >= 1);
+	REQUIRE(chunks.GetValue<uint64_t>() < 100);
+	REQUIRE(GetProfiledMetric(con, "test.fit_count") == Value::UBIGINT(3));
+	REQUIRE(GetProfiledMetric(con, "test.fit_ratio") == Value::DOUBLE(2));
+	REQUIRE(GetProfiledMetric(con, "test.fit_label") == Value("hello"));
+}
+
+TEST_CASE("Metrics are not updated by index while profiling is disabled", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto counter = MetricsManager::Get(*con.context)
+	                   .RegisterMetric({"test.disabled_counter", "uint64", "A counter", "rows", MetricKind::COUNTER});
+	SetUpChunkCallback(con, "test_disabled_output.txt");
+	chunk_callback = [&](QueryProfiler &profiler, idx_t) {
+		profiler.AddToMetric(counter, 1);
+	};
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	REQUIRE(!GetProfiledMetric(con, "test.disabled_counter").IsNull());
+
+	// the counts of the last profiled query are kept, and the query that is not profiled adds nothing to them
+	auto &query_metrics = QueryProfiler::Get(*con.context).GetQueryMetrics();
+	auto profiled_count = query_metrics.GetStringCounter("test.disabled_counter");
+	REQUIRE(profiled_count > 0);
+	con.DisableProfiling();
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	REQUIRE(query_metrics.GetStringCounter("test.disabled_counter") == profiled_count);
+}
+
+TEST_CASE("EXPLAIN ANALYZE reports a metric updated by index", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto counter = MetricsManager::Get(*con.context)
+	                   .RegisterMetric({"test.explained_counter", "uint64", "A counter", "rows", MetricKind::COUNTER});
+	SetUpChunkCallback(con, "test_explain_analyze_output.txt");
+	chunk_callback = [&](QueryProfiler &profiler, idx_t size) {
+		profiler.AddToMetric(counter, size);
+	};
+	REQUIRE_NO_FAIL(con.Query(string("EXPLAIN ANALYZE ") + CHUNK_CALLBACK_QUERY));
+	REQUIRE(GetProfiledMetric(con, "test.explained_counter") == Value::UBIGINT(10000));
+}
+
+TEST_CASE("An index belongs to the database the metric was registered in", "[api]") {
+	DuckDB first_db(nullptr);
+	DuckDB second_db(nullptr);
+	auto &first_manager = MetricsManager::Get(*first_db.instance);
+	auto &second_manager = MetricsManager::Get(*second_db.instance);
+	// registered in another order, so the same name gets another index
+	auto first_a = first_manager.RegisterMetric({"test.db_a", "uint64", "A", "rows", MetricKind::COUNTER});
+	auto first_b = first_manager.RegisterMetric({"test.db_b", "uint64", "B", "rows", MetricKind::COUNTER});
+	auto second_b = second_manager.RegisterMetric({"test.db_b", "uint64", "B", "rows", MetricKind::COUNTER});
+	auto second_a = second_manager.RegisterMetric({"test.db_a", "uint64", "A", "rows", MetricKind::COUNTER});
+	REQUIRE(first_a.GetIndex() == second_b.GetIndex());
+	REQUIRE(first_b.GetIndex() == second_a.GetIndex());
+
+	Connection con(second_db);
+	SetUpChunkCallback(con, "test_two_databases_output.txt");
+	chunk_callback = [&](QueryProfiler &profiler, idx_t size) {
+		profiler.AddToMetric(second_a, size);
+	};
+	REQUIRE_NO_FAIL(con.Query(CHUNK_CALLBACK_QUERY));
+	REQUIRE(GetProfiledMetric(con, "test.db_a") == Value::UBIGINT(10000));
+	REQUIRE(GetProfiledMetric(con, "test.db_b").IsNull());
+}
+
+TEST_CASE("An update from another thread may come while queries start and metrics are registered", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &metrics_manager = MetricsManager::Get(*con.context);
+	auto counter =
+	    metrics_manager.RegisterMetric({"test.late_counter", "uint64", "Counted late", "rows", MetricKind::COUNTER});
+	auto value = metrics_manager.RegisterMetric({"test.late_value", "double", "Set late", "ratio"});
+	SetUpChunkCallback(con, "test_late_updates_output.txt");
+	chunk_callback = [&](QueryProfiler &, idx_t) {
+	};
+
+	// like an extension's background thread, which reports to the profiler of the connection that started it
+	auto &profiler = QueryProfiler::Get(*con.context);
+	atomic<bool> done {false};
+	thread updater([&]() {
+		while (!done) {
+			profiler.AddToMetric(counter, 1);
+			profiler.SetMetric(value, Value::DOUBLE(0.5));
+			profiler.AddToMetricCounter("test.late_counter", 1);
+		}
+	});
+	for (idx_t i = 0; i < 200; i++) {
+		// every registration makes the next query start with new slots
+		metrics_manager.RegisterMetric(
+		    {"test.late_registered_" + to_string(i), "uint64", "Registered late", "rows", MetricKind::COUNTER});
+		REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+	}
+	done = true;
+	updater.join();
 }
