@@ -1437,7 +1437,7 @@ void StringValueScanner::ProcessExtraRow() {
 string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char escape, char quote, bool strict_mode,
                                           Vector &vector, bool quoted_value) {
 	// in a quoted value of a non-strict reader, a doubled quote is one quote
-	const bool doubled_quotes = quoted_value && !strict_mode && escape != quote;
+	const bool doubled_quotes = quoted_value && !strict_mode && escape != '\0' && escape != quote;
 	// Figure out the exact size
 	idx_t str_pos = 0;
 	bool just_escaped = false;

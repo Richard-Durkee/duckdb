@@ -295,16 +295,8 @@ void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption
 	} else if (loption == "ignore_errors") {
 		ignore_errors.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "unquoted_escape") {
-		auto unquoted_escape = StringUtil::Lower(ParseString(value, loption));
-		if (unquoted_escape == "escape") {
-			dialect_options.state_machine_options.unquoted_escape.Set(CSVUnquotedEscape::ESCAPE);
-		} else if (unquoted_escape == "literal") {
-			dialect_options.state_machine_options.unquoted_escape.Set(CSVUnquotedEscape::LITERAL);
-		} else if (unquoted_escape == "drop") {
-			dialect_options.state_machine_options.unquoted_escape.Set(CSVUnquotedEscape::DROP);
-		} else {
-			throw BinderException("Unsupported parameter for UNQUOTED_ESCAPE: expected 'escape', 'literal' or 'drop'");
-		}
+		dialect_options.state_machine_options.unquoted_escape.Set(
+		    EnumUtil::FromString<CSVUnquotedEscape>(ParseString(value, loption)));
 	} else if (loption == "allow_quoted_newlines") {
 		dialect_options.state_machine_options.allow_quoted_newlines.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "buffer_size") {
