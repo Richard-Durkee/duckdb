@@ -568,6 +568,20 @@ void StringValueResult::Reset() {
 }
 
 void StringValueResult::AddQuotedValue(StringValueResult &result, const idx_t buffer_pos) {
+	const auto before = result.states.states[0];
+	if (!result.state_machine.state_machine_options.multi_line.GetValue() &&
+	    (before == CSVState::QUOTED || before == CSVState::ESCAPE || before == CSVState::QUOTED_NEW_LINE)) {
+		// the row ended inside the quotes
+		if (result.cur_col_id < result.number_of_columns &&
+		    (!result.projecting_columns || result.projected_columns[result.cur_col_id])) {
+			result.validity_mask[result.chunk_col_id]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
+			result.chunk_col_id++;
+		}
+		result.cur_col_id++;
+		result.quoted = false;
+		result.escaped = false;
+		return;
+	}
 	if (!result.unquoted) {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
@@ -632,7 +646,8 @@ void StringValueResult::AddPossiblyEscapedValue(StringValueResult &result, const
 				    value_ptr, length, result.state_machine.dialect_options.state_machine_options.escape.GetValue(),
 				    result.state_machine.dialect_options.state_machine_options.quote.GetValue(),
 				    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-				    result.parse_chunk.data[result.chunk_col_id]);
+				    result.parse_chunk.data[result.chunk_col_id],
+				    result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
 				result.AddValueToVector(value.GetData(), value.GetSize());
 			}
 		}
@@ -1407,7 +1422,7 @@ void StringValueScanner::ProcessExtraRow() {
 }
 
 string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char escape, char quote, bool strict_mode,
-                                          Vector &vector) {
+                                          Vector &vector, bool doublequote) {
 	// Figure out the exact size
 	idx_t str_pos = 0;
 	bool just_escaped = false;
@@ -1415,7 +1430,10 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 		if (str_ptr[cur_pos] == escape && !just_escaped) {
 			just_escaped = true;
 		} else if (str_ptr[cur_pos] == quote) {
-			if (just_escaped || !strict_mode) {
+			if (doublequote && !just_escaped && cur_pos + 1 < end && str_ptr[cur_pos + 1] == quote) {
+				cur_pos++;
+				str_pos++;
+			} else if (just_escaped || !strict_mode) {
 				str_pos++;
 			}
 			just_escaped = false;
@@ -1435,7 +1453,10 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 		if (c == escape && !just_escaped) {
 			just_escaped = true;
 		} else if (str_ptr[cur_pos] == quote) {
-			if (just_escaped || !strict_mode) {
+			if (doublequote && !just_escaped && cur_pos + 1 < end && str_ptr[cur_pos + 1] == quote) {
+				cur_pos++;
+				removed_escapes_ptr[str_pos++] = c;
+			} else if (just_escaped || !strict_mode) {
 				removed_escapes_ptr[str_pos++] = c;
 			}
 			just_escaped = false;
@@ -1616,7 +1637,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 					    str_ptr, length, state_machine->dialect_options.state_machine_options.escape.GetValue(),
 					    state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					    result.parse_chunk.data[result.chunk_col_id]);
+					    result.parse_chunk.data[result.chunk_col_id],
+					    result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
 				}
 			}
 		} else {
@@ -1648,7 +1670,8 @@ void StringValueScanner::ProcessOverBufferValue() {
 					                 state_machine->dialect_options.state_machine_options.escape.GetValue(),
 					                 state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					                 result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					                 result.parse_chunk.data[result.chunk_col_id]);
+					                 result.parse_chunk.data[result.chunk_col_id],
+					                 result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
 				}
 			}
 		}

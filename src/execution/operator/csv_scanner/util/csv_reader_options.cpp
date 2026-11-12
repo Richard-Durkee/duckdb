@@ -485,6 +485,12 @@ bool CSVReaderOptions::SetBaseOption(Context &context, const Identifier &loption
 		SetCompression(ParseString(value, loption));
 	} else if (loption == "strict_mode") {
 		SetRFC4180(ParseBoolean(context, value, loption));
+	} else if (loption == "escape_delimiters") {
+		dialect_options.state_machine_options.escape_delimiters.Set(ParseBoolean(context, value, loption));
+	} else if (loption == "multi_line") {
+		dialect_options.state_machine_options.multi_line.Set(ParseBoolean(context, value, loption));
+	} else if (loption == "doublequote") {
+		dialect_options.state_machine_options.doublequote.Set(ParseBoolean(context, value, loption));
 	} else {
 		// unrecognized option in base CSV
 		return false;

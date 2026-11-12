@@ -51,7 +51,12 @@ struct HashCSVStateMachineConfig {
 		auto h_escape = Hash(config.escape.GetValue());
 		auto h_newline = Hash(static_cast<uint8_t>(config.new_line.GetValue()));
 		auto h_comment = Hash(static_cast<uint8_t>(config.comment.GetValue()));
-		return CombineHash(h_delimiter, CombineHash(h_quote, CombineHash(h_escape, CombineHash(h_newline, h_comment))));
+		auto h_flags =
+		    Hash(static_cast<uint8_t>(config.escape_delimiters.GetValue() | config.multi_line.GetValue() << 1 |
+		                              config.doublequote.GetValue() << 2));
+		return CombineHash(
+		    h_delimiter,
+		    CombineHash(h_quote, CombineHash(h_escape, CombineHash(h_newline, CombineHash(h_comment, h_flags)))));
 	}
 };
 

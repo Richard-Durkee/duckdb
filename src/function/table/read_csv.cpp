@@ -104,6 +104,9 @@ void ReadCSVTableFunction::ReadCSVAddNamedParameters(TableFunction &table_functi
 		    .Add("comment", LogicalType::VARCHAR)
 		    .Add("encoding", LogicalType::VARCHAR)
 		    .Add("strict_mode", LogicalType::BOOLEAN)
+		    .Add("escape_delimiters", LogicalType::BOOLEAN)
+		    .Add("multi_line", LogicalType::BOOLEAN)
+		    .Add("doublequote", LogicalType::BOOLEAN)
 		    .Add("thousands", LogicalType::VARCHAR)
 		    .Add("files_to_sniff", LogicalType::BIGINT);
 	});
