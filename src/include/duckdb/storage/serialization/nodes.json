@@ -1238,6 +1238,13 @@
         "type": "CSVOption<bool>",
         "property": "options.dialect_options.state_machine_options.allow_quoted_newlines",
         "default": "CSVOption<bool>(true)"
+      },
+      {
+        "id": 146,
+        "name": "unquoted_escape",
+        "type": "CSVOption<CSVUnquotedEscape>",
+        "property": "options.dialect_options.state_machine_options.unquoted_escape",
+        "default": "CSVOption<CSVUnquotedEscape>(CSVUnquotedEscape::ESCAPE)"
       }
     ],
     "constructor": [

@@ -1,0 +1,152 @@
+# name: test/sql/copy/csv/test_csv_unquoted_escape.test
+# description: The unquoted_escape option of read_csv
+# group: [csv]
+
+statement ok
+SET threads = 1
+
+statement ok
+COPY (SELECT * FROM (VALUES ('1,a\,b'), ('2,end\'), ('3,c\\d'), ('4,"q\"r"'), ('5,x\yz')) t(line))
+TO '{TEST_DIR}/unquoted_escape.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# 'drop': the escape is dropped, and the delimiter or newline after it is read as usual
+query III
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, unquoted_escape = 'drop') ORDER BY a;
+----
+1	a	b
+2	end	NULL
+3	c\d	NULL
+4	q"r	NULL
+5	xyz	NULL
+
+# 'escape', the default: the character after the escape is data, even a delimiter or a newline
+query III
+SELECT a, replace(b, chr(10), '<nl>'), c FROM read_csv('{TEST_DIR}/unquoted_escape.csv', delim = ',', quote = '"',
+    escape = '\', header = false, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'},
+    null_padding = true, strict_mode = false) ORDER BY a;
+----
+1	a,b	NULL
+2	end<nl>3	c\d
+4	q"r	NULL
+5	xyz	NULL
+
+query III
+SELECT a, replace(b, chr(10), '<nl>'), c FROM read_csv('{TEST_DIR}/unquoted_escape.csv', delim = ',', quote = '"',
+    escape = '\', header = false, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'},
+    null_padding = true, strict_mode = false, unquoted_escape = 'escape') ORDER BY a;
+----
+1	a,b	NULL
+2	end<nl>3	c\d
+4	q"r	NULL
+5	xyz	NULL
+
+# 'literal': the escape is data outside quotes, also with strict_mode off
+query III
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, unquoted_escape = 'literal') ORDER BY a;
+----
+1	a\	b
+2	end\	NULL
+3	c\\d	NULL
+4	q"r	NULL
+5	x\yz	NULL
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', escape = '\', unquoted_escape = 'drop');
+----
+UNQUOTED_ESCAPE = 'drop' requires STRICT_MODE = false
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', quote = '"', escape = '"', strict_mode = false,
+    unquoted_escape = 'drop');
+----
+UNQUOTED_ESCAPE = 'drop' requires an ESCAPE character other than the QUOTE character
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', escape = '', strict_mode = false, unquoted_escape = 'escape');
+----
+UNQUOTED_ESCAPE = 'escape' requires an ESCAPE character other than the QUOTE character
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape.csv', escape = '\', strict_mode = false, unquoted_escape = 'skip');
+----
+unrecognized value "skip" for enum "CSVUnquotedEscape"
+
+# 'drop': the character after the escape is read as in the middle of a field, so a quote there is data and a comment
+# starts a comment; an escaped NULL string is NULL, as with 'escape'
+statement ok
+COPY (SELECT * FROM (VALUES ('1,\"q"'), ('2,y\#z'), ('3,\N'), ('4,\N,c')) t(line)) TO '{TEST_DIR}/unquoted_escape_mid.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query III
+SELECT a, b, b IS NULL FROM read_csv('{TEST_DIR}/unquoted_escape_mid.csv', delim = ',', quote = '"', escape = '\',
+    comment = '#', nullstr = '\N', header = false, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'},
+    null_padding = true, strict_mode = false, unquoted_escape = 'drop') ORDER BY a;
+----
+1	"q"	false
+2	y	false
+3	NULL	true
+4	NULL	true
+
+query III
+SELECT a, b, b IS NULL FROM read_csv('{TEST_DIR}/unquoted_escape_mid.csv', delim = ',', quote = '"', escape = '\',
+    comment = '#', header = false, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'},
+    null_padding = true, strict_mode = false, unquoted_escape = 'literal') ORDER BY a;
+----
+1	\"q"	false
+2	y\	false
+3	\N	false
+4	\N	false
+
+# with 'literal' an escape in the NULL string is refused, as in strict mode
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/unquoted_escape_mid.csv', delim = ',', quote = '"', escape = '\', nullstr = '\N',
+    strict_mode = false, unquoted_escape = 'literal');
+----
+ESCAPE must not appear in the NULL specification
+
+# escapes crossing buffer boundaries, read with several threads
+statement ok
+SET threads = 4
+
+statement ok
+COPY (SELECT i || ',v' || i || '\,w,"q\"' || i || 'r",end' || CASE WHEN i % 5 = 0 THEN '\' ELSE '' END AS line
+    FROM range(3000) t(i)) TO '{TEST_DIR}/unquoted_escape_buffers.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query IIII
+SELECT count(*), count(*) FILTER (b = 'v' || a), count(*) FILTER (c = 'w'), count(*) FILTER (d = 'q"' || a || 'r')
+FROM read_csv('{TEST_DIR}/unquoted_escape_buffers.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR', 'd': 'VARCHAR', 'e': 'VARCHAR'},
+    strict_mode = false, unquoted_escape = 'drop', buffer_size = 701, max_line_size = 500);
+----
+3000	3000	3000	3000
+
+#---------------------------------------------------------------------------
+# COPY FROM reads the option, COPY TO refuses it
+#---------------------------------------------------------------------------
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE t (a INT, b VARCHAR, c VARCHAR);
+
+statement ok
+COPY t FROM '{TEST_DIR}/unquoted_escape.csv' (HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '\', STRICT_MODE false,
+    NULL_PADDING true, AUTO_DETECT false, UNQUOTED_ESCAPE 'drop');
+
+query III
+SELECT * FROM t ORDER BY a;
+----
+1	a	b
+2	end	NULL
+3	c\d	NULL
+4	q"r	NULL
+5	xyz	NULL
+
+statement error
+COPY t TO '{TEST_DIR}/out.csv' (UNQUOTED_ESCAPE 'drop');
+----
+only for reading

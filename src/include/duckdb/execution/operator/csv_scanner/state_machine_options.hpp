@@ -32,13 +32,15 @@ struct CSVStateMachineOptions {
 	CSVOption<NewLineIdentifier> new_line = NewLineIdentifier::NOT_SET;
 	//! How Strict the parser should be
 	CSVOption<bool> strict_mode = true;
+	//! How an escape character outside quotes is read (with strict_mode off)
+	CSVOption<CSVUnquotedEscape> unquoted_escape = CSVUnquotedEscape::ESCAPE;
 	//! Whether a quoted value may hold a newline; if not, a newline ends the row inside quotes too
 	CSVOption<bool> allow_quoted_newlines = true;
 
 	bool operator==(const CSVStateMachineOptions &other) const {
 		return delimiter == other.delimiter && quote == other.quote && escape == other.escape &&
 		       new_line == other.new_line && comment == other.comment && strict_mode == other.strict_mode &&
-		       allow_quoted_newlines == other.allow_quoted_newlines;
+		       unquoted_escape == other.unquoted_escape && allow_quoted_newlines == other.allow_quoted_newlines;
 	}
 };
 } // namespace duckdb

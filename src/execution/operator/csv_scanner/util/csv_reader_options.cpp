@@ -294,6 +294,9 @@ void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, true);
 	} else if (loption == "ignore_errors") {
 		ignore_errors.Set(ParseBoolean(context, value, loption));
+	} else if (loption == "unquoted_escape") {
+		dialect_options.state_machine_options.unquoted_escape.Set(
+		    EnumUtil::FromString<CSVUnquotedEscape>(ParseString(value, loption)));
 	} else if (loption == "allow_quoted_newlines") {
 		dialect_options.state_machine_options.allow_quoted_newlines.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "buffer_size") {
@@ -534,6 +537,9 @@ string CSVReaderOptions::ToString(const String &current_file_path) const {
 	error += FormatOptionLine("comment", comment);
 	// strict_mode
 	error += FormatOptionLine("strict_mode", strict_mode);
+	if (dialect_options.state_machine_options.unquoted_escape.IsSetByUser()) {
+		error += FormatOptionLine("unquoted_escape", dialect_options.state_machine_options.unquoted_escape);
+	}
 	if (dialect_options.state_machine_options.allow_quoted_newlines.IsSetByUser()) {
 		error += FormatOptionLine("allow_quoted_newlines", dialect_options.state_machine_options.allow_quoted_newlines);
 	}
@@ -597,6 +603,18 @@ bool StoreUserDefinedParameter(const Identifier &option) {
 }
 
 void CSVReaderOptions::Verify(MultiFileOptions &file_options) {
+	auto &unquoted_escape = dialect_options.state_machine_options.unquoted_escape;
+	if (unquoted_escape.IsSetByUser() && unquoted_escape.GetValue() != CSVUnquotedEscape::LITERAL) {
+		auto &state_machine_options = dialect_options.state_machine_options;
+		if (state_machine_options.strict_mode.GetValue()) {
+			throw BinderException("UNQUOTED_ESCAPE = '%s' requires STRICT_MODE = false", unquoted_escape.FormatValue());
+		}
+		if (state_machine_options.escape.GetValue() == '\0' ||
+		    state_machine_options.escape.GetValue() == state_machine_options.quote.GetValue()) {
+			throw BinderException("UNQUOTED_ESCAPE = '%s' requires an ESCAPE character other than the QUOTE character",
+			                      unquoted_escape.FormatValue());
+		}
+	}
 	if (rejects_table_name.IsSetByUser() && !store_rejects.GetValue() && store_rejects.IsSetByUser()) {
 		throw BinderException("REJECTS_TABLE option is only supported when store_rejects is not manually set to false");
 	}
@@ -886,6 +904,9 @@ void CSVReaderOptions::ToNamedParameters(named_parameter_map_t &named_params) co
 	}
 	if (strict_mode.IsSetByUser()) {
 		named_params["strict_mode"] = Value(GetRFC4180());
+	}
+	if (dialect_options.state_machine_options.unquoted_escape.IsSetByUser()) {
+		named_params["unquoted_escape"] = Value(dialect_options.state_machine_options.unquoted_escape.FormatValue());
 	}
 	if (dialect_options.state_machine_options.allow_quoted_newlines.IsSetByUser()) {
 		named_params["allow_quoted_newlines"] =

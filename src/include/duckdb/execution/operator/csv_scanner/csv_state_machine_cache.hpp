@@ -53,6 +53,7 @@ struct HashCSVStateMachineConfig {
 		auto h_comment = Hash(static_cast<uint8_t>(config.comment.GetValue()));
 		auto hash =
 		    CombineHash(h_delimiter, CombineHash(h_quote, CombineHash(h_escape, CombineHash(h_newline, h_comment))));
+		hash = CombineHash(hash, Hash(static_cast<uint8_t>(config.unquoted_escape.GetValue())));
 		return CombineHash(hash, Hash(config.allow_quoted_newlines.GetValue()));
 	}
 };

@@ -731,6 +731,7 @@ void SerializedCSVReaderOptions::Serialize(Serializer &serializer) const {
 	serializer.WriteProperty<CSVOption<idx_t>>(143, "buffer_size_option", options.buffer_size_option);
 	serializer.WritePropertyWithDefault<idx_t>(144, "rejects_line_size_limit", options.rejects_line_size_limit, 10000);
 	serializer.WritePropertyWithDefault<CSVOption<bool>>(145, "allow_quoted_newlines", options.dialect_options.state_machine_options.allow_quoted_newlines, CSVOption<bool>(true));
+	serializer.WritePropertyWithDefault<CSVOption<CSVUnquotedEscape>>(146, "unquoted_escape", options.dialect_options.state_machine_options.unquoted_escape, CSVOption<CSVUnquotedEscape>(CSVUnquotedEscape::ESCAPE));
 }
 
 SerializedCSVReaderOptions SerializedCSVReaderOptions::Deserialize(Deserializer &deserializer) {
@@ -818,6 +819,7 @@ SerializedCSVReaderOptions SerializedCSVReaderOptions::Deserialize(Deserializer 
 	deserializer.ReadProperty<CSVOption<idx_t>>(143, "buffer_size_option", result.options.buffer_size_option);
 	deserializer.ReadPropertyWithExplicitDefault<idx_t>(144, "rejects_line_size_limit", result.options.rejects_line_size_limit, 10000);
 	deserializer.ReadPropertyWithExplicitDefault<CSVOption<bool>>(145, "allow_quoted_newlines", result.options.dialect_options.state_machine_options.allow_quoted_newlines, CSVOption<bool>(true));
+	deserializer.ReadPropertyWithExplicitDefault<CSVOption<CSVUnquotedEscape>>(146, "unquoted_escape", result.options.dialect_options.state_machine_options.unquoted_escape, CSVOption<CSVUnquotedEscape>(CSVUnquotedEscape::ESCAPE));
 	return result;
 }
 

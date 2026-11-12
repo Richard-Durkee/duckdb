@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 
 namespace duckdb {
@@ -18,6 +19,16 @@ enum class NewLineIdentifier : uint8_t {
 	NOT_SET = 3,
 	SINGLE_R = 4 // \r
 
+};
+
+//! How an escape character outside quotes is read
+enum class CSVUnquotedEscape : uint8_t {
+	// the character after it is data, even a delimiter or a newline
+	ESCAPE = 0,
+	// it is data itself
+	LITERAL = 1,
+	// it is dropped, and the character after it is read as in the middle of a field
+	DROP = 2
 };
 
 class Serializer;
@@ -149,6 +160,10 @@ private:
 		default:
 			throw InternalException("Invalid Newline Detected.");
 		}
+	}
+
+	std::string FormatValueInternal(const CSVUnquotedEscape &val) const {
+		return StringUtil::Lower(EnumUtil::ToString(val));
 	}
 
 	std::string FormatValueInternal(const StrpTimeFormat &val) const {

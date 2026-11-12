@@ -200,13 +200,19 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 
 	const bool multi_byte_delimiter = delimiter_value.size() > 1;
 
+	const auto unquoted_escape = state_machine_options.unquoted_escape.GetValue();
 	const bool enable_unquoted_escape = state_machine_options.strict_mode.GetValue() == false &&
 	                                    state_machine_options.quote != state_machine_options.escape &&
-	                                    state_machine_options.escape != '\0';
+	                                    state_machine_options.escape != '\0' &&
+	                                    unquoted_escape != CSVUnquotedEscape::LITERAL;
 	// Now set values depending on configuration
 	// 1) Standard/Invalid State
-	const vector<uint8_t> std_inv {static_cast<uint8_t>(CSVState::STANDARD), static_cast<uint8_t>(CSVState::INVALID),
-	                               static_cast<uint8_t>(CSVState::STANDARD_NEWLINE)};
+	vector<uint8_t> std_inv {static_cast<uint8_t>(CSVState::STANDARD), static_cast<uint8_t>(CSVState::INVALID),
+	                         static_cast<uint8_t>(CSVState::STANDARD_NEWLINE)};
+	if (enable_unquoted_escape && unquoted_escape == CSVUnquotedEscape::DROP) {
+		// the character after an unquoted escape is read as after any other character
+		std_inv.push_back(static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE));
+	}
 	for (const auto &state : std_inv) {
 		if (multi_byte_delimiter) {
 			transition_array[delimiter_first_byte][state] = CSVState::DELIMITER_FIRST_BYTE;
@@ -524,7 +530,7 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 	}
 
 	// 12) Unquoted Escape State
-	if (enable_unquoted_escape) {
+	if (enable_unquoted_escape && unquoted_escape == CSVUnquotedEscape::ESCAPE) {
 		// Any character can be escaped, so default to STANDARD
 		if (new_line_id == NewLineIdentifier::CARRY_ON) {
 			transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =
