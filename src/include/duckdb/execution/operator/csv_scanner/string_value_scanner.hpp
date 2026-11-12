@@ -301,8 +301,8 @@ public:
 	//! Force the throw of a Unicode error
 	void HandleUnicodeError(idx_t col_idx, LinePosition &error_position);
 	bool HandleTooManyColumnsError(const char *value_ptr, const idx_t size);
-	//! Adds a quoted value whose row ended before its closing quote (multi_line = false) as NULL
-	void AddOpenQuotedValue(const char *value_ptr, const idx_t size);
+	//! Adds a quoted value whose row ended before its closing quote (allow_quoted_newlines = false)
+	void AddOpenQuotedValue();
 	inline void AddValueToVector(const char *value_ptr, idx_t size, bool allocate = false);
 	static inline void SetComment(StringValueResult &result, idx_t buffer_pos);
 	static inline bool UnsetComment(StringValueResult &result, idx_t buffer_pos);
@@ -362,7 +362,7 @@ public:
 
 	//! Creates a new string with all escaped values removed
 	static string_t RemoveEscape(const char *str_ptr, idx_t end, char escape, char quote, bool strict_mode,
-	                             Vector &vector, bool doublequote);
+	                             Vector &vector, bool quoted_value);
 
 	//! If we can directly cast the type when consuming the CSV file, or we have to do it later
 	static bool CanDirectlyCast(const LogicalType &type, bool icu_loaded);

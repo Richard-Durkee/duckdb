@@ -20,6 +20,13 @@ enum class NewLineIdentifier : uint8_t {
 
 };
 
+//! How an escape character outside quotes is read
+enum class CSVUnquotedEscape : uint8_t {
+	ESCAPE = 0,  //! the character after it is data, even a delimiter or a newline
+	LITERAL = 1, //! it is data itself
+	DROP = 2     //! it is dropped, and the character after it is read as usual
+};
+
 class Serializer;
 class Deserializer;
 
@@ -148,6 +155,19 @@ private:
 			return "Single-Line File";
 		default:
 			throw InternalException("Invalid Newline Detected.");
+		}
+	}
+
+	std::string FormatValueInternal(const CSVUnquotedEscape &val) const {
+		switch (val) {
+		case CSVUnquotedEscape::ESCAPE:
+			return "escape";
+		case CSVUnquotedEscape::LITERAL:
+			return "literal";
+		case CSVUnquotedEscape::DROP:
+			return "drop";
+		default:
+			throw InternalException("Invalid unquoted escape");
 		}
 	}
 

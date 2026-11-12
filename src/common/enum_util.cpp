@@ -1109,6 +1109,25 @@ CSVState EnumUtil::FromString<CSVState>(const char *value) {
 	return static_cast<CSVState>(StringUtil::StringToEnum(GetCSVStateValues(), 19, "CSVState", value));
 }
 
+const StringUtil::EnumStringLiteral *GetCSVUnquotedEscapeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(CSVUnquotedEscape::ESCAPE), "ESCAPE" },
+		{ static_cast<uint32_t>(CSVUnquotedEscape::LITERAL), "LITERAL" },
+		{ static_cast<uint32_t>(CSVUnquotedEscape::DROP), "DROP" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<CSVUnquotedEscape>(CSVUnquotedEscape value) {
+	return StringUtil::EnumToString(GetCSVUnquotedEscapeValues(), 3, "CSVUnquotedEscape", static_cast<uint32_t>(value));
+}
+
+template<>
+CSVUnquotedEscape EnumUtil::FromString<CSVUnquotedEscape>(const char *value) {
+	return static_cast<CSVUnquotedEscape>(StringUtil::StringToEnum(GetCSVUnquotedEscapeValues(), 3, "CSVUnquotedEscape", value));
+}
+
 const StringUtil::EnumStringLiteral *GetCTEExecutionModeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(CTEExecutionMode::MATERIALIZED), "MATERIALIZED" },

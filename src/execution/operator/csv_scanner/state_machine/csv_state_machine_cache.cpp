@@ -200,15 +200,16 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 
 	const bool multi_byte_delimiter = delimiter_value.size() > 1;
 
+	const auto unquoted_escape = state_machine_options.unquoted_escape.GetValue();
 	const bool enable_unquoted_escape = state_machine_options.strict_mode.GetValue() == false &&
 	                                    state_machine_options.quote != state_machine_options.escape &&
-	                                    state_machine_options.escape != '\0';
+	                                    state_machine_options.escape != '\0' &&
+	                                    unquoted_escape != CSVUnquotedEscape::LITERAL;
 	// Now set values depending on configuration
 	// 1) Standard/Invalid State
 	vector<uint8_t> std_inv {static_cast<uint8_t>(CSVState::STANDARD), static_cast<uint8_t>(CSVState::INVALID),
 	                         static_cast<uint8_t>(CSVState::STANDARD_NEWLINE)};
-	const bool escape_delimiters = state_machine_options.escape_delimiters.GetValue();
-	if (enable_unquoted_escape && !escape_delimiters) {
+	if (enable_unquoted_escape && unquoted_escape == CSVUnquotedEscape::DROP) {
 		// the character after an unquoted escape is read as after any other character
 		std_inv.push_back(static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE));
 	}
@@ -511,23 +512,25 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 		    CSVState::RECORD_SEPARATOR;
 	}
 
-	if (!state_machine_options.multi_line.GetValue()) {
-		// a newline that ends a row outside quotes ends it inside quotes too
+	if (!state_machine_options.allow_quoted_newlines.GetValue()) {
+		// a newline that ends a row outside quotes ends it inside quotes too; with '\r\n' rows the '\n' ends it, and
+		// the '\r' before it is part of the unclosed value
 		const auto standard = static_cast<uint8_t>(CSVState::STANDARD);
 		const vector<CSVState> in_quotes {CSVState::QUOTED, CSVState::QUOTED_NEW_LINE, CSVState::ESCAPE};
 		for (const auto byte : {static_cast<uint8_t>('\n'), static_cast<uint8_t>('\r')}) {
-			const auto row_end = transition_array[byte][standard];
-			if (row_end != CSVState::RECORD_SEPARATOR && row_end != CSVState::CARRIAGE_RETURN) {
+			const bool row_end = transition_array[byte][standard] == CSVState::RECORD_SEPARATOR ||
+			                     (byte == '\n' && new_line_id == NewLineIdentifier::CARRY_ON);
+			if (!row_end) {
 				continue;
 			}
 			for (const auto state : in_quotes) {
-				transition_array[byte][static_cast<uint8_t>(state)] = row_end;
+				transition_array[byte][static_cast<uint8_t>(state)] = CSVState::RECORD_SEPARATOR;
 			}
 		}
 	}
 
 	// 12) Unquoted Escape State
-	if (enable_unquoted_escape && escape_delimiters) {
+	if (enable_unquoted_escape && unquoted_escape == CSVUnquotedEscape::ESCAPE) {
 		// Any character can be escaped, so default to STANDARD
 		if (new_line_id == NewLineIdentifier::CARRY_ON) {
 			transition_array[static_cast<uint8_t>('\r')][static_cast<uint8_t>(CSVState::UNQUOTED_ESCAPE)] =

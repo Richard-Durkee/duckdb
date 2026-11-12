@@ -172,7 +172,7 @@ void ColumnCountScanner::FinalizeChunkProcess() {
 			if (!cur_buffer_handle) {
 				buffer_handle_ptr = nullptr;
 				if (states.IsQuotedCurrent() && !states.IsUnquoted() &&
-				    (state_machine->dialect_options.state_machine_options.multi_line.GetValue() ||
+				    (state_machine->dialect_options.state_machine_options.allow_quoted_newlines.GetValue() ||
 				     state_machine->dialect_options.state_machine_options.strict_mode.GetValue())) {
 					// We are finishing our file on a quoted value that is never unquoted, straight to jail.
 					result.error = true;

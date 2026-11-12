@@ -118,6 +118,8 @@ enum class CAPIResultSetType : uint8_t;
 
 enum class CSVState : uint8_t;
 
+enum class CSVUnquotedEscape : uint8_t;
+
 enum class CTEExecutionMode : uint8_t;
 
 enum class CTEMaterialize : uint8_t;
@@ -833,6 +835,9 @@ const char* EnumUtil::ToChars<CAPIResultSetType>(CAPIResultSetType value);
 
 template<>
 const char* EnumUtil::ToChars<CSVState>(CSVState value);
+
+template<>
+const char* EnumUtil::ToChars<CSVUnquotedEscape>(CSVUnquotedEscape value);
 
 template<>
 const char* EnumUtil::ToChars<CTEExecutionMode>(CTEExecutionMode value);
@@ -1842,6 +1847,9 @@ CAPIResultSetType EnumUtil::FromString<CAPIResultSetType>(const char *value);
 
 template<>
 CSVState EnumUtil::FromString<CSVState>(const char *value);
+
+template<>
+CSVUnquotedEscape EnumUtil::FromString<CSVUnquotedEscape>(const char *value);
 
 template<>
 CTEExecutionMode EnumUtil::FromString<CTEExecutionMode>(const char *value);

@@ -1234,21 +1234,17 @@
       },
       {
         "id": 145,
-        "name": "escape_delimiters",
-        "type": "CSVOption<bool>",
-        "property": "options.dialect_options.state_machine_options.escape_delimiters"
+        "name": "unquoted_escape",
+        "type": "CSVOption<CSVUnquotedEscape>",
+        "property": "options.dialect_options.state_machine_options.unquoted_escape",
+        "default": "CSVOption<CSVUnquotedEscape>(CSVUnquotedEscape::ESCAPE)"
       },
       {
         "id": 146,
-        "name": "multi_line",
+        "name": "allow_quoted_newlines",
         "type": "CSVOption<bool>",
-        "property": "options.dialect_options.state_machine_options.multi_line"
-      },
-      {
-        "id": 147,
-        "name": "doublequote",
-        "type": "CSVOption<bool>",
-        "property": "options.doublequote"
+        "property": "options.dialect_options.state_machine_options.allow_quoted_newlines",
+        "default": "CSVOption<bool>(true)"
       }
     ],
     "constructor": [
