@@ -200,6 +200,9 @@ static void CSVListCopyOptions(ClientContext &context, CopyOptionsInput &input) 
 	copy_options["rejects_limit"] = CopyOption(LogicalType::BIGINT, CopyOptionMode::READ_ONLY);
 	copy_options["encoding"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 	copy_options["thousands"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
+	copy_options["escape_delimiters"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
+	copy_options["multi_line"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
+	copy_options["doublequote"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
 
 	copy_options["force_quote"] = CopyOption(LogicalType::LIST(LogicalType::VARCHAR), CopyOptionMode::WRITE_ONLY);
 	copy_options["prefix"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::WRITE_ONLY);

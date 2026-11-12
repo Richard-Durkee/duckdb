@@ -512,13 +512,17 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 	}
 
 	if (!state_machine_options.multi_line.GetValue()) {
-		// a newline ends the row inside quotes too
+		// a newline that ends a row outside quotes ends it inside quotes too
+		const auto standard = static_cast<uint8_t>(CSVState::STANDARD);
 		const vector<CSVState> in_quotes {CSVState::QUOTED, CSVState::QUOTED_NEW_LINE, CSVState::ESCAPE};
-		for (const auto state : in_quotes) {
-			const auto from = static_cast<uint8_t>(state);
-			transition_array[static_cast<uint8_t>('\n')][from] = CSVState::RECORD_SEPARATOR;
-			transition_array[static_cast<uint8_t>('\r')][from] =
-			    new_line_id == NewLineIdentifier::CARRY_ON ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
+		for (const auto byte : {static_cast<uint8_t>('\n'), static_cast<uint8_t>('\r')}) {
+			const auto row_end = transition_array[byte][standard];
+			if (row_end != CSVState::RECORD_SEPARATOR && row_end != CSVState::CARRIAGE_RETURN) {
+				continue;
+			}
+			for (const auto state : in_quotes) {
+				transition_array[byte][static_cast<uint8_t>(state)] = row_end;
+			}
 		}
 	}
 

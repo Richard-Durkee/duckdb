@@ -567,17 +567,31 @@ void StringValueResult::Reset() {
 	current_line_position.end = current_line_position.begin;
 }
 
+void StringValueResult::AddOpenQuotedValue(const char *value_ptr, const idx_t size) {
+	if (state_machine.state_machine_options.strict_mode.GetValue() &&
+	    !current_errors.HasErrorType(UNTERMINATED_QUOTES)) {
+		current_errors.Insert(UNTERMINATED_QUOTES, cur_col_id, chunk_col_id, last_position);
+	}
+	if (HandleTooManyColumnsError(value_ptr, size)) {
+		return;
+	}
+	if (cur_col_id >= number_of_columns) {
+		used_unstrictness = true;
+		return;
+	}
+	if (projecting_columns && !projected_columns[cur_col_id]) {
+		cur_col_id++;
+		return;
+	}
+	validity_mask[chunk_col_id]->SetInvalid(static_cast<idx_t>(number_of_rows));
+	cur_col_id++;
+	chunk_col_id++;
+}
+
 void StringValueResult::AddQuotedValue(StringValueResult &result, const idx_t buffer_pos) {
-	const auto before = result.states.states[0];
-	if (!result.state_machine.state_machine_options.multi_line.GetValue() &&
-	    (before == CSVState::QUOTED || before == CSVState::ESCAPE || before == CSVState::QUOTED_NEW_LINE)) {
-		// the row ended inside the quotes
-		if (result.cur_col_id < result.number_of_columns &&
-		    (!result.projecting_columns || result.projected_columns[result.cur_col_id])) {
-			result.validity_mask[result.chunk_col_id]->SetInvalid(static_cast<idx_t>(result.number_of_rows));
-			result.chunk_col_id++;
-		}
-		result.cur_col_id++;
+	if (!result.state_machine.state_machine_options.multi_line.GetValue() && result.states.EndsInsideQuotes()) {
+		result.AddOpenQuotedValue(result.buffer_ptr + result.quoted_position + 1,
+		                          buffer_pos - result.quoted_position - 1);
 		result.quoted = false;
 		result.escaped = false;
 		return;
@@ -647,7 +661,7 @@ void StringValueResult::AddPossiblyEscapedValue(StringValueResult &result, const
 				    result.state_machine.dialect_options.state_machine_options.quote.GetValue(),
 				    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
 				    result.parse_chunk.data[result.chunk_col_id],
-				    result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
+				    result.state_machine.options.doublequote.GetValue() && result.quoted);
 				result.AddValueToVector(value.GetData(), value.GetSize());
 			}
 		}
@@ -1585,7 +1599,13 @@ void StringValueScanner::ProcessOverBufferValue() {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
 	bool skip_value = false;
-	if (result.projecting_columns) {
+	if (result.quoted && !result.comment &&
+	    !state_machine->dialect_options.state_machine_options.multi_line.GetValue() && states.EndsInsideQuotes()) {
+		result.AddOpenQuotedValue(over_buffer_string.c_str() + result.quoted_position,
+		                          over_buffer_string.size() - result.quoted_position);
+		skip_value = true;
+	}
+	if (!skip_value && result.projecting_columns) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
@@ -1638,7 +1658,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 					    state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
 					    result.parse_chunk.data[result.chunk_col_id],
-					    result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
+					    result.state_machine.options.doublequote.GetValue());
 				}
 			}
 		} else {
@@ -1670,8 +1690,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 					                 state_machine->dialect_options.state_machine_options.escape.GetValue(),
 					                 state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					                 result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					                 result.parse_chunk.data[result.chunk_col_id],
-					                 result.state_machine.dialect_options.state_machine_options.doublequote.GetValue());
+					                 result.parse_chunk.data[result.chunk_col_id], false);
 				}
 			}
 		}

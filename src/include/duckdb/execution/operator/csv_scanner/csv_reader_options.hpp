@@ -69,6 +69,8 @@ struct CSVReaderOptions {
 
 	//! Thousands separator option (to be able to accept "100,000.220" as a double or decimal.
 	char thousands_separator = '\0';
+	//! Whether a doubled quote in a quoted value is one quote when the escape is not the quote
+	CSVOption<bool> doublequote = false;
 
 	//===--------------------------------------------------------------------===//
 	// CSVAutoOptions

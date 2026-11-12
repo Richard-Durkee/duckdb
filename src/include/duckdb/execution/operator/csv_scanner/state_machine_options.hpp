@@ -34,16 +34,13 @@ struct CSVStateMachineOptions {
 	CSVOption<bool> strict_mode = true;
 	//! Whether an escape outside quotes also escapes the delimiter and a newline
 	CSVOption<bool> escape_delimiters = true;
-	//! Whether a quoted value may span lines; if not, a newline ends the row and an unclosed quoted value is NULL
+	//! Whether a quoted value may span lines; if not, a row also ends inside quotes and an unclosed value is NULL
 	CSVOption<bool> multi_line = true;
-	//! Whether a doubled quote in a value is one quote when the escape is not the quote
-	CSVOption<bool> doublequote = false;
 
 	bool operator==(const CSVStateMachineOptions &other) const {
 		return delimiter == other.delimiter && quote == other.quote && escape == other.escape &&
 		       new_line == other.new_line && comment == other.comment && strict_mode == other.strict_mode &&
-		       escape_delimiters == other.escape_delimiters && multi_line == other.multi_line &&
-		       doublequote == other.doublequote;
+		       escape_delimiters == other.escape_delimiters && multi_line == other.multi_line;
 	}
 };
 } // namespace duckdb

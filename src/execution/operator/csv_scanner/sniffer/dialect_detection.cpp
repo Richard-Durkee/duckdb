@@ -153,7 +153,6 @@ void CSVSniffer::GenerateStateMachineSearchSpace(vector<unique_ptr<ColumnCountSc
 				state_machine_options.escape_delimiters =
 				    options.dialect_options.state_machine_options.escape_delimiters;
 				state_machine_options.multi_line = options.dialect_options.state_machine_options.multi_line;
-				state_machine_options.doublequote = options.dialect_options.state_machine_options.doublequote;
 				auto sniffing_state_machine =
 				    make_shared_ptr<CSVStateMachine>(options, state_machine_options, state_machine_cache);
 				if (options.dialect_options.skip_rows.IsSetByUser()) {

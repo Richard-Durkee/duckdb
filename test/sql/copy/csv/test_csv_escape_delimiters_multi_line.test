@@ -1,0 +1,189 @@
+# name: test/sql/copy/csv/test_csv_escape_delimiters_multi_line.test
+# description: The escape_delimiters, multi_line and doublequote options of read_csv
+# group: [csv]
+
+statement ok
+PRAGMA threads=1
+
+# escape_delimiters = false: an escape outside quotes does not escape the delimiter or a newline
+statement ok
+COPY (SELECT * FROM (VALUES ('1,a\,b'), ('2,end\'), ('3,c\\d'), ('4,"q\"r"'), ('5,x\yz')) t(line))
+TO '{TEST_DIR}/escape_delimiters.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/escape_delimiters.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, escape_delimiters = false) ORDER BY a;
+----
+1	a	b
+2	end	NULL
+3	c\d	NULL
+4	q"r	NULL
+5	xyz	NULL
+
+# by default the escape joins the fields and the lines
+query III
+SELECT a, replace(b, chr(10), '<nl>'), c FROM read_csv('{TEST_DIR}/escape_delimiters.csv', delim = ',', quote = '"',
+    escape = '\', header = false, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'},
+    null_padding = true, strict_mode = false) ORDER BY a;
+----
+1	a,b	NULL
+2	end<nl>3	c\d
+4	q"r	NULL
+5	xyz	NULL
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/escape_delimiters.csv', escape = '\', escape_delimiters = false);
+----
+ESCAPE_DELIMITERS = false requires STRICT_MODE = false
+
+# multi_line = false: a row ends at a newline inside quotes too, and an unclosed quoted value is NULL
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"x'), ('y",2'), ('3,"ok",4'), ('5,"open'), ('6,"d""e",7')) t(line))
+TO '{TEST_DIR}/multi_line.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/multi_line.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, multi_line = false);
+----
+1	NULL	NULL
+y"	2	NULL
+3	ok	4
+5	NULL	NULL
+6	d"e	7
+
+# the sniffer accepts it
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/multi_line.csv', header = false, null_padding = true, strict_mode = false,
+    multi_line = false);
+----
+5
+
+# in strict mode an unclosed quoted value is an error, which ignore_errors skips
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/multi_line.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    multi_line = false);
+----
+Value with unterminated quote found
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/multi_line.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    multi_line = false, ignore_errors = true) ORDER BY a;
+----
+3	ok	4
+6	d"e	7
+y"	2	NULL
+
+# an unclosed quoted value at the end of a file without a final newline
+query II
+SELECT * FROM read_csv('data/csv/multi_line_unclosed_eof.csv', header = true, quote = '"', strict_mode = false,
+    multi_line = false);
+----
+0	x
+1	NULL
+
+# an unclosed quoted value beyond the last column is still a value too many in strict mode
+statement ok
+COPY (SELECT * FROM (VALUES ('1,2,"x'), ('3,4')) t(line)) TO '{TEST_DIR}/multi_line_many.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/multi_line_many.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, multi_line = false);
+----
+Value with unterminated quote found
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/multi_line_many.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, multi_line = false, strict_mode = false);
+----
+1	2
+3	4
+
+# in strict mode a carriage return in quotes is data when the newline is '\n'
+statement ok
+COPY (SELECT 'a,b' || chr(10) || '1,"ab' || chr(13) || 'cd"' || chr(10) || '2,x' AS line)
+TO '{TEST_DIR}/multi_line_cr.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT a, length(b) FROM read_csv('{TEST_DIR}/multi_line_cr.csv', header = true, quote = '"', delim = ',',
+    new_line = '\n', multi_line = false) ORDER BY a;
+----
+1	5
+2	1
+
+# unclosed quoted values that cross buffer boundaries, read with several threads
+statement ok
+COPY (SELECT CASE WHEN i % 7 = 0 THEN i || ',"open ' || i ELSE i || ',"closed ' || i || '"' END AS line FROM range(2000) t(i))
+TO '{TEST_DIR}/multi_line_buffers.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+PRAGMA threads=4
+
+foreach escape " \
+
+query III
+SELECT count(*), count(b), count(*) FILTER (b LIKE 'open%') FROM read_csv('{TEST_DIR}/multi_line_buffers.csv',
+    delim = ',', quote = '"', escape = '${escape}', header = false, strict_mode = false, multi_line = false,
+    buffer_size = 777, max_line_size = 500, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'});
+----
+2000	1714	0
+
+endloop
+
+# doublequote = true: a doubled quote in a quoted value is one quote when the escape is not the quote
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"a""b"'), ('2,"x\"y"'), ('3,p""q')) t(line)) TO '{TEST_DIR}/doublequote.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/doublequote.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, strict_mode = false, doublequote = true) ORDER BY a;
+----
+1	a"b
+2	x"y
+3	p""q
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/doublequote.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, strict_mode = false) ORDER BY a;
+----
+1	a""b
+2	x"y
+3	p""q
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/doublequote.csv', escape = '\', doublequote = true);
+----
+DOUBLEQUOTE = true requires STRICT_MODE = false
+
+# COPY FROM reads them, COPY TO refuses them
+statement ok
+CREATE TABLE t (a INT, b VARCHAR);
+
+statement ok
+COPY t FROM '{TEST_DIR}/doublequote.csv' (HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '\', STRICT_MODE false,
+    DOUBLEQUOTE true, ESCAPE_DELIMITERS false, MULTI_LINE false);
+
+query II
+SELECT * FROM t ORDER BY a;
+----
+1	a"b
+2	x"y
+3	p""q
+
+statement error
+COPY t TO '{TEST_DIR}/out.csv' (MULTI_LINE false);
+----
+only for reading
+
+# a CSV error lists the options set
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/multi_line.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, multi_line = false);
+----
+<REGEX>:.*multi_line = false \(Set By User\).*

@@ -730,6 +730,9 @@ void SerializedCSVReaderOptions::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(142, "multi_file_reader", options.multi_file_reader);
 	serializer.WriteProperty<CSVOption<idx_t>>(143, "buffer_size_option", options.buffer_size_option);
 	serializer.WritePropertyWithDefault<idx_t>(144, "rejects_line_size_limit", options.rejects_line_size_limit, 10000);
+	serializer.WriteProperty<CSVOption<bool>>(145, "escape_delimiters", options.dialect_options.state_machine_options.escape_delimiters);
+	serializer.WriteProperty<CSVOption<bool>>(146, "multi_line", options.dialect_options.state_machine_options.multi_line);
+	serializer.WriteProperty<CSVOption<bool>>(147, "doublequote", options.doublequote);
 }
 
 SerializedCSVReaderOptions SerializedCSVReaderOptions::Deserialize(Deserializer &deserializer) {
@@ -816,6 +819,9 @@ SerializedCSVReaderOptions SerializedCSVReaderOptions::Deserialize(Deserializer 
 	deserializer.ReadPropertyWithDefault<bool>(142, "multi_file_reader", result.options.multi_file_reader);
 	deserializer.ReadProperty<CSVOption<idx_t>>(143, "buffer_size_option", result.options.buffer_size_option);
 	deserializer.ReadPropertyWithExplicitDefault<idx_t>(144, "rejects_line_size_limit", result.options.rejects_line_size_limit, 10000);
+	deserializer.ReadProperty<CSVOption<bool>>(145, "escape_delimiters", result.options.dialect_options.state_machine_options.escape_delimiters);
+	deserializer.ReadProperty<CSVOption<bool>>(146, "multi_line", result.options.dialect_options.state_machine_options.multi_line);
+	deserializer.ReadProperty<CSVOption<bool>>(147, "doublequote", result.options.doublequote);
 	return result;
 }
 
