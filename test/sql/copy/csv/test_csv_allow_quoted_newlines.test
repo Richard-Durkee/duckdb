@@ -1,0 +1,243 @@
+# name: test/sql/copy/csv/test_csv_allow_quoted_newlines.test
+# description: The allow_quoted_newlines option of read_csv
+# group: [csv]
+
+statement ok
+SET threads = 1
+
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"x'), ('y",2'), ('3,"ok",4'), ('5,"open'), ('6,"d""e",7')) t(line))
+TO '{TEST_DIR}/quoted_newlines.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# false: a newline ends the row inside quotes too, and with strict_mode off an unclosed quoted value is NULL
+query III
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    strict_mode = false, allow_quoted_newlines = false);
+----
+1	NULL	NULL
+y"	2	NULL
+3	ok	4
+5	NULL	NULL
+6	d"e	7
+
+# by default the quoted value holds the newline
+query III
+SELECT a, replace(b, chr(10), '<nl>'), c FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"',
+    escape = '"', header = false, auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'},
+    null_padding = true, strict_mode = false, parallel = false) ORDER BY a;
+----
+1	x<nl>y	2
+3	ok	4
+5	open<nl>6,d"e,7	NULL
+
+# the sniffer accepts it
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/quoted_newlines.csv', header = false, null_padding = true, strict_mode = false,
+    allow_quoted_newlines = false);
+----
+5
+
+# in strict mode an unclosed quoted value is an error of its row
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    allow_quoted_newlines = false);
+----
+<REGEX>:.*Value with unterminated quote found.*allow_quoted_newlines = false \(Set By User\).*
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    allow_quoted_newlines = false, ignore_errors = true) ORDER BY a;
+----
+3	ok	4
+6	d"e	7
+y"	2	NULL
+
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, null_padding = true,
+    allow_quoted_newlines = false, store_rejects = true);
+
+query II
+SELECT line, error_type FROM reject_errors ORDER BY line;
+----
+1	UNQUOTED VALUE
+4	UNQUOTED VALUE
+
+# a short row is still an error without null_padding
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, strict_mode = false,
+    allow_quoted_newlines = false);
+----
+Expected Number of Columns: 3 Found: 2
+
+# an unclosed quoted value at the end of a file without a final newline
+query II
+SELECT * FROM read_csv('data/csv/multi_line_unclosed_eof.csv', header = true, quote = '"', strict_mode = false,
+    allow_quoted_newlines = false);
+----
+0	x
+1	NULL
+
+# an unclosed quoted value beyond the last column: one error of its row in strict mode, ignored without
+statement ok
+COPY (SELECT * FROM (VALUES ('1,2,"x'), ('3,4')) t(line)) TO '{TEST_DIR}/quoted_newlines_many.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines_many.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, allow_quoted_newlines = false, store_rejects = true,
+    rejects_table = 'rejects_many', rejects_scan = 'scans_many');
+
+query II
+SELECT line, error_type FROM rejects_many;
+----
+1	UNQUOTED VALUE
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines_many.csv', delim = ',', quote = '"', escape = '"', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, allow_quoted_newlines = false, strict_mode = false);
+----
+1	2
+3	4
+
+# with '\r\n' rows a lone '\r' in quotes is data, and the '\n' of a '\r\n' ends an unclosed value
+statement ok
+COPY (SELECT 'a,b' || chr(13) || chr(10) || '1,"x' || chr(13) || 'y"' || chr(13) || chr(10) || '2,"open' || chr(13)
+    || chr(10) || '3,z' || chr(13) AS line) TO '{TEST_DIR}/quoted_newlines_crlf.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT a, replace(b, chr(13), '<cr>') FROM read_csv('{TEST_DIR}/quoted_newlines_crlf.csv', header = true, quote = '"',
+    delim = ',', new_line = '\r\n', strict_mode = false, allow_quoted_newlines = false) ORDER BY a;
+----
+1	x<cr>y
+2	NULL
+3	z
+
+query II
+SELECT a, replace(b, chr(13), '<cr>') FROM read_csv('{TEST_DIR}/quoted_newlines_crlf.csv', header = true, quote = '"',
+    delim = ',', new_line = '\r\n', allow_quoted_newlines = false, ignore_errors = true, auto_detect = false,
+    columns = {'a': 'INT', 'b': 'VARCHAR'}) ORDER BY a;
+----
+1	x<cr>y
+3	z
+
+# an escaped newline in quotes still ends the row
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"ab\'), ('cd",2'), ('3,ok')) t(line)) TO '{TEST_DIR}/quoted_newlines_escaped.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines_escaped.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'VARCHAR', 'b': 'VARCHAR'}, null_padding = true, strict_mode = false,
+    allow_quoted_newlines = false);
+----
+1	NULL
+cd"	2
+3	ok
+
+# without strict_mode a '\r' ends a row when the newline is '\n', in quotes too
+statement ok
+COPY (SELECT 'a,b' || chr(10) || '1,"ab' || chr(13) || 'cd"' || chr(10) || '2,x' AS line)
+TO '{TEST_DIR}/quoted_newlines_lone_cr.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines_lone_cr.csv', header = true, quote = '"', delim = ',',
+    new_line = '\n', null_padding = true, strict_mode = false, allow_quoted_newlines = false, auto_detect = false,
+    columns = {'a': 'VARCHAR', 'b': 'VARCHAR'});
+----
+1	NULL
+cd"	NULL
+2	x
+
+# in strict mode a '\r' in quotes is data when the newline is '\n'
+statement ok
+COPY (SELECT 'a,b' || chr(10) || '1,"ab' || chr(13) || 'cd"' || chr(10) || '2,x' AS line)
+TO '{TEST_DIR}/quoted_newlines_cr.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT a, length(b) FROM read_csv('{TEST_DIR}/quoted_newlines_cr.csv', header = true, quote = '"', delim = ',',
+    new_line = '\n', allow_quoted_newlines = false) ORDER BY a;
+----
+1	5
+2	1
+
+#---------------------------------------------------------------------------
+# several threads and buffers
+#---------------------------------------------------------------------------
+statement ok
+SET threads = 4
+
+# unclosed quoted values crossing buffer boundaries
+statement ok
+COPY (SELECT CASE WHEN i % 7 = 0 THEN i || ',"open ' || i ELSE i || ',"closed ' || i || '"' END AS line FROM range(2000) t(i))
+TO '{TEST_DIR}/quoted_newlines_buffers.csv' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+foreach escape " \
+
+query III
+SELECT count(*), count(b), count(*) FILTER (b LIKE 'open%') FROM read_csv('{TEST_DIR}/quoted_newlines_buffers.csv',
+    delim = ',', quote = '"', escape = '{escape}', header = false, strict_mode = false, allow_quoted_newlines = false,
+    buffer_size = 777, max_line_size = 500, auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'});
+----
+2000	1714	0
+
+endloop
+
+# in strict mode each unclosed quoted value crossing buffer boundaries is one rejected row
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/quoted_newlines_buffers.csv', delim = ',', quote = '"', escape = '"', header = false,
+    allow_quoted_newlines = false, buffer_size = 777, max_line_size = 500, auto_detect = false,
+    columns = {'a': 'INT', 'b': 'VARCHAR'}, store_rejects = true, rejects_table = 'rejects_buffers',
+    rejects_scan = 'scans_buffers');
+
+query III
+SELECT count(*), count(DISTINCT line), count(*) FILTER (error_type = 'UNQUOTED VALUE') FROM rejects_buffers;
+----
+286	286	286
+
+# '\r\n' rows where a scan starts on the '\n' of a '\r\n'
+statement ok
+COPY (SELECT '0000000,c' || chr(13) AS line FROM range(400)) TO '{TEST_DIR}/quoted_newlines_crlf_rows.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+foreach buffer_size 4000 3999
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/quoted_newlines_crlf_rows.csv', auto_detect = false, header = false,
+    new_line = '\r\n', columns = {'a': 'INT', 'b': 'VARCHAR'}, strict_mode = false, allow_quoted_newlines = false,
+    buffer_size = {buffer_size}, max_line_size = 60);
+----
+400
+
+endloop
+
+#---------------------------------------------------------------------------
+# COPY FROM reads the option, COPY TO refuses it
+#---------------------------------------------------------------------------
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE t (a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+COPY t FROM '{TEST_DIR}/quoted_newlines.csv' (HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '"', STRICT_MODE false,
+    NULL_PADDING true, AUTO_DETECT false, ALLOW_QUOTED_NEWLINES false);
+
+query III
+SELECT * FROM t ORDER BY a;
+----
+1	NULL	NULL
+3	ok	4
+5	NULL	NULL
+6	d"e	7
+y"	2	NULL
+
+statement error
+COPY t TO '{TEST_DIR}/out.csv' (ALLOW_QUOTED_NEWLINES false);
+----
+only for reading

@@ -294,6 +294,8 @@ void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, true);
 	} else if (loption == "ignore_errors") {
 		ignore_errors.Set(ParseBoolean(context, value, loption));
+	} else if (loption == "allow_quoted_newlines") {
+		dialect_options.state_machine_options.allow_quoted_newlines.Set(ParseBoolean(context, value, loption));
 	} else if (loption == "buffer_size") {
 		auto buffer_size = ParseInteger(value, loption);
 		if (buffer_size < 0) {
@@ -532,6 +534,9 @@ string CSVReaderOptions::ToString(const String &current_file_path) const {
 	error += FormatOptionLine("comment", comment);
 	// strict_mode
 	error += FormatOptionLine("strict_mode", strict_mode);
+	if (dialect_options.state_machine_options.allow_quoted_newlines.IsSetByUser()) {
+		error += FormatOptionLine("allow_quoted_newlines", dialect_options.state_machine_options.allow_quoted_newlines);
+	}
 	// date format
 	error += FormatOptionLine("date_format", dialect_options.date_format.at(LogicalType::DATE));
 	// timestamp format
@@ -881,6 +886,10 @@ void CSVReaderOptions::ToNamedParameters(named_parameter_map_t &named_params) co
 	}
 	if (strict_mode.IsSetByUser()) {
 		named_params["strict_mode"] = Value(GetRFC4180());
+	}
+	if (dialect_options.state_machine_options.allow_quoted_newlines.IsSetByUser()) {
+		named_params["allow_quoted_newlines"] =
+		    Value::BOOLEAN(dialect_options.state_machine_options.allow_quoted_newlines.GetValue());
 	}
 	named_params["max_line_size"] = Value::BIGINT(NumericCast<int64_t>(maximum_line_size.GetValue()));
 	if (dialect_options.skip_rows.IsSetByUser()) {

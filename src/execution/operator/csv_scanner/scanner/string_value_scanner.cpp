@@ -567,7 +567,35 @@ void StringValueResult::Reset() {
 	current_line_position.end = current_line_position.begin;
 }
 
+void StringValueResult::AddOpenQuotedValue() {
+	if (state_machine.state_machine_options.strict_mode.GetValue()) {
+		if (!current_errors.HasErrorType(UNTERMINATED_QUOTES)) {
+			current_errors.Insert(UNTERMINATED_QUOTES, cur_col_id, chunk_col_id, last_position);
+		}
+		cur_col_id++;
+		return;
+	}
+	if (cur_col_id >= number_of_columns) {
+		used_unstrictness = true;
+		return;
+	}
+	if (projecting_columns && !projected_columns[cur_col_id]) {
+		cur_col_id++;
+		return;
+	}
+	validity_mask[chunk_col_id]->SetInvalid(static_cast<idx_t>(number_of_rows));
+	cur_col_id++;
+	chunk_col_id++;
+}
+
 void StringValueResult::AddQuotedValue(StringValueResult &result, const idx_t buffer_pos) {
+	if (!result.state_machine.state_machine_options.allow_quoted_newlines.GetValue() &&
+	    result.states.EndsInsideQuotes()) {
+		result.AddOpenQuotedValue();
+		result.quoted = false;
+		result.escaped = false;
+		return;
+	}
 	if (!result.unquoted) {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
@@ -1564,7 +1592,13 @@ void StringValueScanner::ProcessOverBufferValue() {
 		result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id, result.last_position);
 	}
 	bool skip_value = false;
-	if (result.projecting_columns) {
+	if (result.quoted && !result.comment &&
+	    !state_machine->dialect_options.state_machine_options.allow_quoted_newlines.GetValue() &&
+	    states.EndsInsideQuotes()) {
+		result.AddOpenQuotedValue();
+		skip_value = true;
+	}
+	if (!skip_value && result.projecting_columns) {
 		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
@@ -1963,7 +1997,8 @@ void StringValueScanner::SetStart() {
 	// 1. We are at the start of a valid line
 	ValidRowInfo best_row = TryRow(CSVState::STANDARD_NEWLINE, iterator.pos.buffer_pos, iterator.GetEndPos());
 	// 2. We are in the middle of a quoted value
-	if (state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
+	const bool quoted_newlines = state_machine->dialect_options.state_machine_options.allow_quoted_newlines.GetValue();
+	if (quoted_newlines && state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
 		idx_t end_pos = iterator.GetEndPos();
 		if (best_row.is_valid && best_row.end_buffer_idx == iterator.pos.buffer_idx) {
 			// If we got a valid row from the standard state, we limit our search up to that.
@@ -1981,7 +2016,8 @@ void StringValueScanner::SetStart() {
 		}
 	}
 	// 3. We are in an escaped value
-	if (!best_row.is_valid && state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
+	if (quoted_newlines && !best_row.is_valid &&
+	    state_machine->dialect_options.state_machine_options.quote.GetValue() != '\0') {
 		auto escape_row = TryRow(CSVState::ESCAPE, iterator.pos.buffer_pos, iterator.GetEndPos());
 		if (escape_row.is_valid) {
 			best_row = escape_row;

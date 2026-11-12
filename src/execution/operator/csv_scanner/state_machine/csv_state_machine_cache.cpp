@@ -506,6 +506,23 @@ void CSVStateMachineCache::Insert(const CSVStateMachineOptions &state_machine_op
 		    CSVState::RECORD_SEPARATOR;
 	}
 
+	if (!state_machine_options.allow_quoted_newlines.GetValue()) {
+		// a newline that ends a row outside quotes ends it inside quotes too; with '\r\n' rows the '\n' ends it, and
+		// the '\r' before it is part of the unclosed value
+		const auto standard = static_cast<uint8_t>(CSVState::STANDARD);
+		const vector<CSVState> in_quotes {CSVState::QUOTED, CSVState::QUOTED_NEW_LINE, CSVState::ESCAPE};
+		for (const auto byte : {static_cast<uint8_t>('\n'), static_cast<uint8_t>('\r')}) {
+			const bool row_end = transition_array[byte][standard] == CSVState::RECORD_SEPARATOR ||
+			                     (byte == '\n' && new_line_id == NewLineIdentifier::CARRY_ON);
+			if (!row_end) {
+				continue;
+			}
+			for (const auto state : in_quotes) {
+				transition_array[byte][static_cast<uint8_t>(state)] = CSVState::RECORD_SEPARATOR;
+			}
+		}
+	}
+
 	// 12) Unquoted Escape State
 	if (enable_unquoted_escape) {
 		// Any character can be escaped, so default to STANDARD

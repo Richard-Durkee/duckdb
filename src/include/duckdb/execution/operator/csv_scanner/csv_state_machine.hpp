@@ -101,6 +101,12 @@ struct CSVStates {
 	inline bool IsQuotedCurrent() const {
 		return states[1] == CSVState::QUOTED || states[1] == CSVState::QUOTED_NEW_LINE;
 	}
+	//! Whether the value being finished is still inside its quotes, at the end of its row or of the file
+	inline bool EndsInsideQuotes() const {
+		const bool row_end = states[1] == CSVState::RECORD_SEPARATOR || states[1] == CSVState::CARRIAGE_RETURN;
+		const auto last = row_end ? states[0] : states[1];
+		return last == CSVState::QUOTED || last == CSVState::ESCAPE || last == CSVState::QUOTED_NEW_LINE;
+	}
 	inline bool IsState(const CSVState state) const {
 		return states[1] == state;
 	}
