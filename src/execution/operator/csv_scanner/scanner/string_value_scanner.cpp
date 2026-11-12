@@ -632,7 +632,7 @@ void StringValueResult::AddPossiblyEscapedValue(StringValueResult &result, const
 				    value_ptr, length, result.state_machine.dialect_options.state_machine_options.escape.GetValue(),
 				    result.state_machine.dialect_options.state_machine_options.quote.GetValue(),
 				    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-				    result.parse_chunk.data[result.chunk_col_id]);
+				    result.parse_chunk.data[result.chunk_col_id], result.quoted);
 				result.AddValueToVector(value.GetData(), value.GetSize());
 			}
 		}
@@ -1407,7 +1407,9 @@ void StringValueScanner::ProcessExtraRow() {
 }
 
 string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char escape, char quote, bool strict_mode,
-                                          Vector &vector) {
+                                          Vector &vector, bool quoted_value) {
+	// in a quoted value of a non-strict reader, a doubled quote is one quote
+	const bool doubled_quotes = quoted_value && !strict_mode && escape != '\0' && escape != quote;
 	// Figure out the exact size
 	idx_t str_pos = 0;
 	bool just_escaped = false;
@@ -1415,7 +1417,10 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 		if (str_ptr[cur_pos] == escape && !just_escaped) {
 			just_escaped = true;
 		} else if (str_ptr[cur_pos] == quote) {
-			if (just_escaped || !strict_mode) {
+			if (doubled_quotes && !just_escaped && cur_pos + 1 < end && str_ptr[cur_pos + 1] == quote) {
+				cur_pos++;
+				str_pos++;
+			} else if (just_escaped || !strict_mode) {
 				str_pos++;
 			}
 			just_escaped = false;
@@ -1435,7 +1440,10 @@ string_t StringValueScanner::RemoveEscape(const char *str_ptr, idx_t end, char e
 		if (c == escape && !just_escaped) {
 			just_escaped = true;
 		} else if (str_ptr[cur_pos] == quote) {
-			if (just_escaped || !strict_mode) {
+			if (doubled_quotes && !just_escaped && cur_pos + 1 < end && str_ptr[cur_pos + 1] == quote) {
+				cur_pos++;
+				removed_escapes_ptr[str_pos++] = c;
+			} else if (just_escaped || !strict_mode) {
 				removed_escapes_ptr[str_pos++] = c;
 			}
 			just_escaped = false;
@@ -1616,7 +1624,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 					    str_ptr, length, state_machine->dialect_options.state_machine_options.escape.GetValue(),
 					    state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					    result.parse_chunk.data[result.chunk_col_id]);
+					    result.parse_chunk.data[result.chunk_col_id], true);
 				}
 			}
 		} else {
@@ -1648,7 +1656,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 					                 state_machine->dialect_options.state_machine_options.escape.GetValue(),
 					                 state_machine->dialect_options.state_machine_options.quote.GetValue(),
 					                 result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					                 result.parse_chunk.data[result.chunk_col_id]);
+					                 result.parse_chunk.data[result.chunk_col_id], false);
 				}
 			}
 		}

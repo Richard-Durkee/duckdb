@@ -1,0 +1,47 @@
+# name: test/sql/copy/csv/test_csv_doubled_quotes_escape.test
+# description: In a non-strict reader whose escape is not the quote, a doubled quote in a quoted value is one quote
+# group: [csv]
+
+statement ok
+SET threads = 1
+
+statement ok
+COPY (SELECT * FROM (VALUES ('1,"a""b"'), ('2,"x\"y"'), ('3,p""q'), ('4,""""')) t(line)) TO '{TEST_DIR}/doubled.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/doubled.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, strict_mode = false) ORDER BY a;
+----
+1	a"b
+2	x"y
+3	p""q
+4	"
+
+# strict mode refuses the doubled quote, and without an escape character it is kept
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/doubled.csv', delim = ',', quote = '"', escape = '\', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}) ORDER BY a;
+----
+<REGEX>:.*Value with unterminated quote found.*
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/doubled.csv', delim = ',', quote = '"', escape = '', header = false,
+    auto_detect = false, columns = {'a': 'INT', 'b': 'VARCHAR'}, strict_mode = false) WHERE a = 1;
+----
+1	a""b
+
+# doubled quotes crossing buffer boundaries, read with several threads
+statement ok
+SET threads = 4
+
+statement ok
+COPY (SELECT i || ',"q\"' || i || '""r",end' AS line FROM range(3000) t(i)) TO '{TEST_DIR}/doubled_buffers.csv'
+(FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT count(*), count(*) FILTER (b = 'q"' || a || '"r') FROM read_csv('{TEST_DIR}/doubled_buffers.csv', delim = ',',
+    quote = '"', escape = '\', header = false, auto_detect = false,
+    columns = {'a': 'INT', 'b': 'VARCHAR', 'c': 'VARCHAR'}, strict_mode = false, buffer_size = 701, max_line_size = 500);
+----
+3000	3000
