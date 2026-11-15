@@ -30,6 +30,9 @@ class Optimizer;
 //! another catalog are merged, siblings over a DuckDB table only when it has at least
 //! scalar_aggregate_merge_threshold rows. Siblings whose rows are disjoint and that read mostly columns of their own
 //! stay apart, as the merged scan would decode more than they do together.
+//!
+//! Besides the OR of the siblings' predicates, the filter gets what the OR implies for each single column that every
+//! sibling restricts, which a scan can use to skip row groups and rows where the OR itself would not.
 class ScalarAggregateMerger {
 public:
 	explicit ScalarAggregateMerger(Optimizer &optimizer);

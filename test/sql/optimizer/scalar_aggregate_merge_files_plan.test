@@ -277,6 +277,14 @@ EXPLAIN SELECT (SELECT count(*) FROM sam_computed WHERE q < 10) AS a,
 ----
 physical_plan	<REGEX>:([\s\S]*Function: READ_PARQUET\b){2}[\s\S]*
 
+# ---- the scan keeps the rows that can match: what the OR over several columns implies for one -------------------
+
+query II
+EXPLAIN SELECT (SELECT sum(v) FROM sam_view WHERE q < 10 AND (paid > 40 OR k < 5)) AS a,
+       (SELECT sum(v) FROM sam_view WHERE q > 90 AND (paid < 10 OR k > 45)) AS b
+----
+physical_plan	<REGEX>:[\s\S]*Filters:[\s\S]*q < 10\) OR \(q > 90[\s\S]*
+
 # ---- branches that share no row and read different columns stay apart, when merging widens the read too much ---
 
 # the same columns: one scan

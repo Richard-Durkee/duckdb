@@ -317,6 +317,63 @@ static bool TreeHasProjectionMap(const LogicalOperator &op) {
 	return false;
 }
 
+//! For every column that each alternative restricts on its own, the OR of what the alternatives demand of that column.
+//! Each of them is implied by the OR of the alternatives, so it can be added to the filter as it is, and as a condition
+//! on one column the scan can use it to skip row groups and rows where the OR over several columns cannot.
+//! A column that is all the alternatives restrict adds nothing: the OR itself is that condition.
+static vector<unique_ptr<Expression>> DeriveColumnHulls(const vector<unique_ptr<Expression>> &alternatives) {
+	vector<unique_ptr<Expression>> hulls;
+	if (alternatives.size() < 2) {
+		return hulls;
+	}
+	// per alternative, the conjuncts that read a single column, by column
+	vector<column_binding_map_t<vector<reference<const Expression>>>> by_column(alternatives.size());
+	vector<ColumnBinding> columns;
+	for (idx_t k = 0; k < alternatives.size(); k++) {
+		vector<reference<const Expression>> conjuncts;
+		SplitConjunction(*alternatives[k], conjuncts);
+		for (auto &conjunct : conjuncts) {
+			column_binding_set_t bindings;
+			CollectBindings(conjunct.get(), bindings);
+			if (bindings.size() != 1) {
+				continue;
+			}
+			auto binding = *bindings.begin();
+			if (k == 0 && by_column[0].find(binding) == by_column[0].end()) {
+				columns.push_back(binding);
+			}
+			by_column[k][binding].push_back(conjunct);
+		}
+	}
+	for (auto &column : columns) {
+		bool in_every_alternative = true;
+		bool is_whole_predicate = true;
+		for (idx_t k = 0; k < alternatives.size(); k++) {
+			auto entry = by_column[k].find(column);
+			if (entry == by_column[k].end()) {
+				in_every_alternative = false;
+				break;
+			}
+			vector<reference<const Expression>> conjuncts;
+			SplitConjunction(*alternatives[k], conjuncts);
+			is_whole_predicate = is_whole_predicate && conjuncts.size() == entry->second.size();
+		}
+		if (!in_every_alternative || is_whole_predicate) {
+			continue;
+		}
+		vector<unique_ptr<Expression>> terms;
+		for (idx_t k = 0; k < alternatives.size(); k++) {
+			vector<unique_ptr<Expression>> conjuncts;
+			for (auto &conjunct : by_column[k][column]) {
+				conjuncts.push_back(conjunct.get().Copy());
+			}
+			terms.push_back(MakeConjunction(ExpressionType::CONJUNCTION_AND, std::move(conjuncts)));
+		}
+		hulls.push_back(MakeConjunction(ExpressionType::CONJUNCTION_OR, std::move(terms)));
+	}
+	return hulls;
+}
+
 //! The range of values a conjunct set allows one column, from its comparisons with constants
 struct ColumnRange {
 	bool has_lower = false;
@@ -866,10 +923,17 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 		// the OR is a new expression: the rewrite rules that ran before the merge (predicate factoring) derive from it
 		// the single-column filters that the pushdown places on the scan and that the cardinality estimates see
 		LogicalFilter rewritten;
+		// the OR over several columns is not a range on any of them: the conditions it implies per column are
+		for (auto &hull : DeriveColumnHulls(alternatives)) {
+			rewritten.expressions.push_back(std::move(hull));
+		}
 		rewritten.expressions.push_back(MakeConjunction(ExpressionType::CONJUNCTION_OR, std::move(alternatives)));
 		optimizer.rewriter.VisitOperator(rewritten);
+		// the rewrite may have derived some of the hulls itself
 		for (auto &expr : rewritten.expressions) {
-			filters.push_back(std::move(expr));
+			if (!ContainsConjunct(filters, *expr)) {
+				filters.push_back(std::move(expr));
+			}
 		}
 	}
 	if (!filters.empty()) {
