@@ -5,8 +5,11 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -23,6 +26,10 @@ constexpr double MINIMUM_COST_RATIO = 0.75;
 //! An expression up to this cost (e.g. a comparison of a numeric column with a constant) is not moved below joins
 //! unless that frees one of its inputs
 constexpr idx_t MAXIMUM_CHEAP_EXPRESSION_COST = 20;
+//! The assumed length of an input string without a statistics-provided upper bound when moving an expression with a
+//! bounded result below a join. The width is only a cost weight: the decision then rests on how many fewer rows the
+//! expression is evaluated for.
+constexpr idx_t UNKNOWN_VARCHAR_LENGTH = 32;
 
 struct PathStep {
 	reference<LogicalOperator> op;
@@ -105,7 +112,8 @@ static void CopyStatistics(column_binding_map_t<unique_ptr<BaseStatistics>> &sta
 }
 
 static bool GetBindingWidth(const ColumnBinding &binding, const LogicalType &type,
-                            const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map, idx_t &width) {
+                            const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map, idx_t &width,
+                            bool assume_unknown_varchar_length = false) {
 	auto physical_type = type.InternalType();
 	if (TypeIsConstantSize(physical_type)) {
 		width = GetTypeIdSize(physical_type);
@@ -119,15 +127,52 @@ static bool GetBindingWidth(const ColumnBinding &binding, const LogicalType &typ
 	if (entry == statistics_map.end() || !entry->second ||
 	    entry->second->GetStatsType() != StatisticsType::STRING_STATS ||
 	    !StringStats::HasMaxStringLength(*entry->second)) {
-		return false;
+		if (!assume_unknown_varchar_length) {
+			return false;
+		}
+		width = GetTypeIdSize(physical_type) + UNKNOWN_VARCHAR_LENGTH;
+		return true;
 	}
 	width = GetTypeIdSize(physical_type) + StringStats::MaxStringLength(*entry->second);
 	return true;
 }
 
+//! The result of substring(x, start, n), left(x, n) and right(x, n) has at most n characters, whatever x is
+static bool TryGetBoundedStringResultWidth(const Expression &expression, idx_t &width) {
+	if (expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
+	    expression.GetReturnType().InternalType() != PhysicalType::VARCHAR) {
+		return false;
+	}
+	auto &function = expression.Cast<BoundFunctionExpression>();
+	auto &name = function.Function().GetName();
+	auto &children = function.GetChildren();
+	optional_idx length_child;
+	if ((name == "substring" || name == "substr") && children.size() == 3) {
+		length_child = 2;
+	} else if ((name == "left" || name == "right") && children.size() == 2) {
+		length_child = 1;
+	}
+	if (!length_child.IsValid() ||
+	    children[length_child.GetIndex()]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+		return false;
+	}
+	auto &constant = children[length_child.GetIndex()]->Cast<BoundConstantExpression>();
+	if (constant.GetValue().IsNull() || !constant.GetValue().type().IsIntegral()) {
+		return false;
+	}
+	auto characters = constant.GetValue().GetValue<int64_t>();
+	if (characters < 0 || characters > 1000) {
+		return false;
+	}
+	// a character is at most four bytes in UTF-8
+	width = GetTypeIdSize(PhysicalType::VARCHAR) + NumericCast<idx_t>(characters) * 4;
+	return true;
+}
+
 static bool GetExpressionWidth(const Expression &expression,
                                const column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
-                               idx_t &input_width, vector<ExpressionBindingWidth> &binding_widths) {
+                               idx_t &input_width, vector<ExpressionBindingWidth> &binding_widths,
+                               bool assume_unknown_varchar_length = false) {
 	vector<pair<ColumnBinding, LogicalType>> bindings;
 	bool valid = true;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
@@ -149,7 +194,7 @@ static bool GetExpressionWidth(const Expression &expression,
 	input_width = 0;
 	for (auto &entry : bindings) {
 		idx_t binding_width;
-		if (!GetBindingWidth(entry.first, entry.second, statistics_map, binding_width)) {
+		if (!GetBindingWidth(entry.first, entry.second, statistics_map, binding_width, assume_unknown_varchar_length)) {
 			return false;
 		}
 		input_width += binding_width;
@@ -774,7 +819,7 @@ static bool FindPlacement(LogicalProjection &projection, idx_t expression_index,
 
 	idx_t input_width;
 	vector<ExpressionBindingWidth> input_bindings;
-	if (!GetExpressionWidth(expression, statistics_map, input_width, input_bindings)) {
+	if (!GetExpressionWidth(expression, statistics_map, input_width, input_bindings, true)) {
 		return false;
 	}
 	auto exclusive_input_width = GetExclusiveInputWidth(reading_expressions, input_bindings);
@@ -785,7 +830,8 @@ static bool FindPlacement(LogicalProjection &projection, idx_t expression_index,
 	}
 	idx_t output_width;
 	if (!GetBindingWidth(ColumnBinding(projection.table_index, ProjectionIndex(expression_index)),
-	                     expression.GetReturnType(), statistics_map, output_width)) {
+	                     expression.GetReturnType(), statistics_map, output_width) &&
+	    !TryGetBoundedStringResultWidth(expression, output_width)) {
 		return false;
 	}
 
@@ -995,6 +1041,125 @@ static void OptimizeOperator(Optimizer &optimizer, column_binding_map_t<unique_p
 	}
 }
 
+static bool HasEligibleJoinBelow(LogicalOperator &op) {
+	reference<LogicalOperator> current = op;
+	while (true) {
+		if (IsEligibleJoin(current.get())) {
+			return true;
+		}
+		auto type = current.get().type;
+		if ((type != LogicalOperatorType::LOGICAL_PROJECTION && type != LogicalOperatorType::LOGICAL_FILTER) ||
+		    current.get().children.size() != 1) {
+			return false;
+		}
+		current = *current.get().children[0];
+	}
+}
+
+static void CollectReadBindings(unique_ptr<Expression> &expression, column_binding_set_t &bindings) {
+	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+	    expression, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &) {
+		    if (colref.Depth() == 0) {
+			    bindings.insert(colref.Binding());
+		    }
+	    });
+}
+
+//! An aggregate evaluates its expensive group expressions itself, on top of the joins below it. Compute them in a
+//! projection below the aggregate instead, which the placement below can then move below the joins.
+static void ExtractAggregateGroupExpressions(Optimizer &optimizer,
+                                             column_binding_map_t<unique_ptr<BaseStatistics>> &statistics_map,
+                                             unique_ptr<LogicalOperator> &op) {
+	for (auto &child : op->children) {
+		ExtractAggregateGroupExpressions(optimizer, statistics_map, child);
+	}
+	if (op->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		return;
+	}
+	auto &aggregate = op->Cast<LogicalAggregate>();
+	if (aggregate.children.size() != 1 || aggregate.groups.empty() || aggregate.grouping_sets.size() != 1 ||
+	    !aggregate.children[0]->has_estimated_cardinality || !HasEligibleJoinBelow(*aggregate.children[0])) {
+		return;
+	}
+	vector<idx_t> selected;
+	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
+		auto &group = *aggregate.groups[group_idx];
+		if (group.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF || group.IsVolatile() || group.CanThrow() ||
+		    ExpressionHeuristics::Cost(group) <= MAXIMUM_CHEAP_EXPRESSION_COST) {
+			continue;
+		}
+		selected.push_back(group_idx);
+	}
+	if (selected.empty()) {
+		return;
+	}
+	auto &child = aggregate.children[0];
+	child->ResolveOperatorTypes();
+	auto child_bindings = child->GetColumnBindings();
+
+	// the bindings that the aggregate keeps reading itself
+	column_binding_set_t retained;
+	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
+		if (std::find(selected.begin(), selected.end(), group_idx) == selected.end()) {
+			CollectReadBindings(aggregate.groups[group_idx], retained);
+		}
+	}
+	for (auto &aggregate_expression : aggregate.expressions) {
+		CollectReadBindings(aggregate_expression, retained);
+	}
+
+	auto table_index = optimizer.binder.GenerateTableIndex();
+	vector<unique_ptr<Expression>> expressions;
+	vector<pair<ColumnBinding, ColumnBinding>> replacements;
+	for (idx_t binding_idx = 0; binding_idx < child_bindings.size(); binding_idx++) {
+		if (retained.find(child_bindings[binding_idx]) == retained.end()) {
+			continue;
+		}
+		auto new_binding = ColumnBinding(table_index, ProjectionIndex(expressions.size()));
+		replacements.emplace_back(child_bindings[binding_idx], new_binding);
+		CopyStatistics(statistics_map, child_bindings[binding_idx], new_binding);
+		expressions.push_back(
+		    make_uniq<BoundColumnRefExpression>(child->types[binding_idx], child_bindings[binding_idx]));
+	}
+	vector<ColumnBinding> computed_bindings;
+	for (auto group_idx : selected) {
+		computed_bindings.emplace_back(table_index, ProjectionIndex(expressions.size()));
+		expressions.push_back(aggregate.groups[group_idx]->Copy());
+	}
+	auto projection = make_uniq<LogicalProjection>(table_index, std::move(expressions));
+	projection->SetEstimatedCardinality(child->estimated_cardinality);
+	projection->children.push_back(std::move(child));
+	aggregate.children[0] = std::move(projection);
+
+	auto replace_bindings = [&](unique_ptr<Expression> &expression) {
+		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+		    expression, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &slot) {
+			    if (colref.Depth() != 0) {
+				    return;
+			    }
+			    for (auto &replacement : replacements) {
+				    if (replacement.first == colref.Binding()) {
+					    slot = colref.WithBinding(replacement.second);
+					    return;
+				    }
+			    }
+		    });
+	};
+	for (idx_t group_idx = 0; group_idx < aggregate.groups.size(); group_idx++) {
+		auto entry = std::find(selected.begin(), selected.end(), group_idx);
+		if (entry != selected.end()) {
+			auto &group = aggregate.groups[group_idx];
+			auto computed_binding = computed_bindings[NumericCast<idx_t>(entry - selected.begin())];
+			group = make_uniq<BoundColumnRefExpression>(group->GetAlias(), group->GetReturnType(), computed_binding);
+		} else {
+			replace_bindings(aggregate.groups[group_idx]);
+		}
+	}
+	for (auto &aggregate_expression : aggregate.expressions) {
+		replace_bindings(aggregate_expression);
+	}
+}
+
 } // namespace
 
 ProjectionPlacementOptimizer::ProjectionPlacementOptimizer(
@@ -1003,6 +1168,8 @@ ProjectionPlacementOptimizer::ProjectionPlacementOptimizer(
 }
 
 void ProjectionPlacementOptimizer::Optimize(unique_ptr<LogicalOperator> &plan) {
+	ExtractAggregateGroupExpressions(optimizer, statistics_map, plan);
+	plan->ResolveOperatorTypes();
 	vector<PathStep> ancestors;
 	while (LiftFirstProfitableExpression(optimizer, statistics_map, plan, plan, ancestors)) {
 		plan->ResolveOperatorTypes();

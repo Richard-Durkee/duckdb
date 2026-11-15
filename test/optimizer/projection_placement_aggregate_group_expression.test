@@ -1,0 +1,54 @@
+# name: test/optimizer/projection_placement_aggregate_group_expression.test
+# description: Expensive group expressions of an aggregate over a join are computed on the side of the join that reads them
+# group: [optimizer]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS k, repeat(chr(120), 40) || i::VARCHAR AS d FROM range(1000) t(i)) TO '{TEST_DIR}/pp_dim.parquet'
+
+statement ok
+COPY (SELECT i % 1000 AS k, i AS v FROM range(100000) t(i)) TO '{TEST_DIR}/pp_fact.parquet'
+
+query III
+SELECT substr(d, 1, 43) g, count(*) c, sum(v) s
+FROM read_parquet('{TEST_DIR}/pp_fact.parquet') f JOIN read_parquet('{TEST_DIR}/pp_dim.parquet') dd USING (k)
+GROUP BY substr(d, 1, 43) ORDER BY g LIMIT 3
+----
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx0	100	4950000
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1	100	4950100
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx10	100	4951000
+
+# the result does not depend on where the group expression is evaluated
+statement ok
+CREATE TABLE placed AS
+SELECT substr(d, 1, 43) g, k % 7 m, count(*) c, sum(v) s
+FROM read_parquet('{TEST_DIR}/pp_fact.parquet') f JOIN read_parquet('{TEST_DIR}/pp_dim.parquet') dd USING (k)
+GROUP BY substr(d, 1, 43), k % 7
+
+statement ok
+SET disabled_optimizers='projection_placement'
+
+statement ok
+CREATE TABLE unplaced AS
+SELECT substr(d, 1, 43) g, k % 7 m, count(*) c, sum(v) s
+FROM read_parquet('{TEST_DIR}/pp_fact.parquet') f JOIN read_parquet('{TEST_DIR}/pp_dim.parquet') dd USING (k)
+GROUP BY substr(d, 1, 43), k % 7
+
+statement ok
+RESET disabled_optimizers
+
+query I
+SELECT count(*) FROM (SELECT * FROM placed EXCEPT SELECT * FROM unplaced)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM unplaced EXCEPT SELECT * FROM placed)
+----
+0
+
+query I
+SELECT count(*) FROM placed
+----
+1000
