@@ -1,0 +1,119 @@
+# name: test/sql/copy/parquet/parquet_bitunpack_widths.test
+# description: Round trip dictionary indices (RLE/bit-packed hybrid) of every bit width through runs that end mid-byte
+# group: [parquet]
+
+require parquet
+
+# Each column wN has a dictionary of 2^N values, so its indices are bit packed with width N.
+# Segments alternate between long repeated runs (RLE) and pseudo-random values (bit-packed), with segment sizes that
+# are not multiples of eight, so vectors and bit-packed batches end in the middle of a byte.
+statement ok
+CREATE TABLE widths AS
+SELECT
+	i::BIGINT AS id,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 2 ELSE (i * 40503 + (i >> 3)) % 2 END::INTEGER AS w1,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 4 ELSE (i * 40503 + (i >> 3)) % 4 END::INTEGER AS w2,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 8 ELSE (i * 40503 + (i >> 3)) % 8 END::INTEGER AS w3,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 16 ELSE (i * 40503 + (i >> 3)) % 16 END::INTEGER AS w4,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 32 ELSE (i * 40503 + (i >> 3)) % 32 END::INTEGER AS w5,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 64 ELSE (i * 40503 + (i >> 3)) % 64 END::INTEGER AS w6,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 128 ELSE (i * 40503 + (i >> 3)) % 128 END::INTEGER AS w7,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 256 ELSE (i * 40503 + (i >> 3)) % 256 END::INTEGER AS w8,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 512 ELSE (i * 40503 + (i >> 3)) % 512 END::INTEGER AS w9,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 1024 ELSE (i * 40503 + (i >> 3)) % 1024 END::INTEGER AS w10,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 2048 ELSE (i * 40503 + (i >> 3)) % 2048 END::INTEGER AS w11,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 4096 ELSE (i * 40503 + (i >> 3)) % 4096 END::INTEGER AS w12,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 8192 ELSE (i * 40503 + (i >> 3)) % 8192 END::INTEGER AS w13,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 16384 ELSE (i * 40503 + (i >> 3)) % 16384 END::INTEGER AS w14,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 32768 ELSE (i * 40503 + (i >> 3)) % 32768 END::INTEGER AS w15,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 65536 ELSE (i * 40503 + (i >> 3)) % 65536 END::INTEGER AS w16,
+	CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 131072 ELSE (i * 40503 + (i >> 3)) % 131072 END::INTEGER AS w17,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE (i * 40503 + (i >> 3)) % 1000 END::INTEGER AS nullable_w10,
+	CASE WHEN (i // 61) % 2 = 0 THEN NULL ELSE (i * 40503 + (i >> 3)) % 100 END::INTEGER AS nullable_runs,
+	'v' || ((CASE WHEN (i // 97) % 2 = 0 THEN ((i // 97) * 7919) % 512 ELSE (i * 40503 + (i >> 3)) % 512 END)::VARCHAR) AS str_w9,
+	[(i % 5)::INTEGER, ((i * 3) % 7)::INTEGER] AS lst
+FROM range(300000) t(i);
+
+statement ok
+COPY widths TO '{TEST_DIR}/bitunpack_widths.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1000000, ROW_GROUP_SIZE 150000, DATA_PAGE_SIZE_LIMIT 30000);
+
+statement ok
+COPY widths TO '{TEST_DIR}/bitunpack_widths_small_pages.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1000000, ROW_GROUP_SIZE 77777, DATA_PAGE_SIZE_LIMIT 1000);
+
+foreach file bitunpack_widths bitunpack_widths_small_pages
+
+# full scan
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet') EXCEPT (SELECT * FROM widths)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM widths) EXCEPT (SELECT * FROM '{TEST_DIR}/{file}.parquet')
+);
+----
+0
+
+# a mid-file window, so that pages and vectors start at arbitrary offsets
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE id BETWEEN 12345 AND 98765)
+	EXCEPT (SELECT * FROM widths WHERE id BETWEEN 12345 AND 98765)
+);
+----
+0
+
+# pushed-down filters that skip values in the middle of bit-packed runs
+foreach k 1 3 8 50 300 700
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE w10 < {k}) EXCEPT (SELECT * FROM widths WHERE w10 < {k})
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM widths WHERE w13 < {k} * 10) EXCEPT (SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE w13 < {k} * 10)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE nullable_w10 < {k} AND w5 < 20)
+	EXCEPT (SELECT * FROM widths WHERE nullable_w10 < {k} AND w5 < 20)
+);
+----
+0
+
+endloop
+
+endloop
+
+# delta binary packed data with deltas of every bit width
+statement ok
+CREATE TABLE deltas AS
+SELECT i::BIGINT AS id, (hash(i) >> (64 - (1 + (i // 200) % 62)))::BIGINT AS v
+FROM range(12400) t(i);
+
+statement ok
+COPY deltas TO '{TEST_DIR}/deltas.parquet' (FORMAT parquet, PARQUET_VERSION V2, ROW_GROUP_SIZE 5000);
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/deltas.parquet') EXCEPT (SELECT * FROM deltas)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM deltas) EXCEPT (SELECT * FROM '{TEST_DIR}/deltas.parquet')
+);
+----
+0

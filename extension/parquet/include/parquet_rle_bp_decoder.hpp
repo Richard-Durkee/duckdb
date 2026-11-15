@@ -147,14 +147,15 @@ private:
 		} else {
 			repeat_count_ = indicator_value >> 1;
 			// (ARROW-4018) this is not big-endian compatible, lol
-			current_value_ = 0;
 			if (CHECKED) {
 				buffer_.Available(byte_encoded_len);
 			}
-			for (auto i = 0; i < byte_encoded_len; i++) {
+			uint64_t value = 0;
+			for (uint8_t i = 0; i < byte_encoded_len; i++) {
 				auto next_byte = Load<uint8_t>(buffer_.GetCurrentLoc() + i);
-				current_value_ |= (static_cast<uint64_t>(next_byte) << (i * 8));
+				value |= (static_cast<uint64_t>(next_byte) << (i * 8));
 			}
+			current_value_ = value;
 			buffer_.UnsafeInc(byte_encoded_len);
 			// sanity check
 			if (repeat_count_ > 0 && current_value_ > max_val) {

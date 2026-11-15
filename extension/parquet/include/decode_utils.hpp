@@ -44,6 +44,15 @@ public:
 		const auto mask = BITPACK_MASKS[width];
 		// check once that every byte touched from the current bit position is available
 		src.Available((bitpack_pos + count * width + BITPACK_DLEN - 1) / BITPACK_DLEN);
+		if (bitpack_pos != 0 && count >= BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE) {
+			// A previous call ended in the middle of a byte. Eight values always span a whole number of bytes, so we
+			// unpack at most seven values one by one to get back to a byte boundary and can then use the bulk unpacker.
+			// (A start position that cannot be reached from a byte boundary never realigns, hence the bound.)
+			for (idx_t i = 0; i < BITPACK_DLEN && bitpack_pos != 0; i++) {
+				*dst++ = UnpackOne<T>(src, bitpack_pos, width, mask);
+				count--;
+			}
+		}
 		if (bitpack_pos == 0 && count >= BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE) {
 			idx_t remainder = count % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 			idx_t aligned_count = count - remainder;
@@ -51,18 +60,47 @@ public:
 			dst += aligned_count;
 			count = remainder;
 		}
-		for (idx_t i = 0; i < count; i++) {
-			auto val = (src.UnsafeGet<uint8_t>() >> bitpack_pos) & mask;
-			bitpack_pos += width;
-			while (bitpack_pos > BITPACK_DLEN) {
-				src.UnsafeInc(1);
-				val |=
-				    (static_cast<T>(src.UnsafeGet<uint8_t>()) << static_cast<T>(BITPACK_DLEN - (bitpack_pos - width))) &
-				    mask;
-				bitpack_pos -= BITPACK_DLEN;
-			}
-			dst[i] = val;
+		if (count == 0) {
+			return;
 		}
+		// Short batches (a run of at most a few dozen values): extract every value with one unaligned 64-bit load.
+		// This needs eight readable bytes at the start of the last value, otherwise we use the byte-wise path.
+		const idx_t last_value_bit = bitpack_pos + (count - 1) * width;
+		if (width <= BITPACK_DLEN * 7 && src.CheckAvailable(last_value_bit / BITPACK_DLEN + sizeof(uint64_t))) {
+			const auto base_ptr = src.GetCurrentLoc();
+			idx_t bit = bitpack_pos;
+			for (idx_t i = 0; i < count; i++, bit += width) {
+				dst[i] = static_cast<T>((Load<uint64_t>(base_ptr + bit / BITPACK_DLEN) >> (bit % BITPACK_DLEN)) & mask);
+			}
+			// bit is now the position after the last value, relative to the old byte position
+			const idx_t bytes_to_advance = bit / BITPACK_DLEN;
+			src.UnsafeInc(bytes_to_advance);
+			bitpack_pos = UnsafeNumericCast<bitpacking_width_t>(bit - bytes_to_advance * BITPACK_DLEN);
+			return;
+		}
+		for (idx_t i = 0; i < count; i++) {
+			dst[i] = UnpackOne<T>(src, bitpack_pos, width, mask);
+		}
+	}
+
+	//! Unpack a single value. A fully consumed byte is stepped over right away so that bitpack_pos is 0 whenever the
+	//! stream is on a byte boundary.
+	template <class T>
+	static inline T UnpackOne(ByteBuffer &src, bitpacking_width_t &bitpack_pos, const bitpacking_width_t width,
+	                          const uint64_t mask) {
+		T val = static_cast<T>((src.UnsafeGet<uint8_t>() >> bitpack_pos) & mask);
+		bitpack_pos += width;
+		while (bitpack_pos > BITPACK_DLEN) {
+			src.UnsafeInc(1);
+			val |= (static_cast<T>(src.UnsafeGet<uint8_t>()) << static_cast<T>(BITPACK_DLEN - (bitpack_pos - width))) &
+			       mask;
+			bitpack_pos -= BITPACK_DLEN;
+		}
+		if (bitpack_pos == BITPACK_DLEN) {
+			src.UnsafeInc(1);
+			bitpack_pos = 0;
+		}
+		return val;
 	}
 
 	static void Skip(ByteBuffer &src, bitpacking_width_t &bitpack_pos, idx_t count, const bitpacking_width_t width) {
