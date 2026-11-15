@@ -157,3 +157,63 @@ SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q < 
        (SELECT max(file_row_number) FROM read_parquet('{TEST_DIR}/sam_a.parquet', file_row_number := true) WHERE q > 90) AS b
 ----
 450	4999
+
+# ---- a view over the file: the projection that passes its columns on does not hide the scan --------------------
+
+statement ok
+CREATE VIEW sam_view AS SELECT * FROM read_parquet('{TEST_DIR}/sam_a.parquet');
+
+# a view that renames and drops columns, and a view over a view
+statement ok
+CREATE VIEW sam_narrow AS SELECT q AS quantity, paid AS amount, k AS bucket FROM read_parquet('{TEST_DIR}/sam_a.parquet');
+
+statement ok
+CREATE VIEW sam_narrower AS SELECT quantity AS qty, amount FROM sam_narrow;
+
+query III
+SELECT (SELECT count(*) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM sam_view WHERE q > 90) AS b,
+       (SELECT avg(disc) FROM sam_view WHERE q BETWEEN 30 AND 40) AS c
+----
+450	12557.50	48.36100386100386
+
+query III
+SELECT (SELECT count(*) FROM sam_narrow WHERE quantity < 10) AS a,
+       (SELECT sum(amount) FROM sam_narrow WHERE quantity > 90) AS b,
+       (SELECT max(bucket) FROM sam_narrow WHERE quantity BETWEEN 30 AND 40) AS c
+----
+450	12557.50	39
+
+query III
+SELECT (SELECT count(*) FROM sam_narrower WHERE qty < 10) AS a,
+       (SELECT sum(amount) FROM sam_narrower WHERE qty > 90) AS b,
+       (SELECT sum(amount) FROM sam_narrower WHERE qty BETWEEN 30 AND 40) AS c
+----
+450	12557.50	13684.00
+
+# the same file through the view and directly, and two views of it
+query II
+SELECT (SELECT count(*) FROM sam_view WHERE q < 10 AND k > 20) AS a,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q > 90 AND k > 20) AS b
+----
+0	500
+
+query II
+SELECT (SELECT sum(v) FROM sam_view WHERE q < 50) AS a,
+       (SELECT sum(amount) FROM sam_narrow WHERE quantity > 50) AS b
+----
+6061300	62587.50
+
+# the OR over the branches' conditions on several columns, and the conditions on one column it implies
+query II
+SELECT (SELECT sum(v) FROM sam_view WHERE q < 10 AND (paid > 40 OR k < 5)) AS a,
+       (SELECT sum(v) FROM sam_view WHERE q > 90 AND (paid < 10 OR k > 45)) AS b
+----
+707260	668050
+
+# branches that share no row but read different columns
+query II
+SELECT (SELECT sum(paid) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(k) FROM sam_view WHERE q > 90) AS b
+----
+11151.00	22250

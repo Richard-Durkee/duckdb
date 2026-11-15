@@ -213,3 +213,98 @@ EXPLAIN SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WH
        (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_sales.csv') WHERE q < 10) AS b
 ----
 physical_plan	<REGEX>:([\s\S]*Function: (READ_PARQUET|READ_CSV)\b){2}[\s\S]*
+
+# ---- a view over the file ----------------------------------------------------------------------------------------
+
+statement ok
+CREATE VIEW sam_view AS SELECT * FROM read_parquet('{TEST_DIR}/sam_a.parquet');
+
+statement ok
+CREATE VIEW sam_narrow AS SELECT q AS quantity, paid AS amount, k AS bucket FROM read_parquet('{TEST_DIR}/sam_a.parquet');
+
+statement ok
+CREATE VIEW sam_narrower AS SELECT quantity AS qty, amount FROM sam_narrow;
+
+# the projection a view leaves above its scan does not keep the siblings apart
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM sam_view WHERE q > 90) AS b,
+       (SELECT avg(disc) FROM sam_view WHERE q BETWEEN 30 AND 40) AS c
+----
+physical_plan	<REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM sam_view WHERE q > 90) AS b,
+       (SELECT avg(disc) FROM sam_view WHERE q BETWEEN 30 AND 40) AS c
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# views that rename and drop columns, a view over a view
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_narrow WHERE quantity < 10) AS a,
+       (SELECT sum(amount) FROM sam_narrow WHERE quantity > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_narrower WHERE qty < 10) AS a,
+       (SELECT sum(amount) FROM sam_narrower WHERE qty > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# two views of the same file
+query II
+EXPLAIN SELECT (SELECT sum(v) FROM sam_view WHERE q < 50) AS a,
+       (SELECT sum(amount) FROM sam_narrow WHERE quantity > 50) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# a view and the file itself
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_view WHERE q < 10) AS a,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_a.parquet') WHERE q > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# a view that computes its columns is not a plain scan
+statement ok
+CREATE VIEW sam_computed AS SELECT q + 1 AS q, paid FROM read_parquet('{TEST_DIR}/sam_a.parquet');
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sam_computed WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM sam_computed WHERE q > 90) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Function: READ_PARQUET\b){2}[\s\S]*
+
+# ---- branches that share no row and read different columns stay apart, when merging widens the read too much ---
+
+# the same columns: one scan
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sam_view WHERE q < 10) AS a,
+       (SELECT avg(paid) FROM sam_view WHERE q > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# a few columns of their own: merged
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(k) FROM sam_view WHERE q > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*
+
+# disjoint on q, and each reading a column of its own: the merged scan would read the columns of all four for every row
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sam_view WHERE q < 10) AS a,
+       (SELECT sum(k) FROM sam_view WHERE q BETWEEN 20 AND 30) AS b,
+       (SELECT sum(v) FROM sam_view WHERE q BETWEEN 40 AND 50) AS c,
+       (SELECT sum(disc) FROM sam_view WHERE q > 90) AS d
+----
+physical_plan	<REGEX>:([\s\S]*Function: READ_PARQUET\b){4}[\s\S]*
+
+# overlapping rows share the read: merged however different the columns
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sam_view WHERE q < 60) AS a,
+       (SELECT sum(k) FROM sam_view WHERE q > 40) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Function: READ_PARQUET\b[\s\S]*Function: READ_PARQUET\b[\s\S]*

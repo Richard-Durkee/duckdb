@@ -8,6 +8,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -32,6 +33,8 @@ struct ScalarAggregateMerger::Branch {
 	//! The slot under the filters: the scan, or the cross product of scans of different tables (a FROM list)
 	reference<unique_ptr<LogicalOperator>> relation;
 	vector<reference<LogicalGet>> scans;
+	//! The projections that only pass columns of the scans on (a view over a table function), the lowest first
+	vector<reference<LogicalProjection>> views;
 	//! The filters' predicates, with ANDs split into their conjuncts
 	vector<reference<const Expression>> conjuncts;
 };
@@ -184,15 +187,37 @@ static bool CanShareScan(const LogicalGet &a, const LogicalGet &b) {
 	return !HasOption(a, "ignore_errors") || ReadColumns(a) == ReadColumns(b);
 }
 
+//! A projection that only passes columns of its child on, as the one a view over a table function (SELECT * FROM
+//! read_parquet(...)) leaves above the scan
+static bool IsPassThrough(const LogicalOperator &op) {
+	if (op.type != LogicalOperatorType::LOGICAL_PROJECTION || op.children.size() != 1 || op.HasProjectionMap()) {
+		return false;
+	}
+	for (auto &expr : op.Cast<LogicalProjection>().expressions) {
+		if (expr->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //! The plain scans under `op`: one scan, or a cross product of scans of different relations (a self-join's copies of
-//! a table would not pair one to one with another branch's)
-static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &scans) {
+//! a table would not pair one to one with another branch's), each possibly under projections that only pass columns on
+static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &scans,
+                         vector<reference<LogicalProjection>> &views) {
 	if (op.type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT) {
 		for (auto &child : op.children) {
-			if (!CollectScans(*child, scans)) {
+			if (!CollectScans(*child, scans, views)) {
 				return false;
 			}
 		}
+		return true;
+	}
+	if (IsPassThrough(op)) {
+		if (!CollectScans(*op.children[0], scans, views)) {
+			return false;
+		}
+		views.push_back(op.Cast<LogicalProjection>());
 		return true;
 	}
 	if (op.type != LogicalOperatorType::LOGICAL_GET) {
@@ -292,6 +317,122 @@ static bool TreeHasProjectionMap(const LogicalOperator &op) {
 	return false;
 }
 
+//! The range of values a conjunct set allows one column, from its comparisons with constants
+struct ColumnRange {
+	bool has_lower = false;
+	bool has_upper = false;
+	bool lower_inclusive = true;
+	bool upper_inclusive = true;
+	Value lower;
+	Value upper;
+};
+
+static void TightenLower(ColumnRange &range, const Value &value, bool inclusive) {
+	if (!range.has_lower || range.lower < value || (range.lower == value && !inclusive)) {
+		range.has_lower = true;
+		range.lower = value;
+		range.lower_inclusive = inclusive;
+	}
+}
+
+static void TightenUpper(ColumnRange &range, const Value &value, bool inclusive) {
+	if (!range.has_upper || value < range.upper || (range.upper == value && !inclusive)) {
+		range.has_upper = true;
+		range.upper = value;
+		range.upper_inclusive = inclusive;
+	}
+}
+
+//! The ranges the comparisons of a column with a constant leave to each column
+static void CollectRanges(const vector<unique_ptr<Expression>> &conjuncts, column_binding_map_t<ColumnRange> &ranges) {
+	for (auto &conjunct : conjuncts) {
+		if (!BoundComparisonExpression::IsComparison(*conjunct)) {
+			continue;
+		}
+		auto &comparison = conjunct->Cast<BoundFunctionExpression>();
+		auto type = comparison.GetExpressionType();
+		auto &left = BoundComparisonExpression::Left(comparison);
+		auto &right = BoundComparisonExpression::Right(comparison);
+		optional_ptr<const BoundColumnRefExpression> column;
+		optional_ptr<const BoundConstantExpression> constant;
+		if (left.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+		    right.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			column = &left.Cast<BoundColumnRefExpression>();
+			constant = &right.Cast<BoundConstantExpression>();
+		} else if (right.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF &&
+		           left.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			column = &right.Cast<BoundColumnRefExpression>();
+			constant = &left.Cast<BoundConstantExpression>();
+			type = FlipComparisonExpression(type);
+		} else {
+			continue;
+		}
+		auto &value = constant->GetValue();
+		if (value.IsNull() || value.type() != column->GetReturnType()) {
+			continue;
+		}
+		auto &range = ranges[column->Binding()];
+		switch (type) {
+		case ExpressionType::COMPARE_EQUAL:
+			TightenLower(range, value, true);
+			TightenUpper(range, value, true);
+			break;
+		case ExpressionType::COMPARE_GREATERTHAN:
+			TightenLower(range, value, false);
+			break;
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			TightenLower(range, value, true);
+			break;
+		case ExpressionType::COMPARE_LESSTHAN:
+			TightenUpper(range, value, false);
+			break;
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+			TightenUpper(range, value, true);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+//! Whether no row can satisfy both conjunct sets, as one column's ranges in them show
+static bool AreDisjoint(const vector<unique_ptr<Expression>> &a, const vector<unique_ptr<Expression>> &b) {
+	column_binding_map_t<ColumnRange> a_ranges, b_ranges;
+	CollectRanges(a, a_ranges);
+	CollectRanges(b, b_ranges);
+	for (auto &entry : a_ranges) {
+		auto other = b_ranges.find(entry.first);
+		if (other == b_ranges.end()) {
+			continue;
+		}
+		auto &x = entry.second;
+		auto &y = other->second;
+		if (x.has_upper && y.has_lower &&
+		    (x.upper < y.lower || (x.upper == y.lower && !(x.upper_inclusive && y.lower_inclusive)))) {
+			return true;
+		}
+		if (y.has_upper && x.has_lower &&
+		    (y.upper < x.lower || (y.upper == x.lower && !(y.upper_inclusive && x.lower_inclusive)))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Removes the pass-through projections above the scans: the merged branches' bindings were moved to the scans
+static void StripViews(unique_ptr<LogicalOperator> &op) {
+	if (IsPassThrough(*op)) {
+		op = std::move(op->children[0]);
+		StripViews(op);
+		return;
+	}
+	if (op->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT) {
+		for (auto &child : op->children) {
+			StripViews(child);
+		}
+	}
+}
+
 //! Where `target` reads `column`: the binding it has, or the one it gains once its group merges
 static ColumnBinding TargetBinding(ScalarAggregateMerger::MergeTarget &target, column_t column) {
 	auto &scan = target.scan.get();
@@ -365,7 +506,9 @@ static idx_t LeafPosition(const vector<reference<unique_ptr<LogicalOperator>>> &
 bool ScalarAggregateMerger::IsWorthMerging(const Branch &branch) {
 	auto threshold = Settings::Get<ScalarAggregateMergeThresholdSetting>(optimizer.context);
 	for (auto &scan : branch.scans) {
-		if (!scan.get().GetTable()) {
+		// a table function, or a table of a catalog that is not DuckDB's own (its scan is a table function as well)
+		auto table = scan.get().GetTable();
+		if (!table || !table->IsDuckTable()) {
 			return true;
 		}
 		if (threshold != 0 && scan.get().EstimateCardinality(optimizer.context) >= threshold) {
@@ -472,10 +615,70 @@ void ScalarAggregateMerger::TryMatchBranch(unique_ptr<LogicalOperator> &leaf, ve
 		}
 	}
 	vector<reference<LogicalGet>> scans;
-	if (!CollectScans(*relation.get(), scans)) {
+	vector<reference<LogicalProjection>> views;
+	if (!CollectScans(*relation.get(), scans, views)) {
 		return;
 	}
-	branches.push_back(Branch {leaf, projection, aggregate, relation, std::move(scans), std::move(conjuncts)});
+	branches.push_back(
+	    Branch {leaf, projection, aggregate, relation, std::move(scans), std::move(views), std::move(conjuncts)});
+}
+
+bool ScalarAggregateMerger::IsWidthAcceptable(const vector<idx_t> &group, vector<Branch> &branches,
+                                              const vector<column_binding_map_t<ColumnBinding>> &remaps,
+                                              const vector<unique_ptr<Expression>> &shared,
+                                              const vector<vector<unique_ptr<Expression>>> &own) {
+	// the branches with the same conditions read the same rows: a class
+	vector<idx_t> representatives;
+	for (idx_t k = 0; k < group.size(); k++) {
+		bool found = false;
+		for (idx_t c = 0; c < representatives.size() && !found; c++) {
+			auto &other = own[representatives[c]];
+			bool same = other.size() == own[k].size();
+			for (idx_t i = 0; same && i < own[k].size(); i++) {
+				same = ContainsConjunct(other, *own[k][i]);
+			}
+			if (same) {
+				found = true;
+			}
+		}
+		if (!found) {
+			representatives.push_back(k);
+		}
+	}
+	if (representatives.size() < 2) {
+		return true;
+	}
+	for (idx_t a = 0; a < representatives.size(); a++) {
+		for (idx_t b = a + 1; b < representatives.size(); b++) {
+			if (!AreDisjoint(own[representatives[a]], own[representatives[b]])) {
+				return true;
+			}
+		}
+	}
+	// the columns of each branch, on the merged scan's bindings
+	column_binding_set_t merged_columns;
+	idx_t separate_columns = 0;
+	for (idx_t k = 0; k < group.size(); k++) {
+		column_binding_set_t columns;
+		for (auto &conjunct : shared) {
+			CollectBindings(*conjunct, columns);
+		}
+		for (auto &conjunct : own[k]) {
+			CollectBindings(*conjunct, columns);
+		}
+		for (auto &expr : branches[group[k]].aggregate.get().expressions) {
+			column_binding_set_t bindings;
+			CollectBindings(*expr, bindings);
+			for (auto &binding : bindings) {
+				auto entry = remaps[k].find(binding);
+				columns.insert(entry == remaps[k].end() ? binding : entry->second);
+			}
+		}
+		separate_columns += columns.size();
+		merged_columns.insert(columns.begin(), columns.end());
+	}
+	// up to twice the column data is the price of the scans saved (their files to open, their row groups to visit)
+	return merged_columns.size() * representatives.size() <= separate_columns * 2;
 }
 
 unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> &branches, const vector<idx_t> &group) {
@@ -506,6 +709,18 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 				}
 				remaps[k][ColumnBinding(scan.table_index, ProjectionIndex(i))] =
 				    TargetBinding(*target, column_ids[i].GetPrimaryIndex());
+			}
+		}
+	}
+	// a view's columns land where the scan column they pass on lands
+	for (idx_t k = 0; k < group.size(); k++) {
+		for (auto &view : branches[group[k]].views) {
+			auto &expressions = view.get().expressions;
+			for (idx_t i = 0; i < expressions.size(); i++) {
+				auto binding = expressions[i]->Cast<BoundColumnRefExpression>().Binding();
+				auto entry = remaps[k].find(binding);
+				remaps[k][ColumnBinding(view.get().table_index, ProjectionIndex(i))] =
+				    entry == remaps[k].end() ? binding : entry->second;
 			}
 		}
 	}
@@ -554,6 +769,14 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 				}
 			}
 		}
+	}
+
+	// Branches whose rows are disjoint on a column (as a scan could skip them through partitions or zone maps) share no
+	// row, so the merged scan decodes every row once but all the columns of all the branches for it, where each scan
+	// decodes only the columns of its branch. That widening has to be paid for by the scans saved: merge only when the
+	// merged scan reads at most twice the columns that the separate scans read on average.
+	if (!IsWidthAcceptable(group, branches, remaps, shared, own)) {
+		return nullptr;
 	}
 
 	// the group merges: the target scans read the added columns
@@ -630,6 +853,7 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 
 	// projection -> aggregate -> filter [shared AND (OR of the branches' own predicates)] -> the first branch's scan(s)
 	unique_ptr<LogicalOperator> relation = std::move(first.relation.get());
+	StripViews(relation);
 	vector<unique_ptr<Expression>> filters = std::move(shared);
 	if (every_branch_restricted) {
 		// branches with the same predicate (q9 has three per range) contribute one alternative

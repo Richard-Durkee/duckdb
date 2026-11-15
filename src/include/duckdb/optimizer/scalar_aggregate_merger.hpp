@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/optimizer/column_binding_replacer.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 
 namespace duckdb {
@@ -25,8 +26,10 @@ class Optimizer;
 //! every sibling's columns back under new bindings (TPC-DS q9, q28, q88 and q90).
 //!
 //! The merge trades scans for FILTERs, which pays off when the scan is the expensive part: siblings over a table
-//! function (read_parquet, read_csv, ...) are merged, siblings over a catalog table only when it has at least
-//! scalar_aggregate_merge_threshold rows.
+//! function (read_parquet, read_csv, ...), also under a view that only passes its columns on, or over a table of
+//! another catalog are merged, siblings over a DuckDB table only when it has at least
+//! scalar_aggregate_merge_threshold rows. Siblings whose rows are disjoint and that read mostly columns of their own
+//! stay apart, as the merged scan would decode more than they do together.
 class ScalarAggregateMerger {
 public:
 	explicit ScalarAggregateMerger(Optimizer &optimizer);
@@ -47,6 +50,11 @@ private:
 	//! Whether the scans of `branch` cost enough for the merge to pay off: a table function (files, remote sources)
 	//! or a table of at least scalar_aggregate_merge_threshold rows
 	bool IsWorthMerging(const Branch &branch);
+	//! Whether merging `group` reads no more column data than its separate scans do (see MergeBranches)
+	static bool IsWidthAcceptable(const vector<idx_t> &group, vector<Branch> &branches,
+	                              const vector<column_binding_map_t<ColumnBinding>> &remaps,
+	                              const vector<unique_ptr<Expression>> &shared,
+	                              const vector<vector<unique_ptr<Expression>>> &own);
 	//! The merged leaf that replaces the branches of `group`, or null when the group cannot be merged
 	unique_ptr<LogicalOperator> MergeBranches(vector<Branch> &branches, const vector<idx_t> &group);
 
