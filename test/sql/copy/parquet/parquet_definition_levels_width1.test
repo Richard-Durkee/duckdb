@@ -1,0 +1,85 @@
+# name: test/sql/copy/parquet/parquet_definition_levels_width1.test
+# description: Round trip nullable columns, whose definition levels are bit packed with width one, through the Parquet reader
+# group: [parquet]
+
+require parquet
+
+# Nulls are placed so that the writer emits bit-packed runs of definition levels (short or irregular runs of valid and
+# NULL values) as well as repeated runs, with page and vector sizes that are not multiples of eight.
+statement ok
+CREATE TABLE levels AS
+SELECT
+	i::BIGINT AS id,
+	CASE WHEN hash(i) % 2 = 0 THEN NULL ELSE i END AS half_null,
+	CASE WHEN hash(i) % 10 = 0 THEN NULL ELSE i * 3 END AS few_null,
+	CASE WHEN hash(i) % 10 != 0 THEN NULL ELSE i * 5 END AS mostly_null,
+	CASE WHEN i % 2 = 0 THEN NULL ELSE i END AS alternating,
+	CASE WHEN (i // 61) % 3 = 0 THEN NULL WHEN hash(i) % 3 = 0 THEN NULL ELSE i END AS runs_and_noise,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE 'v' || (i % 40)::VARCHAR END AS str_null,
+	CASE WHEN hash(i) % 4 = 0 THEN NULL ELSE [i, i + 1] END AS list_null,
+	[CASE WHEN hash(i) % 3 = 0 THEN NULL ELSE i END, CASE WHEN hash(i + 1) % 3 = 0 THEN NULL ELSE i END] AS list_of_null
+FROM range(100003) t(i);
+
+statement ok
+COPY levels TO '{TEST_DIR}/levels_large.parquet' (FORMAT parquet, ROW_GROUP_SIZE 40000, DATA_PAGE_SIZE_LIMIT 20000);
+
+statement ok
+COPY levels TO '{TEST_DIR}/levels_small_pages.parquet' (FORMAT parquet, ROW_GROUP_SIZE 7777, DATA_PAGE_SIZE_LIMIT 1000);
+
+statement ok
+COPY levels TO '{TEST_DIR}/levels_v2.parquet' (FORMAT parquet, PARQUET_VERSION V2, ROW_GROUP_SIZE 30001, DATA_PAGE_SIZE_LIMIT 5000);
+
+foreach file levels_large levels_small_pages levels_v2
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet') EXCEPT (SELECT * FROM levels)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM levels) EXCEPT (SELECT * FROM '{TEST_DIR}/{file}.parquet')
+);
+----
+0
+
+# a window that starts in the middle of pages and vectors
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE id BETWEEN 12345 AND 87654)
+	EXCEPT (SELECT * FROM levels WHERE id BETWEEN 12345 AND 87654)
+);
+----
+0
+
+# the number of NULLs per column
+query I
+SELECT count(*) FROM (
+	(SELECT count(*) - count(half_null), count(*) - count(few_null), count(*) - count(mostly_null), count(*) - count(alternating), count(*) - count(runs_and_noise), count(*) - count(str_null), count(*) - count(list_null), count(*) - count(list_of_null[1]), count(*) - count(list_of_null[2]) FROM '{TEST_DIR}/{file}.parquet')
+	EXCEPT (SELECT count(*) - count(half_null), count(*) - count(few_null), count(*) - count(mostly_null), count(*) - count(alternating), count(*) - count(runs_and_noise), count(*) - count(str_null), count(*) - count(list_null), count(*) - count(list_of_null[1]), count(*) - count(list_of_null[2]) FROM levels)
+);
+----
+0
+
+# filters that skip values in the middle of bit-packed runs
+foreach k 1 7 100 3000 60000
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE id % 7 < 3 AND id > {k}) EXCEPT (SELECT * FROM levels WHERE id % 7 < 3 AND id > {k})
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT * FROM levels WHERE half_null < {k} * 10 OR few_null IS NULL) EXCEPT (SELECT * FROM '{TEST_DIR}/{file}.parquet' WHERE half_null < {k} * 10 OR few_null IS NULL)
+);
+----
+0
+
+endloop
+
+endloop
