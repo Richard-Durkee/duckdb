@@ -224,6 +224,12 @@ public:
 		return capacity;
 	}
 
+	//! Whether inserting an entry with this key changes the heap
+	bool CanInsert(const K &key) const {
+		D_ASSERT(capacity != 0); // must be initialized
+		return size < capacity || K_COMPARATOR::Operation(key, heap[0].first.value);
+	}
+
 	void Insert(ArenaAllocator &allocator, const K &key, const V &value) {
 		D_ASSERT(capacity != 0); // must be initialized
 

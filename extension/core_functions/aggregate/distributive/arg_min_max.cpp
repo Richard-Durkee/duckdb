@@ -685,7 +685,7 @@ void ArgMinMaxNUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t inp
 	auto &arg_vector = inputs[1];
 	auto &n_vector = inputs[2];
 
-	UnifiedVectorFormat val_format;
+	UnifiedVectorFormat val_probe;
 	UnifiedVectorFormat arg_format;
 	UnifiedVectorFormat n_format;
 	UnifiedVectorFormat state_format;
@@ -693,7 +693,10 @@ void ArgMinMaxNUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t inp
 	auto val_extra_state = STATE::VAL_TYPE::CreateExtraState();
 	auto arg_extra_state = STATE::ARG_TYPE::CreateExtraState();
 
-	STATE::VAL_TYPE::PrepareData(val_vector, val_extra_state, val_format, bind_data.nulls_last);
+	// The values (the payload) can be expensive to prepare, e.g. when they are converted to a sort key. Most rows
+	// never make it into a heap, so we only look at the validity of the values first, and prepare the values of the
+	// rows that can still enter their heap afterwards.
+	val_vector.ToUnifiedFormat(val_probe);
 	STATE::ARG_TYPE::PrepareData(arg_vector, arg_extra_state, arg_format, bind_data.nulls_last);
 
 	n_vector.ToUnifiedFormat(n_format);
@@ -701,23 +704,25 @@ void ArgMinMaxNUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t inp
 
 	auto states = UnifiedVectorFormat::GetData<STATE *>(state_format);
 
+	SelectionVector candidates(count);
+	idx_t candidate_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		const auto arg_idx = arg_format.sel->get_index(i);
-		const auto val_idx = val_format.sel->get_index(i);
+		const auto val_idx = val_probe.sel->get_index(i);
 
 		if (bind_data.null_handling == ArgMinMaxNullHandling::IGNORE_ANY_NULL &&
-		    (!arg_format.validity.RowIsValid(arg_idx) || !val_format.validity.RowIsValid(val_idx))) {
+		    (!arg_format.validity.RowIsValid(arg_idx) || !val_probe.validity.RowIsValid(val_idx))) {
 			continue;
 		}
 		if (bind_data.null_handling == ArgMinMaxNullHandling::HANDLE_ARG_NULL &&
-		    !val_format.validity.RowIsValid(val_idx)) {
+		    !val_probe.validity.RowIsValid(val_idx)) {
 			continue;
 		}
 
 		const auto state_idx = state_format.sel->get_index(i);
 		auto &state = *states[state_idx];
 
-		// Initialize the heap if necessary and add the input to the heap
+		// Initialize the heap if necessary
 		if (!state.is_initialized) {
 			const auto nidx = n_format.sel->get_index(i);
 			if (!n_format.validity.RowIsValid(nidx)) {
@@ -734,7 +739,26 @@ void ArgMinMaxNUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t inp
 			state.Initialize(aggr_input.allocator, UnsafeNumericCast<idx_t>(nval));
 		}
 
-		// Now add the input to the heap
+		// The heap only gets better, so a row that cannot enter the heap now cannot enter it later either
+		if (state.heap.CanInsert(STATE::ARG_TYPE::Create(arg_format, arg_idx))) {
+			candidates.set_index(candidate_count++, i);
+		}
+	}
+	if (candidate_count == 0) {
+		return;
+	}
+
+	Vector candidate_values(val_vector, candidates, candidate_count);
+	UnifiedVectorFormat val_format;
+	STATE::VAL_TYPE::PrepareData(candidate_values, val_extra_state, val_format, bind_data.nulls_last);
+
+	// Now add the candidates to their heaps
+	for (idx_t candidate = 0; candidate < candidate_count; candidate++) {
+		const auto i = candidates.get_index(candidate);
+		const auto arg_idx = arg_format.sel->get_index(i);
+		const auto val_idx = val_format.sel->get_index(candidate);
+		auto &state = *states[state_format.sel->get_index(i)];
+
 		auto arg_val = STATE::ARG_TYPE::Create(arg_format, arg_idx);
 		auto val_val = STATE::VAL_TYPE::Create(val_format, val_idx);
 

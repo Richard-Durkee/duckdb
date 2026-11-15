@@ -1,0 +1,48 @@
+# name: test/sql/aggregate/aggregates/arg_min_max_n_payload.test
+# description: Test that arg_min/arg_max with N only keep the payloads of the rows that enter the heap
+# group: [aggregates]
+
+statement ok
+CREATE TABLE t AS SELECT i, (hash(i) % 7)::INT AS g,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE (i * 7919) % 100003 END AS ord,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE 'payload_' || (i % 1000)::VARCHAR END AS pay
+FROM range(20000) t(i);
+
+# a struct payload (converted to a sort key)
+query I
+SELECT count(*) FROM (
+	SELECT arg_max(struct_pack(i, pay), ord, 5) AS a, list(struct_pack(i, pay) ORDER BY ord DESC NULLS LAST)[1:5] AS b
+	FROM t GROUP BY g
+) WHERE a != b
+----
+0
+
+query I
+SELECT count(*) FROM (
+	SELECT arg_min(struct_pack(i, pay), ord, 3) AS a, list(struct_pack(i, pay) ORDER BY ord NULLS LAST)[1:3] AS b
+	FROM t GROUP BY g
+) WHERE a != b
+----
+0
+
+# payloads that are NULL
+query I
+SELECT count(*) FROM (
+	SELECT arg_max(pay, ord, 4) AS a, list(pay ORDER BY ord DESC NULLS LAST)[1:4] AS b FROM t WHERE pay IS NOT NULL GROUP BY g
+) WHERE a != b
+----
+0
+
+# the heap is not filled by the first chunk, and more rows than the heap holds arrive later
+query I
+SELECT count(*) FROM (
+	SELECT arg_max(i, ord, 900) AS a, list(i ORDER BY ord DESC NULLS LAST)[1:900] AS b FROM t GROUP BY g
+) WHERE a != b
+----
+0
+
+# without grouping
+query I
+SELECT arg_max(i, ord, 3) = list(i ORDER BY ord DESC NULLS LAST)[1:3] FROM t
+----
+true
