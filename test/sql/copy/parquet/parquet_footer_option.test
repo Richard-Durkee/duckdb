@@ -1,0 +1,124 @@
+# name: test/sql/copy/parquet/parquet_footer_option.test
+# description: A file struct can carry the footer bytes of a Parquet file so the metadata is parsed without reading the file
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS a, 'row ' || i AS b FROM range(5) t(i)) TO '{TEST_DIR}/footer_1.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY (SELECT i AS a, 'other ' || i AS b FROM range(5, 8) t(i)) TO '{TEST_DIR}/footer_2.parquet' (FORMAT PARQUET);
+
+# the footer is the tail of the file: the Thrift metadata, its four byte length and the magic bytes, footer_size + 8 bytes
+statement ok
+SET VARIABLE footer_1 = (SELECT content[-(footer_size::BIGINT + 8):] FROM read_blob('{TEST_DIR}/footer_1.parquet'), parquet_file_metadata('{TEST_DIR}/footer_1.parquet'));
+
+statement ok
+SET VARIABLE footer_2 = (SELECT content[-(footer_size::BIGINT + 8):] FROM read_blob('{TEST_DIR}/footer_2.parquet'), parquet_file_metadata('{TEST_DIR}/footer_2.parquet'));
+
+statement ok
+SET VARIABLE footer_size_1 = (SELECT footer_size FROM parquet_file_metadata('{TEST_DIR}/footer_1.parquet'));
+
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': getvariable('footer_1')}]) ORDER BY a
+----
+0	row 0
+1	row 1
+2	row 2
+3	row 3
+4	row 4
+
+query II
+SELECT * FROM read_parquet([
+	{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': getvariable('footer_1')},
+	{'filename': '{TEST_DIR}/footer_2.parquet', 'footer': getvariable('footer_2')}]) ORDER BY a
+----
+0	row 0
+1	row 1
+2	row 2
+3	row 3
+4	row 4
+5	other 5
+6	other 6
+7	other 7
+
+# the struct can be a VARIANT, and the single-file function takes it too
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_2.parquet', 'footer': getvariable('footer_2')}::VARIANT]) ORDER BY a
+----
+5	other 5
+6	other 6
+7	other 7
+
+query II
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/footer_2.parquet', 'footer': getvariable('footer_2')}) ORDER BY a
+----
+5	other 5
+6	other 6
+7	other 7
+
+# the footer can be combined with footer_size, which then has to agree with it
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer_size': getvariable('footer_size_1'), 'footer': getvariable('footer_1')}]) WHERE a = 3
+----
+3	row 3
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer_size': 10::UBIGINT, 'footer': getvariable('footer_1')}])
+----
+<REGEX>:Invalid Input Error.*but footer_size is 10.*
+
+# the metadata cache stores the parsed footer like any other, and a later read by path is served from it
+statement ok
+SET parquet_metadata_cache = true;
+
+query I
+SELECT count(*) FROM read_parquet([{'filename': '{TEST_DIR}/footer_2.parquet', 'footer': getvariable('footer_2')}])
+----
+3
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/footer_2.parquet')
+----
+3
+
+statement ok
+SET parquet_metadata_cache = false;
+
+# a NULL footer is the same as none, so the file is read as usual
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': NULL}]) WHERE a = 0
+----
+0	row 0
+
+# the footer has to be complete
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': 'PAR1'::BLOB}])
+----
+<REGEX>:Invalid Input Error.*too small to be a Parquet footer.*
+
+# the bytes have to end in the magic
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': getvariable('footer_1')[:-2]}])
+----
+<REGEX>:Invalid Input Error.*No magic bytes found.*
+
+# the number of bytes has to match the length stored in the footer
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': '\x00'::BLOB || getvariable('footer_1')}])
+----
+<REGEX>:Invalid Input Error.*stored length implies.*
+
+# a footer whose length and magic are fine but whose metadata is not reports the file
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': repeat('\xFF'::BLOB, octet_length(getvariable('footer_1')) - 8) || getvariable('footer_1')[-8:]}])
+----
+<REGEX>:Invalid Input Error.*Failed to parse the footer provided for file.*
+
+# like file_size, the footer is a promise the caller makes: the footer of another file is taken as given, so the
+# statistics of footer_2 (a between 5 and 7) prune the row groups of footer_1
+query I
+SELECT count(*) FROM read_parquet([{'filename': '{TEST_DIR}/footer_1.parquet', 'footer': getvariable('footer_2')}]) WHERE a = 1
+----
+0

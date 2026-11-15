@@ -1,0 +1,44 @@
+# name: test/sql/copy/parquet/parquet_footer_option_encrypted.test
+# description: The footer file option does not cover encrypted Parquet files
+# group: [parquet]
+
+require parquet
+
+# parquet keys are not persisted across restarts
+require noforcestorage
+
+require httpfs
+
+statement ok
+PRAGMA add_parquet_key('key128', '0123456789112345');
+
+statement ok
+COPY (SELECT 42 a, 'hello' b) TO '{TEST_DIR}/footer_encrypted.parquet' (FORMAT PARQUET, ENCRYPTION_CONFIG {footer_key: 'key128'});
+
+# parquet_file_metadata needs the key, so the footer length comes from the four little endian bytes before the magic
+statement ok
+SET VARIABLE footer_e = (
+	SELECT content[-((from_hex(substr(h, 7, 2) || substr(h, 5, 2) || substr(h, 3, 2) || substr(h, 1, 2))::BIT)::INTEGER + 8):]
+	FROM (SELECT content, hex(content[-8:-5]) AS h FROM read_blob('{TEST_DIR}/footer_encrypted.parquet')));
+
+query I
+SELECT getvariable('footer_e')[-4:]
+----
+PARE
+
+# the footer ends in PARE, which the reader recognizes before it looks at the bytes
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_encrypted.parquet', 'footer': getvariable('footer_e')}])
+----
+<REGEX>:Invalid Input Error.*is encrypted, but 'encryption_config' was not set.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_encrypted.parquet', 'footer': getvariable('footer_e'), 'encryption_key': '0123456789112345'}])
+----
+<REGEX>:Not implemented Error.*Providing the footer of an encrypted Parquet file is not supported.*
+
+# without the footer the file reads as before
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_encrypted.parquet', 'encryption_key': '0123456789112345'}])
+----
+42	hello

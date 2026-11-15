@@ -304,16 +304,85 @@ static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path,
 	}
 }
 
+static shared_ptr<ParquetFileMetadataCache> CreateMetadataCache(ClientContext &context, CachingFileHandle &file_handle,
+                                                                unique_ptr<ParquetMetadata> metadata,
+                                                                unique_ptr<FileCryptoMetaData> crypto_metadata,
+                                                                string encryption_key_hash, idx_t footer_len) {
+	auto &file_metadata = metadata->file_metadata;
+	if (file_metadata.num_rows < 0) {
+		throw InvalidInputException("Failed to read Parquet file \"%s\": has negative number of rows",
+		                            file_handle.GetPath());
+	}
+
+	// Try to read the GeoParquet metadata (if present)
+	auto geo_metadata = GeoParquetFileMetadata::TryRead(file_metadata, context);
+	return make_shared_ptr<ParquetFileMetadataCache>(std::move(metadata), file_handle, std::move(geo_metadata),
+	                                                 std::move(crypto_metadata), std::move(encryption_key_hash),
+	                                                 footer_len);
+}
+
+//! Parse the metadata from the tail of the file (footer_size + 8 bytes) that the "footer" file option supplied.
+//! Like file_size, the bytes are a promise the caller makes: only the magic and the length are checked
+static shared_ptr<ParquetFileMetadataCache>
+LoadMetadataFromFooter(ClientContext &context, CachingFileHandle &file_handle, idx_t file_size,
+                       const shared_ptr<const ParquetEncryptionConfig> &encryption_config, optional_idx footer_size,
+                       string &footer) {
+	if (footer.size() < 12) {
+		throw InvalidInputException("Footer provided for file '%s' is too small to be a Parquet footer",
+		                            file_handle.GetPath());
+	}
+	auto footer_data = data_ptr_cast(&footer[0]);
+	bool footer_encrypted;
+	idx_t footer_len;
+	ParseParquetFooter(footer_data + footer.size() - 8, file_handle.GetPath(), file_size, encryption_config, footer_len,
+	                   footer_encrypted);
+	if (footer_len + 8 != footer.size()) {
+		throw InvalidInputException(
+		    "Footer provided for file '%s' holds %llu bytes but its stored length implies %llu bytes",
+		    file_handle.GetPath(), footer.size(), footer_len + 8);
+	}
+	if (footer_size.IsValid() && footer_size.GetIndex() != footer_len) {
+		throw InvalidInputException("Footer provided for file '%s' has length %llu but footer_size is %llu",
+		                            file_handle.GetPath(), footer_len, footer_size.GetIndex());
+	}
+	if (footer_encrypted) {
+		throw NotImplementedException("Providing the footer of an encrypted Parquet file is not supported");
+	}
+	// thrift reads from the caller's bytes, which outlive the parse
+	auto buffer = std::make_shared<duckdb_apache::thrift::transport::TMemoryBuffer>(
+	    footer_data, NumericCast<uint32_t>(footer_len), duckdb_apache::thrift::transport::TMemoryBuffer::OBSERVE);
+	// no string or container in the footer can be larger than the footer itself
+	auto limit = NumericCast<int32_t>(MinValue<idx_t>(footer_len, NumericLimits<int32_t>::Maximum()));
+	duckdb_apache::thrift::protocol::TCompactProtocolT<duckdb_apache::thrift::transport::TMemoryBuffer> proto(
+	    buffer, limit, limit);
+	auto metadata = make_uniq<ParquetMetadata>(Allocator::DefaultAllocator());
+	try {
+		metadata->file_metadata.read(&proto);
+	} catch (std::exception &ex) {
+		// thrift errors have no type and get the file name, everything else keeps its type
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::INVALID) {
+			throw;
+		}
+		throw InvalidInputException("Failed to parse the footer provided for file '%s': %s", file_handle.GetPath(),
+		                            error.RawMessage());
+	}
+	return CreateMetadataCache(context, file_handle, std::move(metadata), nullptr, string(), footer_len);
+}
+
 static shared_ptr<ParquetFileMetadataCache>
 LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &file_handle,
              const shared_ptr<const ParquetEncryptionConfig> &encryption_config,
-             shared_ptr<EncryptionUtil> &encryption_util, optional_idx footer_size) {
-	auto file_proto = CreateThriftFileProtocol(context, file_handle, false);
-	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto->getTransport());
-	auto file_size = transport.GetSize();
+             shared_ptr<EncryptionUtil> &encryption_util, optional_idx footer_size, optional_ptr<string> footer) {
+	auto file_size = file_handle.GetFileSize();
 	if (file_size < 12) {
 		throw InvalidInputException("File '%s' too small to be a Parquet file", file_handle.GetPath());
 	}
+	if (footer) {
+		return LoadMetadataFromFooter(context, file_handle, file_size, encryption_config, footer_size, *footer);
+	}
+	auto file_proto = CreateThriftFileProtocol(context, file_handle, false);
+	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto->getTransport());
 
 	bool footer_encrypted;
 	idx_t footer_len;
@@ -415,16 +484,8 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		file_metadata.read(file_proto.get());
 	}
 
-	if (file_metadata.num_rows < 0) {
-		throw InvalidInputException("Failed to read Parquet file \"%s\": has negative number of rows",
-		                            file_handle.GetPath());
-	}
-
-	// Try to read the GeoParquet metadata (if present)
-	auto geo_metadata = GeoParquetFileMetadata::TryRead(file_metadata, context);
-	return make_shared_ptr<ParquetFileMetadataCache>(std::move(metadata), file_handle, std::move(geo_metadata),
-	                                                 std::move(crypto_metadata), std::move(encryption_key_hash),
-	                                                 footer_len);
+	return CreateMetadataCache(context, file_handle, std::move(metadata), std::move(crypto_metadata),
+	                           std::move(encryption_key_hash), footer_len);
 }
 
 static bool CanUseParquetMetadataStatistics(ClientContext &context,
@@ -1455,6 +1516,8 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 	}
 	// read the extended file open info (if any)
 	optional_idx footer_size;
+	string footer_bytes;
+	optional_ptr<string> footer;
 	if (file.extended_info) {
 		auto &extended_info = *file.extended_info;
 		string encryption_key;
@@ -1468,6 +1531,10 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 			}
 			footer_size = footer_size_option;
 		}
+		// the tail of the file (footer_size + 8 bytes), so the metadata is parsed without reading the file
+		if (extended_info.TryGetOption("footer", footer_bytes)) {
+			footer = &footer_bytes;
+		}
 	}
 
 	// If metadata cached is disabled
@@ -1476,12 +1543,12 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 	if (!metadata_p) {
 		if (!MetadataCacheEnabled(context_p)) {
 			metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
-			                        encryption_util, footer_size);
+			                        encryption_util, footer_size, footer);
 		} else {
 			metadata = ObjectCache::GetObjectCache(context_p).GetWithTypePrefix<ParquetFileMetadataCache>(file.path);
 			if (!metadata || !metadata->IsValid(*file_handle)) {
 				metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
-				                        encryption_util, footer_size);
+				                        encryption_util, footer_size, footer);
 				ObjectCache::GetObjectCache(context_p).PutWithTypePrefix<ParquetFileMetadataCache>(file.path, metadata);
 			}
 		}
