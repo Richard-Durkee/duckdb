@@ -54,7 +54,11 @@ public:
 				values_read += repeat_batch;
 			} else if (literal_count_ > 0) {
 				auto literal_batch = MinValue<uint32_t>(batch_size - values_read, literal_count_);
-				ParquetDecodeUtils::BitUnpack<T>(buffer_, bitpack_pos, values + values_read, literal_batch, bit_width_);
+				const auto expanded = TryUnpackWidth1(values + values_read, literal_batch);
+				if (expanded < literal_batch) {
+					ParquetDecodeUtils::BitUnpack<T>(buffer_, bitpack_pos, values + values_read + expanded,
+					                                 literal_batch - expanded, bit_width_);
+				}
 				literal_count_ -= literal_batch;
 				values_read += literal_batch;
 			} else {
@@ -62,6 +66,29 @@ public:
 			}
 		}
 		D_ASSERT(values_read == batch_size);
+	}
+
+	//! Width-1 values written one byte each (definition levels): a multiplication replicates the packed byte into all
+	//! eight lanes, a mask selects bit k in lane k, and an add plus shift turns every non-zero lane into one.
+	//! Returns the number of values written, a multiple of eight. The rest is left to the generic bit unpacker.
+	idx_t TryUnpackWidth1(uint8_t *values, const idx_t count) {
+		if (bit_width_ != 1 || bitpack_pos != 0 || count < 8) {
+			return 0;
+		}
+		const idx_t groups = count / 8;
+		buffer_.Available(groups);
+		const auto *src = buffer_.GetCurrentLoc();
+		for (idx_t i = 0; i < groups; i++) {
+			const uint64_t lanes = (static_cast<uint64_t>(src[i]) * 0x0101010101010101ULL) & 0x8040201008040201ULL;
+			const uint64_t bytes = ((lanes + 0x7F7F7F7F7F7F7F7FULL) >> 7) & 0x0101010101010101ULL;
+			Store<uint64_t>(bytes, values + i * 8);
+		}
+		buffer_.UnsafeInc(groups);
+		return groups * 8;
+	}
+	template <class T>
+	idx_t TryUnpackWidth1(T *, const idx_t) {
+		return 0;
 	}
 
 	void Skip(uint32_t batch_size) {
