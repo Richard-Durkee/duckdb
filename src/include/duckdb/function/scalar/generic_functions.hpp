@@ -75,6 +75,26 @@ struct BarrierFun {
 	static ScalarFunction GetFunction();
 };
 
+struct InternalGroupKeyInternFun {
+	static constexpr const char *Name = "__internal_group_key_intern";
+	static constexpr const char *Parameters = "value";
+	static constexpr const char *Description = "Replaces a string by its id in the dictionary of an encoded group key. Created by the group key encoding optimizer, which has no SQL to bind it from: the function exists to deserialize plans.";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
+struct InternalGroupKeyResolveFun {
+	static constexpr const char *Name = "__internal_group_key_resolve";
+	static constexpr const char *Parameters = "id";
+	static constexpr const char *Description = "Looks up the string of an id in the dictionary of an encoded group key. Created by the group key encoding optimizer, which has no SQL to bind it from: the function exists to deserialize plans.";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 struct CreateSortKeyFun {
 	static constexpr const char *Name = "create_sort_key";
 	static constexpr const char *Parameters = "key1,...";

@@ -1,0 +1,106 @@
+# name: test/sql/optimizer/group_key_encoding_serialization.test
+# description: Test that plans with dictionary encoded group keys are serialized and deserialized onto the same dictionary
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k,
+	CASE WHEN i % 7 = 0 THEN NULL ELSE 'category_' || (i % 5)::VARCHAR END AS a,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE 'a_rather_long_class_name_' || (i % 3)::VARCHAR END AS b
+FROM range(40) t(i);
+
+statement ok
+CREATE TABLE fact AS SELECT i % 40 AS k, i AS v FROM range(4000) t(i);
+
+# a signature of the rows of each query: their count, and the sum of their hashes
+statement ok
+SET disabled_optimizers = 'group_key_encoding';
+
+statement ok
+CREATE TABLE expected_plain AS SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b) r) AS sig;
+
+statement ok
+CREATE TABLE expected_rollup AS SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b)) r) AS sig;
+
+statement ok
+CREATE TABLE expected_cte AS SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (WITH t AS MATERIALIZED (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b) SELECT x.a, x.b, x.s, y.s AS t FROM t x JOIN t y ON x.a IS NOT DISTINCT FROM y.a AND x.b IS NOT DISTINCT FROM y.b) r) AS sig;
+
+statement ok
+CREATE TABLE expected_window AS SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, s, rank() OVER (PARTITION BY a ORDER BY s DESC, b) AS rk FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b))) r) AS sig;
+
+statement ok
+CREATE TABLE expected_two AS SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT p.a, p.s, q.s AS t FROM (SELECT a, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a) p, (SELECT a, count(*) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a) q WHERE p.a IS NOT DISTINCT FROM q.a) r) AS sig;
+
+query I
+SELECT sig.c FROM expected_plain
+----
+22
+
+statement ok
+RESET disabled_optimizers;
+
+# the plan is serialized and deserialized after the optimizers, and the deserialized plan runs
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+# the strings of one dictionary on both sides
+query I
+SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b) r) = (SELECT sig FROM expected_plain)
+----
+true
+
+# grouping sets
+query I
+SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b)) r) = (SELECT sig FROM expected_rollup)
+----
+true
+
+# a CTE that is read twice: both reads use the ids of the one dictionary
+query I
+SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (WITH t AS MATERIALIZED (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b) SELECT x.a, x.b, x.s, y.s AS t FROM t x JOIN t y ON x.a IS NOT DISTINCT FROM y.a AND x.b IS NOT DISTINCT FROM y.b) r) = (SELECT sig FROM expected_cte)
+----
+true
+
+# the lookup of the strings moves above a window
+query I
+SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT a, b, s, rank() OVER (PARTITION BY a ORDER BY s DESC, b) AS rk FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b))) r) = (SELECT sig FROM expected_window)
+----
+true
+
+# two aggregates of the same strings, each with its own dictionary, joined on the strings
+query I
+SELECT (SELECT {'c': count(*), 'h': sum(hash(r)::HUGEINT)} FROM (SELECT p.a, p.s, q.s AS t FROM (SELECT a, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a) p, (SELECT a, count(*) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a) q WHERE p.a IS NOT DISTINCT FROM q.a) r) = (SELECT sig FROM expected_two)
+----
+true
+
+# the plan is encoded, so these queries do exercise the round trip
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# a prepared statement is executed many times
+statement ok
+PREPARE p AS SELECT count(*), sum(s) FROM (SELECT a, b, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k AND dim.k >= $1 GROUP BY a, b)
+
+loop i 0 50
+
+query II
+EXECUTE p(0)
+----
+22	7998000
+
+endloop
+
+# the functions are for the optimizer: they cannot be called from SQL
+statement error
+SELECT __internal_group_key_intern('a')
+----
+for internal use only
+
+statement error
+SELECT __internal_group_key_resolve(1)
+----
+for internal use only
