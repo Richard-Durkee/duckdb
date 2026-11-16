@@ -739,6 +739,39 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const Identifier &name)
 	return ReadStatisticsInternal(*GetFileMetadata(), *root_schema, parquet_options, file_col_idx);
 }
 
+idx_t ParquetReader::ReadAverageValueWidth(const FileMetaData &file_meta_data, const ParquetColumnSchema &column) {
+	if (column.schema_type != ParquetColumnSchemaType::COLUMN) {
+		return 0;
+	}
+	// the uncompressed size of the column chunks includes the length prefix of every plain encoded string
+	uint64_t bytes = 0;
+	uint64_t values = 0;
+	for (auto &row_group : file_meta_data.row_groups) {
+		if (column.column_index >= row_group.columns.size()) {
+			return 0;
+		}
+		auto &meta_data = row_group.columns[column.column_index].meta_data;
+		if (meta_data.total_uncompressed_size > 0 && meta_data.num_values > 0) {
+			bytes += static_cast<uint64_t>(meta_data.total_uncompressed_size);
+			values += static_cast<uint64_t>(meta_data.num_values);
+		}
+	}
+	return values == 0 ? 0 : NumericCast<idx_t>(bytes / values);
+}
+
+idx_t ParquetReader::ReadAverageValueWidth(const Identifier &name) {
+	for (idx_t file_col_idx = 0; file_col_idx < columns.size(); file_col_idx++) {
+		if (columns[file_col_idx].name == name) {
+			return ReadAverageValueWidth(*GetFileMetadata(), root_schema->children[file_col_idx]);
+		}
+	}
+	return 0;
+}
+
+idx_t ParquetReader::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	return ReadAverageValueWidth(name);
+}
+
 unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context, ParquetOptions parquet_options,
                                                          shared_ptr<ParquetFileMetadataCache> metadata,
                                                          const Identifier &name) {
@@ -1563,6 +1596,22 @@ unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &contex
 		return nullptr;
 	}
 	return ParquetReader::ReadStatistics(context, *this, name);
+}
+
+idx_t ParquetUnionData::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	if (reader) {
+		return reader->Cast<ParquetReader>().GetAverageValueWidth(context, name);
+	}
+	if (!root_schema || !metadata) {
+		return 0;
+	}
+	for (idx_t file_col_idx = 0; file_col_idx < names.size(); file_col_idx++) {
+		if (names[file_col_idx] == name) {
+			return ParquetReader::ReadAverageValueWidth(metadata->metadata->file_metadata,
+			                                            root_schema->children[file_col_idx]);
+		}
+	}
+	return 0;
 }
 
 ParquetReader::ParquetReader(ClientContext &context_p, ParquetOptions parquet_options_p,

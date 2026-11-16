@@ -1,0 +1,43 @@
+# name: test/sql/optimizer/group_key_encoding_parquet.test
+# description: The memory estimate of the dictionary of a group key reads the width of the strings from the Parquet metadata
+# group: [optimizer]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS k, repeat('p', 1000) || i::VARCHAR AS a FROM range(30000) t(i)) TO '{TEST_DIR}/group_key_dim.parquet' (FORMAT parquet);
+
+statement ok
+COPY (SELECT i % 30000 AS k, i AS v FROM range(300000) t(i)) TO '{TEST_DIR}/group_key_fact.parquet' (FORMAT parquet);
+
+statement ok
+CREATE VIEW dim AS SELECT * FROM read_parquet('{TEST_DIR}/group_key_dim.parquet');
+
+statement ok
+CREATE VIEW fact AS SELECT * FROM read_parquet('{TEST_DIR}/group_key_fact.parquet');
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+# 30000 keys of a kilobyte take about 30 MB, more than a quarter of the memory: the Parquet statistics bound the longest
+# string only by its first bytes, but the metadata of the column chunks knows how many bytes a value takes
+statement ok
+SET memory_limit = '100MB';
+
+query II
+EXPLAIN SELECT a, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+SET memory_limit = '1GB';
+
+query II
+EXPLAIN SELECT a, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+query II
+SELECT count(*), sum(s) FROM (SELECT a, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY a)
+----
+30000	44999850000

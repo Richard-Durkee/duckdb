@@ -300,7 +300,11 @@ idx_t EstimateBytesPerKey(ClientContext &context, LogicalGet &get, idx_t column_
 	unique_ptr<BaseStatistics> stats;
 	if (get.function.statistics_extended) {
 		TableFunctionGetStatisticsInput input(get.bind_data.get(), column_ids[column_index]);
+		input.request_average_width = true;
 		stats = get.function.statistics_extended(context, input);
+		// sources that store their data in files know how many bytes a value takes on average, even where they have no
+		// bound on the length of the longest string
+		result = MaxValue<idx_t>(result, input.average_width + OVERHEAD_PER_KEY);
 	} else if (get.function.statistics) {
 		stats = get.function.statistics(context, get.bind_data.get(), column_ids[column_index].GetPrimaryIndex());
 	}

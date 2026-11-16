@@ -176,6 +176,21 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 	return nullptr;
 }
 
+idx_t TableFunctionUnionData::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	if (!statistics || !bind_data) {
+		return 0;
+	}
+	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+		if (Identifier(names[col_idx]) == name) {
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			input.request_average_width = true;
+			statistics(context, input);
+			return input.average_width;
+		}
+	}
+	return 0;
+}
+
 unique_ptr<BaseStatistics> TableFunctionUnionData::GetVirtualColumnStatistics(ClientContext &context,
                                                                               column_t virtual_column_id) {
 	if (!statistics || !bind_data) {
@@ -210,6 +225,21 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 		}
 	}
 	return nullptr;
+}
+
+idx_t TableFunctionFileReader::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	if (!function.statistics_extended || !bind_data) {
+		return 0;
+	}
+	for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+		if (names[col_idx] == name) {
+			TableFunctionGetStatisticsInput input(bind_data.get(), ColumnIndex(col_idx));
+			input.request_average_width = true;
+			function.statistics_extended(context, input);
+			return input.average_width;
+		}
+	}
+	return 0;
 }
 
 unique_ptr<BaseStatistics> TableFunctionFileReader::GetVirtualColumnStatistics(ClientContext &context,
