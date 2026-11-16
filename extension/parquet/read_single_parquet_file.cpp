@@ -446,7 +446,11 @@ static unique_ptr<BaseStatistics> ReadSingleParquetFileStatistics(ClientContext 
 	if (column_index >= parquet_data.parquet_names.size()) {
 		return nullptr;
 	}
-	return parquet_data.GetMetadataReader(context).ReadStatistics(parquet_data.parquet_names[column_index]);
+	auto &metadata_reader = parquet_data.GetMetadataReader(context);
+	if (input.request_average_width) {
+		input.average_width = metadata_reader.ReadAverageValueWidth(parquet_data.parquet_names[column_index]);
+	}
+	return metadata_reader.ReadStatistics(parquet_data.parquet_names[column_index]);
 }
 
 //! The row groups read from this file. The counts accumulate, so that a scan over several files reports their sum

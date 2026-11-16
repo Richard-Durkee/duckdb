@@ -357,6 +357,7 @@ struct ParquetUnionData : public BaseUnionData {
 
 	optional_idx TryGetCardinalityEstimate() const override;
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
+	idx_t GetAverageValueWidth(ClientContext &context, const Identifier &name) override;
 
 	ParquetOptions options;
 	shared_ptr<ParquetFileMetadataCache> metadata;
@@ -413,6 +414,7 @@ public:
 
 	shared_ptr<BaseUnionData> GetUnionData(idx_t file_idx) override;
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
+	idx_t GetAverageValueWidth(ClientContext &context, const Identifier &name) override;
 
 	bool TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
 	                       LocalTableFunctionState &lstate) override;
@@ -450,6 +452,11 @@ public:
 	                           const uint32_t buffer_size, CryptoMetaData &aad_crypto_metadata) const;
 
 	unique_ptr<BaseStatistics> ReadStatistics(const Identifier &name);
+	//! The size in bytes that a value of a flat column takes before compression, from the metadata of the row groups
+	//! (zero if unknown)
+	idx_t ReadAverageValueWidth(const Identifier &name);
+	static idx_t ReadAverageValueWidth(const duckdb_parquet::FileMetaData &file_meta_data,
+	                                   const ParquetColumnSchema &column);
 
 	CachingFileHandle &GetHandle() {
 		return *file_handle;
