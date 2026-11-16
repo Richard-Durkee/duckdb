@@ -474,9 +474,38 @@ GroupedAggregateHashTable::AggregateDictionaryState::AggregateDictionaryState()
     : hashes(LogicalType::HASH), new_dictionary_pointers(LogicalType::POINTER), unique_entries(STANDARD_VECTOR_SIZE) {
 }
 
+bool GroupedAggregateHashTable::ShouldCacheDictionary(AggregateDictionaryState &dict_state, const string &dictionary_id,
+                                                      idx_t dict_size, idx_t row_count) {
+	// dictionaries below this size are always cached
+	static constexpr idx_t SMALL_DICTIONARY_SIZE = 20000;
+	// dictionaries above this size are never cached (the cache uses 9 bytes per entry and thread)
+	static constexpr idx_t MAX_DICTIONARY_SIZE = 1000000;
+	// switching to a large dictionary costs O(dict_size), it only pays off if enough rows use it
+	// a dictionary of a Parquet row group has fewer rows than this per entry, a dictionary that is shared by the whole
+	// pipeline (e.g. emitted by a join) has many more
+	static constexpr idx_t ROWS_PER_ENTRY = 8;
+	if (dict_size < SMALL_DICTIONARY_SIZE) {
+		return true;
+	}
+	if (dict_size > MAX_DICTIONARY_SIZE) {
+		return false;
+	}
+	if (dict_state.pending_dictionary_id != dictionary_id) {
+		dict_state.pending_dictionary_id = dictionary_id;
+		dict_state.pending_rows = 0;
+	}
+	dict_state.pending_rows += row_count;
+	if (dict_state.pending_rows < dict_size * ROWS_PER_ENTRY) {
+		return false;
+	}
+	// the rows seen so far are spent - switching away from this dictionary again requires new rows
+	dict_state.pending_dictionary_id.clear();
+	dict_state.pending_rows = 0;
+	return true;
+}
+
 optional_idx GroupedAggregateHashTable::TryAddDictionaryGroups(DataChunk &groups, DataChunk &payload,
                                                                const unsafe_vector<idx_t> &filter) {
-	static constexpr idx_t MAX_DICTIONARY_SIZE_THRESHOLD = 20000;
 	static constexpr idx_t DICTIONARY_THRESHOLD = 2;
 	// dictionary vector - check if this is a duplicate eliminated dictionary from the storage
 	const auto &dict_col = groups.data[0];
@@ -496,9 +525,10 @@ optional_idx GroupedAggregateHashTable::TryAddDictionaryGroups(DataChunk &groups
 		}
 	} else {
 		// dictionary has an id - we can cache across vectors
-		// use a much larger limit for dictionary
-		if (dict_size >= MAX_DICTIONARY_SIZE_THRESHOLD) {
-			// dictionary is too large - use regular aggregation
+		// the cached dictionary can always be used, other large dictionaries must first earn the cache set-up
+		if (dictionary_id != state.dict_state.dictionary_id &&
+		    !ShouldCacheDictionary(state.dict_state, dictionary_id, dict_size, groups.size())) {
+			// dictionary is too large for the number of rows seen so far - use regular aggregation
 			return optional_idx();
 		}
 	}

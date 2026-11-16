@@ -1,0 +1,91 @@
+# name: test/sql/aggregate/group/group_by_large_dictionary.test
+# description: Grouping on dictionaries with more than 20000 entries
+# group: [group]
+
+require parquet
+
+# a single thread sees all rows of the dictionary, so that the dictionary is large enough to be cached
+statement ok
+PRAGMA threads=1
+
+# 25000 distinct keys, including NULL and the empty string
+statement ok
+CREATE TABLE flat AS SELECT CASE WHEN i % 25000 = 0 THEN NULL WHEN i % 25000 = 1 THEN '' ELSE 'key_' || (i % 25000) END AS k, i % 1000 AS v FROM range(500000) t(i);
+
+statement ok
+COPY flat TO '{TEST_DIR}/large_dictionary.parquet' (FORMAT parquet, ROW_GROUP_SIZE 500000);
+
+statement ok
+CREATE TABLE oracle AS SELECT k, count(*) AS c, sum(v) AS s FROM flat GROUP BY k;
+
+query I
+SELECT count(*) FROM oracle
+----
+25000
+
+# the dictionary of a Parquet row group
+statement ok
+CREATE TABLE from_parquet AS SELECT k, count(*) AS c, sum(v) AS s FROM '{TEST_DIR}/large_dictionary.parquet' GROUP BY k;
+
+query I
+SELECT count(*) FROM (SELECT * FROM oracle EXCEPT SELECT * FROM from_parquet) UNION ALL SELECT count(*) FROM (SELECT * FROM from_parquet EXCEPT SELECT * FROM oracle)
+----
+0
+0
+
+# a second file with a different dictionary that partially overlaps the first one
+statement ok
+COPY (SELECT CASE WHEN i % 25000 = 0 THEN NULL ELSE 'key_' || (12500 + i % 25000) END AS k, i % 1000 AS v FROM range(500000) t(i)) TO '{TEST_DIR}/large_dictionary2.parquet' (FORMAT parquet, ROW_GROUP_SIZE 500000);
+
+statement ok
+CREATE TABLE both_flat AS SELECT k, v FROM flat UNION ALL SELECT k, v FROM '{TEST_DIR}/large_dictionary2.parquet';
+
+statement ok
+CREATE TABLE both_oracle AS SELECT k, count(*) AS c, sum(v) AS s FROM both_flat GROUP BY k;
+
+statement ok
+CREATE TABLE both_result AS SELECT k, count(*) AS c, sum(v) AS s FROM (SELECT k, v FROM '{TEST_DIR}/large_dictionary.parquet' UNION ALL SELECT k, v FROM '{TEST_DIR}/large_dictionary2.parquet') GROUP BY k;
+
+query I
+SELECT count(*) FROM (SELECT * FROM both_oracle EXCEPT SELECT * FROM both_result) UNION ALL SELECT count(*) FROM (SELECT * FROM both_result EXCEPT SELECT * FROM both_oracle)
+----
+0
+0
+
+# dictionaries that are emitted by a join
+statement ok
+CREATE TABLE dim AS SELECT i AS id, CASE WHEN i = 0 THEN NULL WHEN i = 1 THEN '' ELSE 'name_' || i END AS name FROM range(25000) t(i);
+
+statement ok
+CREATE TABLE fact AS SELECT (i * 7) % 25000 AS id, i % 100 AS v FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE join_flat AS SELECT name || '' AS name, v FROM fact JOIN dim USING (id);
+
+statement ok
+CREATE TABLE join_oracle AS SELECT name, count(*) AS c, sum(v) AS s FROM join_flat GROUP BY name;
+
+statement ok
+CREATE TABLE join_result AS SELECT name, count(*) AS c, sum(v) AS s FROM fact JOIN dim USING (id) GROUP BY name;
+
+query I
+SELECT count(*) FROM (SELECT * FROM join_oracle EXCEPT SELECT * FROM join_result) UNION ALL SELECT count(*) FROM (SELECT * FROM join_result EXCEPT SELECT * FROM join_oracle)
+----
+0
+0
+
+# the same with an external join
+statement ok
+SET debug_force_external=true
+
+statement ok
+CREATE TABLE join_external AS SELECT name, count(*) AS c, sum(v) AS s FROM fact JOIN dim USING (id) GROUP BY name;
+
+statement ok
+SET debug_force_external=false
+
+query I
+SELECT count(*) FROM (SELECT * FROM join_oracle EXCEPT SELECT * FROM join_external) UNION ALL SELECT count(*) FROM (SELECT * FROM join_external EXCEPT SELECT * FROM join_oracle)
+----
+0
+0

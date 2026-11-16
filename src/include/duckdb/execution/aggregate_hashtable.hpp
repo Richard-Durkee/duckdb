@@ -195,6 +195,9 @@ private:
 
 		//! The current dictionary vector id (if any)
 		string dictionary_id;
+		//! A large dictionary that is not cached (yet) and the number of rows seen with it so far
+		string pending_dictionary_id;
+		idx_t pending_rows = 0;
 		DataChunk unique_values;
 		Vector hashes;
 		Vector new_dictionary_pointers;
@@ -214,6 +217,10 @@ private:
 		uint64_t address_high_bits = ~uint64_t(0);
 		bool address_high_bits_uniform = true;
 	};
+
+	//! Decides whether to switch the dictionary cache to a (large) dictionary that is not cached yet
+	static bool ShouldCacheDictionary(AggregateDictionaryState &dict_state, const string &dictionary_id,
+	                                  idx_t dict_size, idx_t row_count);
 
 	//! If we have this many or more radix bits, we use the unpartitioned data collection too
 	static constexpr idx_t UNPARTITIONED_RADIX_BITS_THRESHOLD = 3;
