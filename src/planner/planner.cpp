@@ -441,6 +441,7 @@ void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op
 		MemoryStream stream(Allocator::Get(context));
 
 		SerializationOptions options;
+		options.process_local = true;
 		if (config.options.storage_compatibility.manually_set) {
 			// Override the default of 'latest' if this was manually set (for testing, mostly)
 			options.storage_compatibility = config.options.storage_compatibility;

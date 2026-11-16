@@ -34,6 +34,10 @@ public:
 
 	bool serialize_enum_as_string = false;
 	bool serialize_default_values = false;
+	//! The bytes are only read again by the connection that wrote them, while its query runs (a copy of a plan, the
+	//! plan verification). Functions whose bind data refers to objects of the query, that no other reader could
+	//! find, only serialize with this set
+	bool process_local = false;
 	StorageCompatibility storage_compatibility = StorageCompatibility::Default();
 };
 
