@@ -11,6 +11,12 @@
       ]
     },
     {
+      "reason": "Checks the plans of the group key encoding and the memory that it estimates for its dictionaries.",
+      "paths": [
+        "test/sql/optimizer/group_key_encoding.test"
+      ]
+    },
+    {
       "reason": "Checks the plans the scalar aggregate merge produces.",
       "paths": [
         "test/sql/optimizer/scalar_aggregate_merge_files_plan.test",

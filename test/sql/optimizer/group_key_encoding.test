@@ -1,0 +1,565 @@
+# name: test/sql/optimizer/group_key_encoding.test
+# description: Test aggregating on dense integer ids instead of the strings of a smaller relation
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k,
+	CASE WHEN i % 7 = 0 THEN NULL ELSE 'category_' || (i % 5)::VARCHAR END AS a,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE 'a_rather_long_class_name_' || (i % 3)::VARCHAR END AS b,
+	CASE WHEN i % 4 = 0 THEN '' ELSE 'x' || (i % 6)::VARCHAR END AS c
+FROM range(40) t(i);
+
+statement ok
+CREATE TABLE fact AS SELECT i % 40 AS k, i AS v, (i % 13) AS d FROM range(4000) t(i);
+
+# the encoding is only used for scans that are much larger than the relation of the group keys
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+# the strings of the small dimension are interned, and looked up again after the aggregate
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# a single relation has nothing to encode
+query II
+EXPLAIN SELECT a, count(*) FROM dim GROUP BY a
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# collated keys are not encoded
+query II
+EXPLAIN SELECT a COLLATE NOCASE, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a COLLATE NOCASE
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+query III
+SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k AND dim.k < 6 GROUP BY a, b ORDER BY ALL
+----
+category_0	a_rather_long_class_name_2	198500
+category_1	a_rather_long_class_name_1	198100
+category_2	a_rather_long_class_name_2	198200
+category_3	a_rather_long_class_name_0	198300
+category_4	a_rather_long_class_name_1	198400
+NULL	NULL	198000
+
+# GROUPING() and expressions on the strings above the aggregate
+query IIII
+SELECT a, GROUPING(a), count(*), max(upper(b)) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a) ORDER BY ALL
+----
+category_0	0	600	A_RATHER_LONG_CLASS_NAME_2
+category_1	0	700	A_RATHER_LONG_CLASS_NAME_2
+category_2	0	700	A_RATHER_LONG_CLASS_NAME_2
+category_3	0	700	A_RATHER_LONG_CLASS_NAME_2
+category_4	0	700	A_RATHER_LONG_CLASS_NAME_2
+NULL	0	600	A_RATHER_LONG_CLASS_NAME_2
+NULL	1	4000	A_RATHER_LONG_CLASS_NAME_2
+
+# the lookup of the strings moves above a rank filter, which only needs the ids to partition
+query IIII
+SELECT a, b, s, rk FROM (
+	SELECT a, b, s, rank() OVER (PARTITION BY a ORDER BY s DESC) rk
+	FROM (SELECT a, b, c, sum(v) s FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b, c))
+) WHERE rk <= 2 ORDER BY ALL
+----
+category_0	a_rather_long_class_name_0	400500	2
+category_0	NULL	1198500	1
+category_1	a_rather_long_class_name_1	598800	2
+category_1	NULL	1398700	1
+category_2	a_rather_long_class_name_2	599100	2
+category_2	NULL	1400900	1
+category_3	a_rather_long_class_name_2	600900	2
+category_3	NULL	1399600	1
+category_4	a_rather_long_class_name_0	601200	2
+category_4	NULL	1401800	1
+NULL	NULL	1198500	2
+NULL	NULL	7998000	1
+
+# the encoded and the plain plan return the same rows
+statement ok
+SET disabled_optimizers='group_key_encoding';
+
+statement ok
+CREATE TABLE plain AS
+SELECT 1 AS q, a AS g1, b AS g2, c AS g3, d AS g4, sum(v) AS s, count(*) AS n FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b, c, d
+UNION ALL
+SELECT 2, a, b, c, d, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b, c, d)
+UNION ALL
+SELECT 3, a, b, c, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY CUBE (a, b, c)
+UNION ALL
+SELECT 4, a, b, c, d, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY GROUPING SETS ((a, b), (c), (a, d), ())
+UNION ALL
+SELECT 5, a, NULL, NULL, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a HAVING sum(v) > 800000
+UNION ALL
+SELECT 6, a, b, NULL, d, sum(v), count(*) FROM fact LEFT JOIN dim ON fact.k = dim.k AND dim.k % 2 = 0 GROUP BY a, b, d
+UNION ALL
+SELECT 7, a, min(b), max(c), count(DISTINCT d), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a;
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE TABLE encoded AS
+SELECT 1 AS q, a AS g1, b AS g2, c AS g3, d AS g4, sum(v) AS s, count(*) AS n FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b, c, d
+UNION ALL
+SELECT 2, a, b, c, d, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a, b, c, d)
+UNION ALL
+SELECT 3, a, b, c, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY CUBE (a, b, c)
+UNION ALL
+SELECT 4, a, b, c, d, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY GROUPING SETS ((a, b), (c), (a, d), ())
+UNION ALL
+SELECT 5, a, NULL, NULL, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a HAVING sum(v) > 800000
+UNION ALL
+SELECT 6, a, b, NULL, d, sum(v), count(*) FROM fact LEFT JOIN dim ON fact.k = dim.k AND dim.k % 2 = 0 GROUP BY a, b, d
+UNION ALL
+SELECT 7, a, min(b), max(c), count(DISTINCT d), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a;
+
+query I
+SELECT count(*) > 300 FROM plain
+----
+true
+
+query I
+SELECT count(*) FROM (SELECT * FROM plain EXCEPT ALL SELECT * FROM encoded)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM encoded EXCEPT ALL SELECT * FROM plain)
+----
+0
+
+# group keys that are expressions of the columns of the small relation are interned where the relation is scanned
+statement ok
+SET debug_force_group_key_encoding = true;
+
+query II
+EXPLAIN SELECT substring(a, 5, 6), dim.k, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY substring(a, 5, 6), dim.k
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+query II
+EXPLAIN SELECT a || '/' || b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (a || '/' || b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# an expression of columns of two relations is not encoded
+query II
+EXPLAIN SELECT a || fact.d::VARCHAR, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a || fact.d::VARCHAR
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# an expression that can fail on rows the joins would remove is not encoded
+query II
+EXPLAIN SELECT CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR, sum(v) FROM fact, dim WHERE fact.k = dim.k AND c <> '' GROUP BY CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# an expression of the null-supplying side of an outer join gives a value for rows without a match
+query II
+EXPLAIN SELECT coalesce(a, 'none'), sum(v) FROM fact LEFT JOIN dim ON fact.k = dim.k AND dim.k % 2 = 0 GROUP BY coalesce(a, 'none')
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# an expression with a lambda is not encoded
+query II
+EXPLAIN SELECT array_to_string(list_transform([a, b], lambda x: upper(x)), '|'), sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY array_to_string(list_transform([a, b], lambda x: upper(x)), '|')
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+SET disabled_optimizers='group_key_encoding';
+
+statement ok
+CREATE TABLE plain_expr AS
+SELECT 1 AS q, substring(a, 5, 6) AS g1, dim.k AS g2, sum(v) AS s, count(*) AS n FROM fact, dim WHERE fact.k = dim.k GROUP BY substring(a, 5, 6), dim.k
+UNION ALL
+SELECT 2, upper(b), c, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (upper(b), c)
+UNION ALL
+SELECT 3, a || '/' || b, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a || '/' || b
+UNION ALL
+SELECT 4, a || fact.d::VARCHAR, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a || fact.d::VARCHAR
+UNION ALL
+SELECT 5, coalesce(a, 'none'), NULL, sum(v), count(*) FROM fact LEFT JOIN dim ON fact.k = dim.k AND dim.k % 2 = 0 GROUP BY coalesce(a, 'none')
+UNION ALL
+SELECT 6, CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k AND c <> '' GROUP BY CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR
+UNION ALL
+SELECT 7, substring(a, 1, 3), substring(b, 1, 4), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY GROUPING SETS ((substring(a, 1, 3)), (substring(b, 1, 4)), ())
+UNION ALL
+SELECT 8, a, substring(b, 20, 3), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, substring(b, 20, 3) HAVING count(*) > 100
+UNION ALL
+SELECT 9, array_to_string(list_transform([a, b], lambda x: upper(x)), '|'), NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY array_to_string(list_transform([a, b], lambda x: upper(x)), '|');
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE TABLE encoded_expr AS
+SELECT 1 AS q, substring(a, 5, 6) AS g1, dim.k AS g2, sum(v) AS s, count(*) AS n FROM fact, dim WHERE fact.k = dim.k GROUP BY substring(a, 5, 6), dim.k
+UNION ALL
+SELECT 2, upper(b), c, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY ROLLUP (upper(b), c)
+UNION ALL
+SELECT 3, a || '/' || b, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a || '/' || b
+UNION ALL
+SELECT 4, a || fact.d::VARCHAR, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a || fact.d::VARCHAR
+UNION ALL
+SELECT 5, coalesce(a, 'none'), NULL, sum(v), count(*) FROM fact LEFT JOIN dim ON fact.k = dim.k AND dim.k % 2 = 0 GROUP BY coalesce(a, 'none')
+UNION ALL
+SELECT 6, CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR, NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k AND c <> '' GROUP BY CAST(substring(c, 2, 1) AS INTEGER)::VARCHAR
+UNION ALL
+SELECT 7, substring(a, 1, 3), substring(b, 1, 4), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY GROUPING SETS ((substring(a, 1, 3)), (substring(b, 1, 4)), ())
+UNION ALL
+SELECT 8, a, substring(b, 20, 3), sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, substring(b, 20, 3) HAVING count(*) > 100
+UNION ALL
+SELECT 9, array_to_string(list_transform([a, b], lambda x: upper(x)), '|'), NULL, sum(v), count(*) FROM fact, dim WHERE fact.k = dim.k GROUP BY array_to_string(list_transform([a, b], lambda x: upper(x)), '|');
+
+query I
+SELECT count(*) > 100 FROM plain_expr
+----
+true
+
+query I
+SELECT count(*) FROM (SELECT * FROM plain_expr EXCEPT ALL SELECT * FROM encoded_expr)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM encoded_expr EXCEPT ALL SELECT * FROM plain_expr)
+----
+0
+
+# the same plan runs again with the dictionary it already built, also when other rows reach the aggregate
+statement ok
+PREPARE p AS SELECT substring(a, 5, 6) AS g, count(*) AS n, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k AND dim.k < $1 GROUP BY substring(a, 5, 6) ORDER BY ALL
+
+query III
+EXECUTE p(3)
+----
+gory_1	100	198100
+gory_2	100	198200
+NULL	100	198000
+
+query III
+EXECUTE p(6)
+----
+gory_0	100	198500
+gory_1	100	198100
+gory_2	100	198200
+gory_3	100	198300
+gory_4	100	198400
+NULL	100	198000
+
+# NULL keys, empty strings, long strings and NaN measures give the same result with and without the encoding
+statement ok
+SET debug_force_group_key_encoding = true;
+
+statement ok
+CREATE TABLE dim2 AS SELECT i AS k,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN '' WHEN i % 5 = 2 THEN repeat('long string ', 400) || (i % 3)::VARCHAR ELSE 'Aa' || (i % 4)::VARCHAR END AS a,
+	CASE WHEN i % 3 = 0 THEN 'aa' || (i % 4)::VARCHAR ELSE 'AA' || (i % 4)::VARCHAR END AS b
+FROM range(60) t(i);
+
+statement ok
+CREATE TABLE fact2 AS SELECT CASE WHEN i % 17 = 0 THEN NULL ELSE i % 70 END AS k,
+	CASE WHEN i % 13 = 0 THEN 'NaN'::DOUBLE WHEN i % 11 = 0 THEN NULL ELSE i * 0.5 END AS d FROM range(5000) t(i);
+
+query II
+EXPLAIN SELECT a, b, sum(d) FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+SET disabled_optimizers='group_key_encoding';
+
+statement ok
+CREATE TABLE plain2 AS
+SELECT 1 AS q, a, b, sum(d) AS s, count(*) AS n, min(d) AS lo FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY ROLLUP (a, b)
+UNION ALL
+SELECT 2, a, NULL, sum(d), count(*), max(d) FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY a
+UNION ALL
+SELECT 3, lower(b), NULL, sum(d), count(*), NULL FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY lower(b);
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE TABLE encoded2 AS
+SELECT 1 AS q, a, b, sum(d) AS s, count(*) AS n, min(d) AS lo FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY ROLLUP (a, b)
+UNION ALL
+SELECT 2, a, NULL, sum(d), count(*), max(d) FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY a
+UNION ALL
+SELECT 3, lower(b), NULL, sum(d), count(*), NULL FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY lower(b);
+
+query I
+SELECT count(*) FROM (SELECT * FROM plain2 EXCEPT ALL SELECT * FROM encoded2)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM encoded2 EXCEPT ALL SELECT * FROM plain2)
+----
+0
+
+query I
+SELECT count(*) FROM encoded2 WHERE q = 3
+----
+4
+
+# case-insensitive collated keys keep their collation and are not encoded
+query II
+EXPLAIN SELECT b COLLATE NOCASE, sum(d) FROM fact2, dim2 WHERE fact2.k = dim2.k GROUP BY b COLLATE NOCASE
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# the dictionaries only exist while the query runs, so the plan has no SQL representation
+statement error
+EXPLAIN (SQL) SELECT a, b, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY a, b
+----
+Dictionary encoded group keys have no SQL representation
+
+# long strings need more memory per key than the default estimate: the dictionary has to fit into a quarter of the memory
+statement ok
+CREATE TABLE dim_wide AS SELECT i AS k, repeat('w', 1000) || i::VARCHAR AS a FROM range(30000) t(i);
+
+statement ok
+CREATE TABLE fact_wide AS SELECT i % 30000 AS k, i AS v FROM range(300000) t(i);
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+query II
+EXPLAIN SELECT a, sum(v) FROM fact_wide, dim_wide WHERE fact_wide.k = dim_wide.k GROUP BY a
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+SET memory_limit = '100MB';
+
+query II
+EXPLAIN SELECT a, sum(v) FROM fact_wide, dim_wide WHERE fact_wide.k = dim_wide.k GROUP BY a
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+RESET memory_limit;
+
+# the dictionaries of all group keys of a query share one memory budget: each relation fits next to nothing, both do not
+statement ok
+CREATE TABLE dim_wide2 AS SELECT i AS k, repeat('v', 1000) || i::VARCHAR AS a FROM range(30000) t(i);
+
+statement ok
+CREATE TABLE fact_two AS SELECT i % 30000 AS k, (i * 7) % 30000 AS k2, i AS v FROM range(300000) t(i);
+
+statement ok
+SET memory_limit = '200MB';
+
+query II
+EXPLAIN SELECT d1.a, d2.a, sum(v) FROM fact_two f, dim_wide d1, dim_wide2 d2 WHERE f.k = d1.k AND f.k2 = d2.k GROUP BY d1.a, d2.a
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+query II
+EXPLAIN SELECT d1.a, d2.a, sum(v) FROM fact_two f, dim_wide d1, dim_wide2 d2 WHERE f.k = d1.k AND f.k2 = d2.k GROUP BY d1.a, d2.a
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*__internal_group_key_intern.*
+
+statement ok
+RESET memory_limit;
+
+query II
+EXPLAIN SELECT d1.a, d2.a, sum(v) FROM fact_two f, dim_wide d1, dim_wide2 d2 WHERE f.k = d1.k AND f.k2 = d2.k GROUP BY d1.a, d2.a
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*__internal_group_key_intern.*
+
+# estimates that are too small do not break the budget: the dictionaries fail with an error that names the setting
+statement ok
+SET memory_limit = '60MB';
+
+statement ok
+SET debug_group_key_encoding_dimension_scale = 0.001;
+
+statement error
+SELECT a, sum(v) FROM fact_wide, dim_wide WHERE fact_wide.k = dim_wide.k GROUP BY a
+----
+The dictionaries of the encoded group keys need more than
+
+statement ok
+RESET debug_group_key_encoding_dimension_scale;
+
+statement ok
+RESET memory_limit;
+
+# the group key of a case-insensitive default collation is a collation key: the same groups and sums as without the encoding
+statement ok
+CREATE TABLE dim_case AS SELECT i AS k, CASE WHEN i % 3 = 0 THEN upper('s' || (i % 5)::VARCHAR) ELSE lower('s' || (i % 5)::VARCHAR) END AS a FROM range(40) t(i);
+
+statement ok
+SET default_collation = 'nocase';
+
+statement ok
+SET disabled_optimizers = 'group_key_encoding';
+
+statement ok
+CREATE TABLE case_plain AS SELECT lower(a) AS a, s FROM (SELECT a, sum(v) AS s FROM fact, dim_case WHERE fact.k = dim_case.k GROUP BY a);
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE TABLE case_encoded AS SELECT lower(a) AS a, s FROM (SELECT a, sum(v) AS s FROM fact, dim_case WHERE fact.k = dim_case.k GROUP BY a);
+
+query I
+SELECT count(*) FROM (SELECT * FROM case_plain EXCEPT SELECT * FROM case_encoded)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM case_encoded EXCEPT SELECT * FROM case_plain)
+----
+0
+
+statement ok
+RESET default_collation;
+
+# the cost model: a large dimension against an input that is many times larger is encoded without being forced
+statement ok
+SET debug_force_group_key_encoding = false;
+
+# the decision depends on the number of threads: the dictionary is built by as many threads as the relation has row groups
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE big_dim AS SELECT i AS k, 'name_' || i::VARCHAR AS a, 'group_' || (i % 1000)::VARCHAR AS b FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE big_fact AS SELECT (i % 200000) AS k, i AS v FROM range(6000000) t(i);
+
+query II
+EXPLAIN SELECT a, b, count(DISTINCT v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY a, b
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# a dimension as large as the input is not worth interning
+query II
+EXPLAIN SELECT d1.a, d1.b, count(DISTINCT d2.k) FROM big_dim d1, big_dim d2 WHERE d1.k = d2.k GROUP BY d1.a, d1.b
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# the keys are small, so a filter that leaves few rows keeps the strings
+query II
+EXPLAIN SELECT a, b, count(DISTINCT v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k AND big_fact.v < 1000 GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+query II
+EXPLAIN SELECT a, b, count(DISTINCT v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY a, b
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# all groups of a ROLLUP come from the dimension: the partial aggregate pushdown pre-aggregates the fact table by the join
+# key, so the aggregate reads about as many rows as the dimension has, and the ids cannot pay for the dictionary
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*EXPORT_STATE.*
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# the same through a view: the view puts a projection of its own between the scan and the aggregate, and the pushdown
+# still pre-aggregates the fact table
+statement ok
+CREATE VIEW big_dim_view AS SELECT * FROM big_dim;
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact, big_dim_view WHERE big_fact.k = big_dim_view.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*EXPORT_STATE.*
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact, big_dim_view WHERE big_fact.k = big_dim_view.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# a view over the fact table does not change that
+statement ok
+CREATE VIEW big_fact_view AS SELECT k, v FROM big_fact;
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact_view, big_dim_view WHERE big_fact_view.k = big_dim_view.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<!REGEX>:.*__internal_group_key_intern.*
+
+# an aggregate that reads a column of the dimension through the view is not pre-aggregated, so the strings are interned
+query II
+EXPLAIN SELECT a, b, sum(v + big_dim_view.k) FROM big_fact, big_dim_view WHERE big_fact.k = big_dim_view.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# without the pushdown, the aggregate reads every row of the fact table
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown';
+
+query II
+EXPLAIN SELECT a, b, sum(v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+statement ok
+RESET disabled_optimizers;
+
+# groups from two dimensions: the pushdown cannot pre-aggregate by the keys of both, so the rows of the fact table reach
+# the aggregate and the strings are interned
+statement ok
+CREATE TABLE big_dim2 AS SELECT i AS k, 'other_' || i::VARCHAR AS c FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE big_fact2 AS SELECT (i % 200000) AS k, (i % 200000) AS k2, i AS v FROM range(6000000) t(i);
+
+query II
+EXPLAIN SELECT a, c, sum(v) FROM big_fact2, big_dim, big_dim2 WHERE big_fact2.k = big_dim.k AND big_fact2.k2 = big_dim2.k GROUP BY ROLLUP (a, c)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# an aggregate that cannot be computed in two steps is not pre-aggregated either
+query II
+EXPLAIN SELECT a, b, count(DISTINCT v) FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b)
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# the rows are the same with the encoding that the pushdown makes unnecessary
+statement ok
+CREATE TABLE rollup_pushed AS SELECT a, b, sum(v) s, count(*) n FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b);
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+statement ok
+CREATE TABLE rollup_forced AS SELECT a, b, sum(v) s, count(*) n FROM big_fact, big_dim WHERE big_fact.k = big_dim.k GROUP BY ROLLUP (a, b);
+
+statement ok
+SET debug_force_group_key_encoding = false;
+
+query I
+SELECT count(*) FROM (SELECT * FROM rollup_pushed EXCEPT SELECT * FROM rollup_forced)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM rollup_forced EXCEPT SELECT * FROM rollup_pushed)
+----
+0

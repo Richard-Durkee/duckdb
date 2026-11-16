@@ -1,0 +1,48 @@
+# name: test/sql/optimizer/group_key_encoding_json.test
+# description: Test that encoded group keys keep the type alias of the strings
+# group: [optimizer]
+
+require json
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k, ('{"a":' || (i % 5)::VARCHAR || '}')::JSON AS j FROM range(40) t(i);
+
+statement ok
+CREATE TABLE fact AS SELECT i % 40 AS k, i AS v FROM range(4000) t(i);
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+query II
+EXPLAIN SELECT j, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY j
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+
+# the keys are still JSON after the lookup of the strings
+query I
+SELECT typeof(j) FROM (SELECT j, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY j) LIMIT 1
+----
+JSON
+
+statement ok
+CREATE TABLE result AS SELECT j, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY j
+
+query I
+SELECT column_type FROM (DESCRIBE result) WHERE column_name = 'j'
+----
+JSON
+
+# also when the lookup moves above a window
+query I
+SELECT typeof(j) FROM (SELECT j, rank() OVER (PARTITION BY j ORDER BY s) AS r FROM (SELECT j, sum(v) AS s FROM fact, dim WHERE fact.k = dim.k GROUP BY j)) LIMIT 1
+----
+JSON
+
+query II
+SELECT j, sum(v) FROM fact, dim WHERE fact.k = dim.k GROUP BY j ORDER BY ALL
+----
+{"a":0}	1598000
+{"a":1}	1598800
+{"a":2}	1599600
+{"a":3}	1600400
+{"a":4}	1601200

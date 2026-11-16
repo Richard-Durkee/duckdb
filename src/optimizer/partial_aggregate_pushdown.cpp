@@ -245,6 +245,10 @@ static bool JoinContainsDelimGet(const LogicalOperator &op) {
 	return false;
 }
 
+bool PartialAggregatePushdown::CanPreAggregate(const BoundAggregateExpression &expr) {
+	return IsSupportedAggregate(expr, true);
+}
+
 static bool IsPushdownJoinType(JoinType join_type) {
 	return join_type == JoinType::INNER || join_type == JoinType::LEFT || join_type == JoinType::RIGHT;
 }
