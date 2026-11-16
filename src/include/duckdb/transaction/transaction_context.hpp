@@ -44,7 +44,9 @@ public:
 	void Commit();
 	void Rollback(optional_ptr<ErrorData>);
 	void ClearTransaction();
-	void SetAutocheckpointError(ErrorData error);
+	//! Report an error that a database found after its commit succeeded. The transaction stays committed, the other
+	//! databases still commit, and Commit throws the first such error once every database has committed
+	void AddPostCommitError(const ErrorData &error);
 
 	void SetAutoCommit(bool value);
 	bool IsAutoCommit() const {
@@ -75,7 +77,7 @@ private:
 	bool auto_rollback = false;
 
 	unique_ptr<MetaTransaction> current_transaction;
-	ErrorData autocheckpoint_error;
+	ErrorData post_commit_error;
 
 	TransactionContext(const TransactionContext &) = delete;
 };

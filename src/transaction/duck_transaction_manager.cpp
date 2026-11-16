@@ -581,7 +581,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 			storage_manager.CreateCheckpoint(context, options);
 		} catch (std::exception &ex) {
 			if (wal_written) {
-				context.transaction.SetAutocheckpointError(BuildAutocheckpointError(db, ex));
+				context.transaction.AddPostCommitError(BuildAutocheckpointError(db, ex));
 			} else {
 				error.Merge(ErrorData(ex));
 			}
