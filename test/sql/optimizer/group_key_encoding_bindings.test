@@ -1,0 +1,801 @@
+# name: test/sql/optimizer/group_key_encoding_bindings.test
+# description: Test that everything above an encoded aggregate reads the columns it needs, whatever the shape of the plan
+# group: [optimizer]
+
+# every query runs with the encoding forced, the expected rows are the rows of the plain plan
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE 'name_' || (i % 5)::VARCHAR END AS a,
+	CASE WHEN i % 7 = 0 THEN NULL ELSE 'group_' || (i % 3)::VARCHAR END AS b
+FROM range(30) t(i);
+
+statement ok
+CREATE TABLE fact AS SELECT i % 30 AS k, i AS v FROM range(600) t(i);
+
+statement ok
+SET debug_force_group_key_encoding = true;
+
+# EXCEPT ALL over an encoded aggregate: the row number of the set operation sits on a window over the lookup
+query TII
+SELECT * FROM (SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) EXCEPT ALL SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a)) ORDER BY ALL
+----
+name_0	30000	100
+name_1	35820	120
+name_2	29700	100
+name_3	30000	100
+name_4	30300	100
+NULL	23880	80
+
+# the encoded aggregate on the right side of an EXCEPT ALL
+query TII
+SELECT * FROM (SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a) EXCEPT ALL SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) ORDER BY ALL
+----
+name_0	24200	80
+name_1	24280	80
+name_2	18120	60
+name_3	24240	80
+name_4	24520	80
+NULL	18180	60
+
+# EXCEPT ALL of two encoded aggregates with grouping sets
+query TTI
+SELECT * FROM (SELECT a, b, sv FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY ROLLUP (a, b)) EXCEPT ALL SELECT a, b, sv FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY GROUPING SETS ((a), (b), ()))) ORDER BY ALL
+----
+name_0	group_0	6000
+name_0	group_1	12100
+name_0	group_2	11900
+name_1	group_0	5820
+name_1	group_1	11740
+name_1	group_2	12140
+name_1	NULL	6120
+name_2	group_0	5940
+name_2	group_1	6140
+name_2	group_2	11780
+name_2	NULL	5840
+name_3	group_0	5760
+name_3	group_1	5960
+name_3	group_2	12020
+name_3	NULL	6260
+name_4	group_0	6180
+name_4	group_1	11860
+name_4	group_2	6280
+name_4	NULL	5980
+NULL	group_0	18180
+NULL	NULL	5700
+
+# EXCEPT
+query TII
+SELECT * FROM (SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) EXCEPT SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a)) ORDER BY ALL
+----
+name_0	30000	100
+name_1	35820	120
+name_2	29700	100
+name_3	30000	100
+name_4	30300	100
+NULL	23880	80
+
+# INTERSECT ALL
+query TII
+SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) INTERSECT ALL SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a) ORDER BY ALL
+----
+
+# INTERSECT
+query TT
+SELECT * FROM (SELECT a, b FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) INTERSECT SELECT a, b FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY ROLLUP (a, b))) ORDER BY ALL
+----
+name_0	group_0
+name_0	group_1
+name_0	group_2
+name_1	group_0
+name_1	group_1
+name_1	group_2
+name_1	NULL
+name_2	group_0
+name_2	group_1
+name_2	group_2
+name_2	NULL
+name_3	group_0
+name_3	group_1
+name_3	group_2
+name_3	NULL
+name_4	group_0
+name_4	group_1
+name_4	group_2
+name_4	NULL
+NULL	group_0
+NULL	NULL
+
+# UNION
+query TI
+SELECT * FROM (SELECT a, sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) UNION SELECT a, sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a)) ORDER BY ALL
+----
+name_0	24200
+name_0	30000
+name_1	24280
+name_1	35820
+name_2	18120
+name_2	29700
+name_3	24240
+name_3	30000
+name_4	24520
+name_4	30300
+NULL	18180
+NULL	23880
+
+# UNION ALL
+query TI
+SELECT a, sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) UNION ALL SELECT a, sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a) ORDER BY ALL
+----
+name_0	24200
+name_0	30000
+name_1	24280
+name_1	35820
+name_2	18120
+name_2	29700
+name_3	24240
+name_3	30000
+name_4	24520
+name_4	30300
+NULL	18180
+NULL	23880
+
+# a join on top of a window over an encoded aggregate
+query TIII
+SELECT * FROM (SELECT x.a, x.sv, x.rk, dim.k FROM (SELECT a, sv, rank() OVER (ORDER BY a) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x JOIN dim ON x.a = dim.a) ORDER BY ALL
+----
+name_0	30000	1	5
+name_0	30000	1	10
+name_0	30000	1	15
+name_0	30000	1	20
+name_0	30000	1	25
+name_1	35820	2	1
+name_1	35820	2	6
+name_1	35820	2	11
+name_1	35820	2	16
+name_1	35820	2	21
+name_1	35820	2	26
+name_2	29700	3	2
+name_2	29700	3	7
+name_2	29700	3	12
+name_2	29700	3	17
+name_2	29700	3	22
+name_3	30000	4	3
+name_3	30000	4	8
+name_3	30000	4	13
+name_3	30000	4	23
+name_3	30000	4	28
+name_4	30300	5	4
+name_4	30300	5	14
+name_4	30300	5	19
+name_4	30300	5	24
+name_4	30300	5	29
+
+# a join on top of a window that is partitioned by the encoded key
+query TII
+SELECT * FROM (SELECT x.a, x.rn, y.n FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b NULLS LAST, sv) AS rn FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b)) x JOIN (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) y ON x.a IS NOT DISTINCT FROM y.a) ORDER BY ALL
+----
+name_0	1	100
+name_0	2	100
+name_0	3	100
+name_1	1	120
+name_1	2	120
+name_1	3	120
+name_1	4	120
+name_2	1	100
+name_2	2	100
+name_2	3	100
+name_2	4	100
+name_3	1	100
+name_3	2	100
+name_3	3	100
+name_3	4	100
+name_4	1	100
+name_4	2	100
+name_4	3	100
+name_4	4	100
+NULL	1	80
+NULL	2	80
+
+# the window is the right side of the join
+query TII
+SELECT * FROM (SELECT y.a, y.rk, x.sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x LEFT JOIN (SELECT a, dense_rank() OVER (ORDER BY sv DESC) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) y ON x.a = y.a) ORDER BY ALL
+----
+name_0	3	30000
+name_1	1	35820
+name_2	4	29700
+name_3	3	30000
+name_4	2	30300
+NULL	NULL	23880
+
+# a full join of two windows over encoded aggregates
+query TII
+SELECT * FROM (SELECT x.a, x.rk, y.rk FROM (SELECT a, rank() OVER (ORDER BY sv) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x FULL JOIN (SELECT a, rank() OVER (ORDER BY sv DESC) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a)) y ON x.a = y.a) ORDER BY ALL
+----
+name_0	3	4
+name_1	6	2
+name_2	2	6
+name_3	3	3
+name_4	5	1
+NULL	1	NULL
+NULL	NULL	5
+
+# window over window
+query TII
+SELECT * FROM (SELECT a, rk, sum(rk) OVER (ORDER BY a NULLS LAST) AS total FROM (SELECT a, rank() OVER (ORDER BY sv) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a))) ORDER BY ALL
+----
+name_0	3	3
+name_1	6	9
+name_2	2	11
+name_3	3	14
+name_4	5	19
+NULL	1	20
+
+# window over window, partitioned by the encoded key twice
+query TTII
+SELECT * FROM (SELECT a, b, rn, lag(rn) OVER (PARTITION BY a ORDER BY rn) AS prev FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY sv, b NULLS LAST) AS rn FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b))) ORDER BY ALL
+----
+name_0	group_0	1	NULL
+name_0	group_1	3	2
+name_0	group_2	2	1
+name_1	group_0	1	NULL
+name_1	group_1	3	2
+name_1	group_2	4	3
+name_1	NULL	2	1
+name_2	group_0	2	1
+name_2	group_1	3	2
+name_2	group_2	4	3
+name_2	NULL	1	NULL
+name_3	group_0	1	NULL
+name_3	group_1	2	1
+name_3	group_2	4	3
+name_3	NULL	3	2
+name_4	group_0	2	1
+name_4	group_1	4	3
+name_4	group_2	3	2
+name_4	NULL	1	NULL
+NULL	group_0	2	1
+NULL	NULL	1	NULL
+
+# window partitioned by the encoded key, ordered by other columns
+query TTII
+SELECT * FROM (SELECT a, b, sv, rank() OVER (PARTITION BY a ORDER BY sv DESC, b NULLS LAST) AS r FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b)) ORDER BY ALL
+----
+name_0	group_0	6000	3
+name_0	group_1	12100	1
+name_0	group_2	11900	2
+name_1	group_0	5820	4
+name_1	group_1	11740	2
+name_1	group_2	12140	1
+name_1	NULL	6120	3
+name_2	group_0	5940	3
+name_2	group_1	6140	2
+name_2	group_2	11780	1
+name_2	NULL	5840	4
+name_3	group_0	5760	4
+name_3	group_1	5960	3
+name_3	group_2	12020	1
+name_3	NULL	6260	2
+name_4	group_0	6180	3
+name_4	group_1	11860	1
+name_4	group_2	6280	2
+name_4	NULL	5980	4
+NULL	group_0	18180	1
+NULL	NULL	5700	2
+
+# rank, dense_rank, row_number, lag, and sum over a partition by the encoded key
+query TTIIIIII
+SELECT * FROM (SELECT a, b, sv, rank() OVER w AS r, dense_rank() OVER w AS d, row_number() OVER w AS rn, lag(sv) OVER w AS l, sum(sv) OVER (PARTITION BY a) AS s FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) WINDOW w AS (PARTITION BY a ORDER BY sv, b NULLS LAST)) ORDER BY ALL
+----
+name_0	group_0	6000	1	1	1	NULL	30000
+name_0	group_1	12100	3	3	3	11900	30000
+name_0	group_2	11900	2	2	2	6000	30000
+name_1	group_0	5820	1	1	1	NULL	35820
+name_1	group_1	11740	3	3	3	6120	35820
+name_1	group_2	12140	4	4	4	11740	35820
+name_1	NULL	6120	2	2	2	5820	35820
+name_2	group_0	5940	2	2	2	5840	29700
+name_2	group_1	6140	3	3	3	5940	29700
+name_2	group_2	11780	4	4	4	6140	29700
+name_2	NULL	5840	1	1	1	NULL	29700
+name_3	group_0	5760	1	1	1	NULL	30000
+name_3	group_1	5960	2	2	2	5760	30000
+name_3	group_2	12020	4	4	4	6260	30000
+name_3	NULL	6260	3	3	3	5960	30000
+name_4	group_0	6180	2	2	2	5980	30300
+name_4	group_1	11860	4	4	4	6280	30300
+name_4	group_2	6280	3	3	3	6180	30300
+name_4	NULL	5980	1	1	1	NULL	30300
+NULL	group_0	18180	2	2	2	5700	23880
+NULL	NULL	5700	1	1	1	NULL	23880
+
+# a window that produces strings from the encoded key
+query TTTT
+SELECT * FROM (SELECT a, lag(a) OVER (ORDER BY sv) AS prev, first_value(a) OVER (ORDER BY sv DESC, a) AS best, max(a) OVER () AS top FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) ORDER BY ALL
+----
+name_0	name_3	name_1	name_4
+name_1	name_4	name_1	name_4
+name_2	NULL	name_1	name_4
+name_3	name_2	name_1	name_4
+name_4	name_0	name_1	name_4
+NULL	NULL	name_1	name_4
+
+# a qualify filter on the window
+query TTI
+SELECT * FROM (SELECT a, b, sv FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) QUALIFY rank() OVER (PARTITION BY a ORDER BY sv DESC, b NULLS LAST) <= 1) ORDER BY ALL
+----
+name_0	group_1	12100
+name_1	group_2	12140
+name_2	group_2	11780
+name_3	group_2	12020
+name_4	group_1	11860
+NULL	group_0	18180
+
+# a filter on the window column and a projection of the window column above
+query TI
+SELECT * FROM (SELECT a, r + 1 AS r1 FROM (SELECT a, rank() OVER (ORDER BY sv DESC) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) WHERE r <= 3) ORDER BY ALL
+----
+name_0	4
+name_1	2
+name_3	4
+name_4	3
+
+# grouping sets with a join on top
+query TTIII
+SELECT * FROM (SELECT x.a, x.b, x.sv, x.g, dim.k FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY GROUPING SETS ((a), (b), ())) x JOIN dim ON x.a = dim.a AND dim.k < 12) ORDER BY ALL
+----
+name_0	NULL	30000	1	5
+name_0	NULL	30000	1	10
+name_1	NULL	35820	1	1
+name_1	NULL	35820	1	6
+name_1	NULL	35820	1	11
+name_2	NULL	29700	1	2
+name_2	NULL	29700	1	7
+name_3	NULL	30000	1	3
+name_3	NULL	30000	1	8
+name_4	NULL	30300	1	4
+
+# rollup with a join on top, on a grouping column that is null
+query TTII
+SELECT * FROM (SELECT x.a, x.b, x.g, y.sv FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY ROLLUP (a, b)) x LEFT JOIN (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) y ON x.a IS NOT DISTINCT FROM y.a) ORDER BY ALL
+----
+name_0	group_0	0	30000
+name_0	group_1	0	30000
+name_0	group_2	0	30000
+name_0	NULL	1	30000
+name_1	group_0	0	35820
+name_1	group_1	0	35820
+name_1	group_2	0	35820
+name_1	NULL	0	35820
+name_1	NULL	1	35820
+name_2	group_0	0	29700
+name_2	group_1	0	29700
+name_2	group_2	0	29700
+name_2	NULL	0	29700
+name_2	NULL	1	29700
+name_3	group_0	0	30000
+name_3	group_1	0	30000
+name_3	group_2	0	30000
+name_3	NULL	0	30000
+name_3	NULL	1	30000
+name_4	group_0	0	30300
+name_4	group_1	0	30300
+name_4	group_2	0	30300
+name_4	NULL	0	30300
+name_4	NULL	1	30300
+NULL	group_0	0	23880
+NULL	NULL	0	23880
+NULL	NULL	1	23880
+NULL	NULL	3	23880
+
+# rollup under a window and a join
+query TTII
+SELECT * FROM (SELECT x.a, x.b, x.r, dim.k FROM (SELECT a, b, rank() OVER (PARTITION BY a ORDER BY sv DESC, b NULLS LAST) AS r FROM (SELECT a, b, sum(v) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY ROLLUP (a, b))) x JOIN dim ON x.b IS NOT DISTINCT FROM dim.b AND x.a IS NOT DISTINCT FROM dim.a AND dim.k < 10) ORDER BY ALL
+----
+name_0	group_2	3	5
+name_1	group_0	5	6
+name_1	group_1	3	1
+name_2	group_2	2	2
+name_2	NULL	1	7
+name_2	NULL	5	7
+name_3	group_0	5	3
+name_3	group_2	2	8
+name_4	group_1	2	4
+NULL	group_0	3	9
+NULL	NULL	1	0
+NULL	NULL	2	0
+NULL	NULL	4	0
+
+# cube with a window
+query TTII
+SELECT * FROM (SELECT a, b, sv, row_number() OVER (ORDER BY g, sv, a NULLS LAST, b NULLS LAST) AS rn FROM (SELECT a, b, count(*) AS sv, grouping(a, b) AS g FROM fact JOIN dim ON fact.k = dim.k GROUP BY CUBE (a, b))) ORDER BY ALL
+----
+name_0	group_0	20	1
+name_0	group_1	40	14
+name_0	group_2	40	15
+name_0	NULL	100	23
+name_1	group_0	20	2
+name_1	group_1	40	16
+name_1	group_2	40	17
+name_1	NULL	20	3
+name_1	NULL	120	27
+name_2	group_0	20	4
+name_2	group_1	20	5
+name_2	group_2	40	18
+name_2	NULL	20	6
+name_2	NULL	100	24
+name_3	group_0	20	7
+name_3	group_1	20	8
+name_3	group_2	40	19
+name_3	NULL	20	9
+name_3	NULL	100	25
+name_4	group_0	20	10
+name_4	group_1	40	20
+name_4	group_2	20	11
+name_4	NULL	20	12
+name_4	NULL	100	26
+NULL	group_0	60	21
+NULL	group_0	160	29
+NULL	group_1	160	30
+NULL	group_2	180	31
+NULL	NULL	20	13
+NULL	NULL	80	22
+NULL	NULL	100	28
+NULL	NULL	600	32
+
+# a LATERAL join on top
+query TII
+SELECT * FROM (SELECT x.a, x.sv, y.m FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x, LATERAL (SELECT max(u.sv) AS m FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) u WHERE u.a = x.a) y) ORDER BY ALL
+----
+name_0	30000	12100
+name_1	35820	12140
+name_2	29700	11780
+name_3	30000	12020
+name_4	30300	11860
+NULL	23880	NULL
+
+# a LATERAL join on top of a window
+query TII
+SELECT * FROM (SELECT x.a, x.r, y.m FROM (SELECT a, rank() OVER (ORDER BY sv) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x, LATERAL (SELECT count(*) AS m FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) u WHERE u.a = x.a) y) ORDER BY ALL
+----
+name_0	3	3
+name_1	6	4
+name_2	2	4
+name_3	3	4
+name_4	5	4
+NULL	1	0
+
+# a correlated scalar subquery on the encoded aggregate
+query II
+SELECT * FROM (SELECT k, (SELECT sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x WHERE x.a = dim.a) AS sv FROM dim WHERE k < 10) ORDER BY ALL
+----
+0	NULL
+1	35820
+2	29700
+3	30000
+4	30300
+5	30000
+6	35820
+7	29700
+8	30000
+9	NULL
+
+# a correlated subquery over a window of the encoded aggregate
+query II
+SELECT * FROM (SELECT k, (SELECT max(r) FROM (SELECT a, rank() OVER (ORDER BY sv) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x WHERE x.a = dim.a) AS r FROM dim WHERE k < 10) ORDER BY ALL
+----
+0	NULL
+1	6
+2	2
+3	3
+4	5
+5	3
+6	6
+7	2
+8	3
+9	NULL
+
+# the encoded aggregate as the right side of an inner join
+query II
+SELECT * FROM (SELECT dim.k, x.sv FROM dim JOIN (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x ON dim.a = x.a WHERE dim.k < 12) ORDER BY ALL
+----
+1	35820
+2	29700
+3	30000
+4	30300
+5	30000
+6	35820
+7	29700
+8	30000
+10	30000
+11	35820
+
+# the encoded aggregate as the right side of a left join
+query II
+SELECT * FROM (SELECT dim.k, x.sv FROM dim LEFT JOIN (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a) x ON dim.b = x.a WHERE dim.k < 12) ORDER BY ALL
+----
+0	NULL
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+10	NULL
+11	NULL
+
+# an inner join between two encoded aggregates
+query TIT
+SELECT * FROM (SELECT x.a, x.sv, y.b FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x JOIN (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b) y ON x.a = y.a AND y.sv > x.sv / 5) ORDER BY ALL
+----
+name_0	30000	group_1
+name_0	30000	group_2
+name_1	35820	group_1
+name_1	35820	group_2
+name_2	29700	group_1
+name_2	29700	group_2
+name_3	30000	group_2
+name_3	30000	NULL
+name_4	30300	group_0
+name_4	30300	group_1
+name_4	30300	group_2
+
+# IN with an encoded aggregate
+query IT
+SELECT k, a FROM dim WHERE a IN (SELECT a FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a) WHERE n > 20) ORDER BY ALL
+----
+1	name_1
+2	name_2
+3	name_3
+4	name_4
+5	name_0
+6	name_1
+7	name_2
+8	name_3
+10	name_0
+11	name_1
+12	name_2
+13	name_3
+14	name_4
+15	name_0
+16	name_1
+17	name_2
+19	name_4
+20	name_0
+21	name_1
+22	name_2
+23	name_3
+24	name_4
+25	name_0
+26	name_1
+28	name_3
+29	name_4
+
+# NOT IN with an encoded aggregate
+query I
+SELECT k FROM dim WHERE a NOT IN (SELECT a FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) WHERE a IS NOT NULL AND sv > 14000) ORDER BY ALL
+----
+
+# EXISTS with an encoded aggregate
+query I
+SELECT k FROM dim WHERE EXISTS (SELECT 1 FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) x WHERE x.a = dim.a AND x.sv > 14000) ORDER BY ALL
+----
+1
+2
+3
+4
+5
+6
+7
+8
+10
+11
+12
+13
+14
+15
+16
+17
+19
+20
+21
+22
+23
+24
+25
+26
+28
+29
+
+# NOT EXISTS with a window over an encoded aggregate
+query I
+SELECT k FROM dim WHERE NOT EXISTS (SELECT 1 FROM (SELECT a, rank() OVER (ORDER BY sv) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x WHERE x.a = dim.a AND x.r > 2) ORDER BY ALL
+----
+0
+2
+7
+9
+12
+17
+18
+22
+27
+
+# a semi join on the encoded key of a window
+query TI
+SELECT * FROM (SELECT a, sv FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) WHERE a IN (SELECT a FROM (SELECT a, rank() OVER (ORDER BY sv DESC) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) WHERE r <= 2)) ORDER BY ALL
+----
+name_1	35820
+name_4	30300
+
+# a materialized CTE that is used twice
+query TII
+SELECT * FROM (WITH c AS MATERIALIZED (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) SELECT x.a, x.sv, y.n FROM c x JOIN c y ON x.a IS NOT DISTINCT FROM y.a) ORDER BY ALL
+----
+name_0	30000	100
+name_1	35820	120
+name_2	29700	100
+name_3	30000	100
+name_4	30300	100
+NULL	23880	80
+
+# a CTE that is inlined twice, over a window
+query TI
+SELECT * FROM (WITH c AS NOT MATERIALIZED (SELECT a, sv, rank() OVER (ORDER BY sv) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) SELECT x.a, y.r FROM c x JOIN c y ON x.r = y.r + 1) ORDER BY ALL
+----
+name_0	2
+name_1	5
+name_2	1
+name_3	2
+
+# a CTE and a subquery over it
+query TI
+SELECT * FROM (WITH c AS (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) SELECT a, sv FROM c WHERE sv >= (SELECT avg(sv) FROM c)) ORDER BY ALL
+----
+name_0	30000
+name_1	35820
+name_3	30000
+name_4	30300
+
+# a recursive CTE with an encoded aggregate as the base
+query TII
+SELECT * FROM (WITH RECURSIVE r(a, sv, it) AS (SELECT a, sv, 0 FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) UNION ALL SELECT a, sv + 1, it + 1 FROM r WHERE it < 2) SELECT a, sv, it FROM r) ORDER BY ALL
+----
+name_0	30000	0
+name_0	30001	1
+name_0	30002	2
+name_1	35820	0
+name_1	35821	1
+name_1	35822	2
+name_2	29700	0
+name_2	29701	1
+name_2	29702	2
+name_3	30000	0
+name_3	30001	1
+name_3	30002	2
+name_4	30300	0
+name_4	30301	1
+name_4	30302	2
+NULL	23880	0
+NULL	23881	1
+NULL	23882	2
+
+# a recursive CTE with a window over an encoded aggregate as the base
+query TII
+SELECT * FROM (WITH RECURSIVE r(a, rk, it) AS (SELECT a, rank() OVER (ORDER BY sv), 0 FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) UNION ALL SELECT a, rk + 1, it + 1 FROM r WHERE it < 1) SELECT a, rk, it FROM r) ORDER BY ALL
+----
+name_0	3	0
+name_0	4	1
+name_1	6	0
+name_1	7	1
+name_2	2	0
+name_2	3	1
+name_3	3	0
+name_3	4	1
+name_4	5	0
+name_4	6	1
+NULL	1	0
+NULL	2	1
+
+# nested subqueries: an aggregate over a window over an aggregate over a window
+query TI
+SELECT * FROM (SELECT a, sum(rk) AS total FROM (SELECT a, rank() OVER (ORDER BY n) AS rk FROM (SELECT a, count(*) AS n FROM (SELECT a, row_number() OVER (PARTITION BY a ORDER BY sv) AS rn, sv FROM (SELECT a, b, sum(v) AS sv FROM fact JOIN dim ON fact.k = dim.k GROUP BY a, b ) ) GROUP BY a)) GROUP BY a) ORDER BY ALL
+----
+name_0	2
+name_1	3
+name_2	3
+name_3	3
+name_4	3
+NULL	1
+
+# a top-N over a window
+query TII
+SELECT * FROM (SELECT a, sv, rank() OVER (ORDER BY sv DESC) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) ORDER BY r, a LIMIT 3
+----
+name_1	35820	1
+name_4	30300	2
+name_0	30000	3
+
+# an aggregate over a join over a window
+query TII
+SELECT * FROM (SELECT dim.b, count(*), max(x.r) FROM (SELECT a, rank() OVER (ORDER BY sv) AS r FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x JOIN dim ON x.a = dim.a GROUP BY dim.b) ORDER BY ALL
+----
+group_0	5	6
+group_1	8	6
+group_2	9	6
+NULL	4	6
+
+# INSERT ... SELECT over an encoded aggregate with a window
+statement ok
+CREATE TABLE ins_target(a VARCHAR, sv HUGEINT, r BIGINT)
+
+statement ok
+INSERT INTO ins_target SELECT a, sv, rank() OVER (ORDER BY sv) FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)
+
+query TII
+SELECT * FROM ins_target ORDER BY ALL
+----
+name_0	30000	3
+name_1	35820	6
+name_2	29700	2
+name_3	30000	3
+name_4	30300	5
+NULL	23880	1
+
+# CREATE TABLE AS over EXCEPT ALL of encoded aggregates
+statement ok
+CREATE TABLE ctas_target AS SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) EXCEPT ALL SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a)
+
+query TII
+SELECT * FROM ctas_target ORDER BY ALL
+----
+name_0	30000	100
+name_1	35820	120
+name_2	29700	100
+name_3	30000	100
+name_4	30300	100
+NULL	23880	80
+
+# CREATE TABLE AS over a join on top of a window
+statement ok
+CREATE TABLE ctas_join AS SELECT x.a, x.rk, dim.k FROM (SELECT a, rank() OVER (ORDER BY a) AS rk FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a)) x JOIN dim ON x.a = dim.a
+
+query TII
+SELECT * FROM ctas_join ORDER BY ALL
+----
+name_0	1	5
+name_0	1	10
+name_0	1	15
+name_0	1	20
+name_0	1	25
+name_1	2	1
+name_1	2	6
+name_1	2	11
+name_1	2	16
+name_1	2	21
+name_1	2	26
+name_2	3	2
+name_2	3	7
+name_2	3	12
+name_2	3	17
+name_2	3	22
+name_3	4	3
+name_3	4	8
+name_3	4	13
+name_3	4	23
+name_3	4	28
+name_4	5	4
+name_4	5	14
+name_4	5	19
+name_4	5	24
+name_4	5	29
+
+# the plan of the original failure still moves the lookup above the window and the join
+query II
+EXPLAIN SELECT * FROM (SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k GROUP BY a) EXCEPT ALL SELECT * FROM (SELECT a, sum(v) AS sv, count(*) AS n FROM fact JOIN dim ON fact.k = dim.k WHERE dim.k > 7 GROUP BY a))
+----
+physical_plan	<REGEX>:.*__internal_group_key_intern.*
+

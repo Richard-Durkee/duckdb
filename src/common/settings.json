@@ -463,6 +463,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_force_group_key_encoding",
+        "description": "Encode every VARCHAR group key that comes from a smaller relation, regardless of the estimated cardinalities.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
         "name": "debug_force_mbedtls_unsafe",
         "description": "Enable mbedtls for encryption. Unsafe to use.",
         "type": "BOOLEAN",
@@ -524,6 +532,14 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
+        "is_debug": true
+    },
+    {
+        "name": "debug_group_key_encoding_dimension_scale",
+        "description": "Multiply the estimated number of rows of the relation of a group key before the group key encoding decides on it, to emulate wrong estimates.",
+        "type": "DOUBLE",
+        "default_scope": "local",
+        "default_value": "1.0",
         "is_debug": true
     },
     {

@@ -40,6 +40,8 @@ add_library_unity(
   filter_pullup.cpp
   filter_pushdown.cpp
   grouping_sets_optimizer.cpp
+  group_key_encoding.cpp
+  group_key_encoding_cost.cpp
   in_clause_rewriter.cpp
   join_filter_pushdown_optimizer.cpp
   runtime_filter_cast.cpp
