@@ -74,6 +74,7 @@ public:
 	bool RemoveDirectoryExtended(const string &directory, const RemoveDirectoryOptions &options,
 	                             optional_ptr<FileOpener> opener = nullptr) override;
 	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) override;
+	void MoveFileExtended(const OpenFileInfo &source, const string &target, optional_ptr<FileOpener> opener) override;
 	bool FileExists(const string &filename, optional_ptr<FileOpener> opener) override;
 	bool IsPipe(const string &filename, optional_ptr<FileOpener> opener) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener) override;

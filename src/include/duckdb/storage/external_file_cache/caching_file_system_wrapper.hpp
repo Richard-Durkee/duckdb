@@ -92,6 +92,8 @@ public:
 
 	DUCKDB_API void MoveFile(const string &source, const string &target,
 	                         optional_ptr<FileOpener> opener = nullptr) override;
+	DUCKDB_API void MoveFileExtended(const OpenFileInfo &source, const string &target,
+	                                 optional_ptr<FileOpener> opener = nullptr) override;
 	DUCKDB_API bool FileExists(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	DUCKDB_API bool IsPipe(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	DUCKDB_API void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;

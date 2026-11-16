@@ -277,6 +277,11 @@ void CachingFileSystemWrapper::MoveFile(const string &source, const string &targ
 	underlying_file_system.MoveFile(source, target, opener);
 }
 
+void CachingFileSystemWrapper::MoveFileExtended(const OpenFileInfo &source, const string &target,
+                                                optional_ptr<FileOpener> opener) {
+	underlying_file_system.MoveFileExtended(source, target, opener);
+}
+
 bool CachingFileSystemWrapper::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	return underlying_file_system.FileExists(filename, opener);
 }

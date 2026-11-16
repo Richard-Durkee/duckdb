@@ -655,6 +655,14 @@ void FileSystem::MoveFile(const string &source, const string &target, optional_p
 	throw NotImplementedException("%s: MoveFile is not implemented!", GetName());
 }
 
+void FileSystem::MoveFileExtended(const OpenFileInfo &source, const string &target, optional_ptr<FileOpener> opener) {
+	if (source.extended_info && source.extended_info->options.count("etag")) {
+		throw NotImplementedException("%s: moving \"%s\" only if it still has a given version is not supported",
+		                              GetName(), source.path);
+	}
+	MoveFile(source.path, target, opener);
+}
+
 bool FileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	throw NotImplementedException("%s: FileExists is not implemented!", GetName());
 }

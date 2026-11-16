@@ -269,6 +269,11 @@ public:
 	//! properties
 	DUCKDB_API virtual void MoveFile(const string &source, const string &target,
 	                                 optional_ptr<FileOpener> opener = nullptr);
+	//! Move a file like MoveFile, with options about the source in its extended_info: "etag" is the version the
+	//! source must still have, and "file_size" its size. A file system that cannot check "etag" throws
+	//! NotImplementedException rather than move a source it cannot check
+	DUCKDB_API virtual void MoveFileExtended(const OpenFileInfo &source, const string &target,
+	                                         optional_ptr<FileOpener> opener = nullptr);
 	//! Check if a file exists
 	DUCKDB_API virtual bool FileExists(const string &filename, optional_ptr<FileOpener> opener = nullptr);
 	//! Check if path is a pipe or character device

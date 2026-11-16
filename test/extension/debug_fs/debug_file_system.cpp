@@ -261,6 +261,11 @@ void DebugFileSystem::MoveFile(const string &source, const string &target, optio
 	inner_fs->MoveFile(source, target, opener);
 }
 
+void DebugFileSystem::MoveFileExtended(const OpenFileInfo &source, const string &target,
+                                       optional_ptr<FileOpener> opener) {
+	inner_fs->MoveFileExtended(source, target, opener);
+}
+
 bool DebugFileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	return inner_fs->FileExists(filename, opener);
 }

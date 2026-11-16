@@ -11,6 +11,7 @@ set(TEST_API_OBJECTS
     test_process_util.cpp
     test_random_after_clone.cpp
     test_remove_directory_extended.cpp
+    test_move_file_extended.cpp
     test_temporary_file_owner.cpp
     test_task_error_out_of_memory.cpp
     test_bind_statement.cpp

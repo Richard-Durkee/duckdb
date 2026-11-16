@@ -21,6 +21,18 @@ public:
 
 	void VerifyNoOpener(optional_ptr<FileOpener> opener);
 	void VerifyCanAccessDirectory(const string &path);
+	void VerifyCanMoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) {
+		VerifyNoOpener(opener);
+		VerifyCanAccessFile(source);
+		VerifyCanAccessFile(target);
+		if (IsDuckDBExtensionName(target) && !IsDuckDBExtensionName(source)) {
+			throw PermissionException(
+			    "File '%s' cannot be moved to '%s', files ending with '.duckdb_extension' are reserved for DuckDB "
+			    "extensions, and these can only be installed through the INSTALL command, or moved if both are "
+			    "extensions'",
+			    source, target);
+		}
+	}
 	void VerifyCanAccessFile(const string &path);
 	void VerifyCanAccessExtension(const string &path, const FileOpenFlags &flags) {
 		if (flags.OpenForWriting() && !flags.EnableExtensionInstall()) {
@@ -116,17 +128,12 @@ public:
 	}
 
 	void MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) override {
-		VerifyNoOpener(opener);
-		VerifyCanAccessFile(source);
-		VerifyCanAccessFile(target);
-		if (IsDuckDBExtensionName(target) && !IsDuckDBExtensionName(source)) {
-			throw PermissionException(
-			    "File '%s' cannot be moved to '%s', files ending with '.duckdb_extension' are reserved for DuckDB "
-			    "extensions, and these can only be installed through the INSTALL command, or moved if both are "
-			    "extensions'",
-			    source, target);
-		}
+		VerifyCanMoveFile(source, target, opener);
 		GetFileSystem().MoveFile(source, target, GetOpener());
+	}
+	void MoveFileExtended(const OpenFileInfo &source, const string &target, optional_ptr<FileOpener> opener) override {
+		VerifyCanMoveFile(source.path, target, opener);
+		GetFileSystem().MoveFileExtended(source, target, GetOpener());
 	}
 
 	bool DirectoryExists(const string &directory) {
