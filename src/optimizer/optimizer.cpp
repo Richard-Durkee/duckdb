@@ -56,6 +56,7 @@
 #include "duckdb/optimizer/row_number_rewriter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/optimizer/partial_aggregate_pushdown.hpp"
+#include "duckdb/optimizer/group_key_encoding.hpp"
 #include "duckdb/optimizer/projection_pullup.hpp"
 #include "duckdb/optimizer/projection_placement.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -274,6 +275,15 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = deliminator.Optimize(std::move(plan));
 	});
 
+	// aggregate on dense integer ids instead of the strings of a much smaller relation, and look the strings up
+	// again above the aggregate. This runs before the grouping sets are expanded, so that all levels use the ids
+	// the dictionaries of both runs share one memory budget
+	auto group_key_budget = GroupKeyEncoding::CreateBudget(context);
+	RunOptimizer(OptimizerType::GROUP_KEY_ENCODING, [&]() {
+		GroupKeyEncoding group_key_encoding(*this, false, group_key_budget);
+		group_key_encoding.VisitOperator(plan);
+	});
+
 	// rewrite aggregates over multiple grouping sets (ROLLUP/CUBE/GROUPING SETS) into explicit aggregate plans
 	RunOptimizer(OptimizerType::GROUPING_SETS, [&]() {
 		GroupingSetsOptimizer grouping_sets_optimizer(*this);
@@ -388,6 +398,12 @@ void Optimizer::RunBuiltInOptimizers() {
 		AggregateFunctionRewriter aggregate_function_rewriter(*this);
 		// DML CTEs can invalidate the table statistics captured during planning.
 		aggregate_function_rewriter.RewriteCaseToFilter(plan, !plan->CTEContainsDML());
+	});
+
+	// the same for the aggregates without grouping sets, now that the number of rows that reach them is estimated
+	RunOptimizer(OptimizerType::GROUP_KEY_ENCODING, [&]() {
+		GroupKeyEncoding group_key_encoding(*this, true, group_key_budget);
+		group_key_encoding.VisitOperator(plan);
 	});
 
 	RunOptimizer(OptimizerType::REDUNDANT_ORDER_KEYS, [&]() {

@@ -14,6 +14,7 @@
 namespace duckdb {
 class Optimizer;
 class LogicalMaterializedCTE;
+class BoundAggregateExpression;
 
 //! The PartialAggregatePushdown optimizer pushes partial aggregate states below joins when this can reduce join work
 class PartialAggregatePushdown : public LogicalOperatorVisitor {
@@ -21,6 +22,10 @@ public:
 	explicit PartialAggregatePushdown(Optimizer &optimizer);
 
 	void VisitOperator(unique_ptr<LogicalOperator> &op) override;
+
+	//! Whether the pushdown can split this aggregate into a partial aggregate below a join and a combining aggregate
+	//! above it
+	static bool CanPreAggregate(const BoundAggregateExpression &expr);
 
 private:
 	//! Inline projection chains between the aggregate and comparison join.

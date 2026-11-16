@@ -147,6 +147,11 @@ BoundExpressionSQLExportState::ExportScalarFunction(const BoundFunctionExpressio
 			    path, expression, "Bound scalar function identity is incomplete")});
 		}
 	}
+	if (StringUtil::StartsWith(function.GetName().GetIdentifierName(), "__internal_group_key_")) {
+		// the dictionaries of encoded group keys only exist while the query runs: there is no SQL to rebind them
+		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFunction(
+		    path, std::move(identity), "Dictionary encoded group keys have no SQL representation")});
+	}
 	optional_idx lambda_index;
 	for (idx_t index = 0; index < MinValue(expression.GetChildren().size(), function.GetLogicalArguments().size());
 	     index++) {

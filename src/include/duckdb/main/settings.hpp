@@ -960,6 +960,19 @@ struct DebugForceFlushAppendFailureSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DebugForceGroupKeyEncodingSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_force_group_key_encoding";
+	static constexpr const char *Description =
+	    "Encode every VARCHAR group key that comes from a smaller relation, regardless of the estimated cardinalities.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct ForceMbedtlsUnsafeSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_mbedtls_unsafe";
@@ -1023,6 +1036,20 @@ struct DebugForceWalFsyncFailureSetting {
 	static constexpr bool IsDeprecated = false;
 	static constexpr const char *DefaultValue = "false";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct DebugGroupKeyEncodingDimensionScaleSetting {
+	using RETURN_TYPE = double;
+	static constexpr const char *Name = "debug_group_key_encoding_dimension_scale";
+	static constexpr const char *Description =
+	    "Multiply the estimated number of rows of the relation of a group key before the group key encoding decides on "
+	    "it, to emulate wrong estimates.";
+	static constexpr const char *InputType = "DOUBLE";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "1.0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
