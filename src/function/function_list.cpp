@@ -126,6 +126,8 @@ static const StaticFunctionDefinition function[] = {
 	DUCKDB_SCALAR_FUNCTION_SET(InternalDecompressIntegralUintegerFun),
 	DUCKDB_SCALAR_FUNCTION_SET(InternalDecompressIntegralUsmallintFun),
 	DUCKDB_SCALAR_FUNCTION_SET(InternalDecompressStringFun),
+	DUCKDB_SCALAR_FUNCTION(InternalGroupKeyInternFun),
+	DUCKDB_SCALAR_FUNCTION(InternalGroupKeyResolveFun),
 	DUCKDB_SCALAR_FUNCTION(TableFilterBloomFilterFun),
 	DUCKDB_SCALAR_FUNCTION(TableFilterDynamicFun),
 	DUCKDB_SCALAR_FUNCTION(TableFilterOptionalFun),

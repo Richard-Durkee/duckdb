@@ -16,6 +16,7 @@
         "test/sql/optimizer/group_key_encoding.test",
         "test/sql/optimizer/group_key_encoding_bindings.test",
         "test/sql/optimizer/group_key_encoding_json.test",
+        "test/sql/optimizer/group_key_encoding_serialization.test",
         "test/sql/optimizer/group_key_encoding_parquet.test",
         "test/optimizer/avg_rewrite_profitability.test",
         "test/optimizer/case_to_filter_aggregate.test",

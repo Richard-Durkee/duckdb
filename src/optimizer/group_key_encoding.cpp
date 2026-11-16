@@ -1,6 +1,12 @@
 #include "duckdb/optimizer/group_key_encoding.hpp"
 #include "duckdb/optimizer/group_key_encoding_cost.hpp"
 #include "duckdb/common/printer.hpp"
+#include "duckdb/common/random_engine.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/main/client_context_state.hpp"
+#include "duckdb/main/context.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
 #include "duckdb/common/allocator.hpp"
@@ -136,6 +142,9 @@ struct GroupKeyDictionary {
 
 	vector<unique_ptr<Shard>> shards;
 	shared_ptr<GroupKeyBudget> budget;
+	//! What a serialized plan names the dictionary by, see GroupKeyDictionaryRegistry
+	uint64_t registry_nonce = 0;
+	uint64_t registry_sequence = 0;
 
 	void Account(idx_t string_length) {
 		const auto bytes =
@@ -236,26 +245,132 @@ void GroupKeyResolveFunction(DataChunk &args, ExpressionState &state, Vector &re
 	result.AddAuxiliaryData(make_uniq<GroupKeyDictionaryHolder>(bind_data.dictionary));
 }
 
-//! The dictionaries exist only while the query runs: a plan that contains them cannot be written to a stream. The
-//! error is the "not implemented" kind, which the plan serializer verification and the callers that serialize
-//! optimized plans treat as "this plan cannot be serialized"
-void GroupKeySerialize(Serializer &, const optional_ptr<const FunctionData>, const BoundScalarFunction &) {
-	throw NotImplementedException("A plan with dictionary encoded group keys cannot be serialized");
+//! The dictionaries that the plans of one connection refer to. A dictionary lives in the bind data of the functions
+//! of the plan, and a plan that is serialized and deserialized again by the same connection (a copy of a plan, or the
+//! plan verification) has to end up with the very same dictionary: the ids of the two sides of a comparison are only
+//! comparable when they come from one dictionary. So a serialized function holds the name of its dictionary, not the
+//! dictionary. The name is a pair of numbers: a random number that the registry of the connection draws once, and the
+//! position of the dictionary in the registry. A plan that is deserialized by another connection, process or
+//! database finds no such dictionary, and fails with an error instead of resolving ids against another dictionary.
+//! The registry only holds weak references: the plan owns its dictionaries, and a dictionary is gone with its plan.
+class GroupKeyDictionaryRegistry : public ClientContextState {
+public:
+	static constexpr const char *STATE_KEY = "group_key_dictionaries";
+
+	GroupKeyDictionaryRegistry() {
+		// not the random engine of the connection, which a seed makes predictable
+		RandomEngine engine;
+		nonce = engine.NextRandomInteger64();
+	}
+
+	//! Names the dictionary and records it in the registry of the connection
+	static void Register(ClientContext &context, GroupKeyDictionary &dictionary,
+	                     const shared_ptr<GroupKeyDictionary> &shared) {
+		auto registry = context.GetContext().GetRegisteredState().GetOrCreate<GroupKeyDictionaryRegistry>(STATE_KEY);
+		registry->Add(dictionary, shared);
+	}
+
+	static shared_ptr<GroupKeyDictionary> Find(ClientContext &context, uint64_t nonce, uint64_t sequence) {
+		auto registry = context.GetContext().GetRegisteredState().Get<GroupKeyDictionaryRegistry>(STATE_KEY);
+		return registry ? registry->Lookup(nonce, sequence) : nullptr;
+	}
+
+private:
+	void Add(GroupKeyDictionary &dictionary, const shared_ptr<GroupKeyDictionary> &shared) {
+		lock_guard<mutex> guard(lock);
+		if (entries.size() >= purge_threshold) {
+			// the dictionaries of the plans that are gone leave their entries behind: sweep when the registry has
+			// doubled, so that the cost of a sweep is paid for by the registrations since the last one
+			for (auto entry = entries.begin(); entry != entries.end();) {
+				entry = entry->second.expired() ? entries.erase(entry) : std::next(entry);
+			}
+			purge_threshold = MaxValue<idx_t>(MIN_PURGE_THRESHOLD, 2 * entries.size());
+		}
+		dictionary.registry_nonce = nonce;
+		dictionary.registry_sequence = next_sequence++;
+		entries[dictionary.registry_sequence] = shared;
+	}
+
+	shared_ptr<GroupKeyDictionary> Lookup(uint64_t requested_nonce, uint64_t sequence) {
+		if (requested_nonce != nonce) {
+			return nullptr;
+		}
+		lock_guard<mutex> guard(lock);
+		auto entry = entries.find(sequence);
+		return entry == entries.end() ? nullptr : entry->second.lock();
+	}
+
+private:
+	static constexpr idx_t MIN_PURGE_THRESHOLD = 64;
+
+	mutex lock;
+	uint64_t nonce;
+	uint64_t next_sequence = 0;
+	idx_t purge_threshold = MIN_PURGE_THRESHOLD;
+	unordered_map<uint64_t, weak_ptr<GroupKeyDictionary>> entries;
+};
+
+void GroupKeySerialize(Serializer &serializer, const optional_ptr<const FunctionData> bind_data_p,
+                       const BoundScalarFunction &) {
+	if (!serializer.GetOptions().process_local) {
+		// a reader in another connection or process cannot find the dictionary: the "not implemented" kind of error
+		// is what the callers that serialize a plan treat as "this plan cannot be serialized", and fall back
+		throw NotImplementedException("A plan with dictionary encoded group keys can only be serialized for the "
+		                              "connection that created it");
+	}
+	auto &dictionary = *bind_data_p->Cast<GroupKeyDictionaryBindData>().dictionary;
+	serializer.WriteProperty(100, "registry_nonce", dictionary.registry_nonce);
+	serializer.WriteProperty(101, "registry_sequence", dictionary.registry_sequence);
 }
 
-unique_ptr<FunctionData> GroupKeyDeserialize(Deserializer &, BoundScalarFunction &) {
-	throw NotImplementedException("A plan with dictionary encoded group keys cannot be deserialized");
+unique_ptr<FunctionData> GroupKeyDeserialize(Deserializer &deserializer) {
+	auto nonce = deserializer.ReadProperty<uint64_t>(100, "registry_nonce");
+	auto sequence = deserializer.ReadProperty<uint64_t>(101, "registry_sequence");
+	auto dictionary = GroupKeyDictionaryRegistry::Find(deserializer.Get<ClientContext &>(), nonce, sequence);
+	if (!dictionary) {
+		throw SerializationException("The dictionary of the encoded group keys of this plan does not exist in this "
+		                             "connection: a plan with encoded group keys can only be deserialized by the "
+		                             "connection that created it, while the query that created it is alive");
+	}
+	return make_uniq<GroupKeyDictionaryBindData>(std::move(dictionary));
+}
+
+unique_ptr<FunctionData> GroupKeyInternDeserialize(Deserializer &deserializer, BoundScalarFunction &) {
+	return GroupKeyDeserialize(deserializer);
+}
+
+unique_ptr<FunctionData> GroupKeyResolveDeserialize(Deserializer &deserializer, BoundScalarFunction &function) {
+	// the strings have the type of the key, which the catalog entry does not know
+	function.SetReturnType(deserializer.Get<const LogicalType &>());
+	return GroupKeyDeserialize(deserializer);
+}
+
+//! The functions only exist to be found by the deserialization: the optimizer creates the expressions itself
+unique_ptr<FunctionData> GroupKeyBind(BindScalarFunctionInput &) {
+	throw BinderException("The functions of the dictionary encoded group keys are for internal use only");
+}
+
+ScalarFunction GroupKeyInternFunctionDefinition() {
+	// the function is volatile because it assigns ids: this keeps the optimizer from moving the interning above a join
+	ScalarFunction function(Identifier("__internal_group_key_intern"), {LogicalType::VARCHAR}, LogicalType::INTEGER,
+	                        GroupKeyInternFunction, GroupKeyBind, nullptr, nullptr, LogicalType(LogicalTypeId::INVALID),
+	                        FunctionStability::VOLATILE);
+	function.SetSerializeCallback(GroupKeySerialize);
+	function.SetDeserializeCallback(GroupKeyInternDeserialize);
+	return function;
+}
+
+ScalarFunction GroupKeyResolveFunctionDefinition(const LogicalType &type) {
+	ScalarFunction function(Identifier("__internal_group_key_resolve"), {LogicalType::INTEGER}, type,
+	                        GroupKeyResolveFunction, GroupKeyBind);
+	function.SetSerializeCallback(GroupKeySerialize);
+	function.SetDeserializeCallback(GroupKeyResolveDeserialize);
+	return function;
 }
 
 unique_ptr<Expression> CreateInternExpression(const shared_ptr<GroupKeyDictionary> &dictionary,
                                               unique_ptr<Expression> child) {
-	// the function is volatile because it assigns ids: this keeps the optimizer from moving the interning above a join
-	ScalarFunction function(Identifier("__internal_group_key_intern"), {LogicalType::VARCHAR}, LogicalType::INTEGER,
-	                        GroupKeyInternFunction, nullptr, nullptr, nullptr, LogicalType(LogicalTypeId::INVALID),
-	                        FunctionStability::VOLATILE);
-	BoundScalarFunction bound_function(function);
-	bound_function.SetSerializeCallback(GroupKeySerialize);
-	bound_function.SetDeserializeCallback(GroupKeyDeserialize);
+	BoundScalarFunction bound_function(GroupKeyInternFunctionDefinition());
 	bound_function.SetReturnType(LogicalType::INTEGER);
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(child));
@@ -266,11 +381,7 @@ unique_ptr<Expression> CreateInternExpression(const shared_ptr<GroupKeyDictionar
 //! The strings have the type of the group key: a VARCHAR that carries an alias (such as JSON) keeps it
 unique_ptr<Expression> CreateResolveExpression(const shared_ptr<GroupKeyDictionary> &dictionary,
                                                unique_ptr<Expression> child, const LogicalType &type) {
-	ScalarFunction function(Identifier("__internal_group_key_resolve"), {LogicalType::INTEGER}, type,
-	                        GroupKeyResolveFunction);
-	BoundScalarFunction bound_function(function);
-	bound_function.SetSerializeCallback(GroupKeySerialize);
-	bound_function.SetDeserializeCallback(GroupKeyDeserialize);
+	BoundScalarFunction bound_function(GroupKeyResolveFunctionDefinition(type));
 	bound_function.SetReturnType(type);
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(child));
@@ -896,10 +1007,10 @@ bool GroupKeyEncoding::TryEncode(unique_ptr<LogicalOperator> &op) {
 			}
 			encoded_group[group_idx] = true;
 			budget->planned_bytes += Scaled(producer_cardinality, dim_scale) * bytes_per_key;
-			encoded->push_back(
-			    EncodedGroup {group_idx, binding.column_index,
-			                  make_shared_ptr<GroupKeyDictionary>(BufferAllocator::Get(optimizer.context), budget),
-			                  std::move(found.passing), std::move(found.expression)});
+			auto dictionary = make_shared_ptr<GroupKeyDictionary>(BufferAllocator::Get(optimizer.context), budget);
+			GroupKeyDictionaryRegistry::Register(optimizer.context, *dictionary, dictionary);
+			encoded->push_back(EncodedGroup {group_idx, binding.column_index, std::move(dictionary),
+			                                 std::move(found.passing), std::move(found.expression)});
 		}
 	}
 	if (scans.empty()) {
@@ -1155,6 +1266,14 @@ bool GroupKeyEncoding::TryPullUpResolve(unique_ptr<LogicalOperator> &op) {
 	new_lookup->children.push_back(std::move(op));
 	op = std::move(new_lookup);
 	return true;
+}
+
+ScalarFunction InternalGroupKeyInternFun::GetFunction() {
+	return GroupKeyInternFunctionDefinition();
+}
+
+ScalarFunction InternalGroupKeyResolveFun::GetFunction() {
+	return GroupKeyResolveFunctionDefinition(LogicalType::VARCHAR);
 }
 
 } // namespace duckdb

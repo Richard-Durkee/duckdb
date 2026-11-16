@@ -46,6 +46,22 @@
         "type": "scalar_function"
     },
     {
+        "name": "__internal_group_key_intern",
+        "struct": "InternalGroupKeyInternFun",
+        "parameters": "value",
+        "description": "Replaces a string by its id in the dictionary of an encoded group key. Created by the group key encoding optimizer, which has no SQL to bind it from: the function exists to deserialize plans.",
+        "example": "",
+        "type": "scalar_function"
+    },
+    {
+        "name": "__internal_group_key_resolve",
+        "struct": "InternalGroupKeyResolveFun",
+        "parameters": "id",
+        "description": "Looks up the string of an id in the dictionary of an encoded group key. Created by the group key encoding optimizer, which has no SQL to bind it from: the function exists to deserialize plans.",
+        "example": "",
+        "type": "scalar_function"
+    },
+    {
         "name": "create_sort_key",
         "parameters": "key1,...",
         "description": "Constructs a binary-comparable sort key based on a set of input parameters and sort qualifiers",
