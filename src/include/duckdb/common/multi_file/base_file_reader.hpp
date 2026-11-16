@@ -93,6 +93,8 @@ public:
 	DUCKDB_API virtual shared_ptr<BaseUnionData> GetUnionData(idx_t file_idx);
 	//! Get statistics for a specific column
 	DUCKDB_API virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
+	//! The average size in bytes of a value of a column, estimated from the metadata of the file (zero if unknown)
+	DUCKDB_API virtual idx_t GetAverageValueWidth(ClientContext &context, const Identifier &name);
 	//! Get statistics for a virtual column the reader produces (e.g. the row number of every row within the file)
 	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
 	                                                                         column_t virtual_column_id);
@@ -173,6 +175,8 @@ public:
 		return optional_idx();
 	}
 	virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
+	//! The average size in bytes of a value of a column, estimated from the metadata of the file (zero if unknown)
+	virtual idx_t GetAverageValueWidth(ClientContext &context, const Identifier &name);
 	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
 	                                                                         column_t virtual_column_id);
 

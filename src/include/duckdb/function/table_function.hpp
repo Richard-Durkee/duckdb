@@ -259,6 +259,11 @@ public:
 public:
 	optional_ptr<const FunctionData> bind_data;
 	ColumnIndex column_index;
+	//! Whether the caller wants the average width of a value (it can cost more than the statistics)
+	bool request_average_width = false;
+	//! Output, if requested: the average size in bytes of a value of the column, estimated from the metadata of the
+	//! source (zero if the function does not know it)
+	idx_t average_width = 0;
 };
 
 struct GetPartitionStatsInput {

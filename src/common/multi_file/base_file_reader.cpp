@@ -8,6 +8,10 @@ unique_ptr<BaseStatistics> BaseFileReader::GetStatistics(ClientContext &context,
 	return nullptr;
 }
 
+idx_t BaseFileReader::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	return 0;
+}
+
 unique_ptr<BaseStatistics> BaseFileReader::GetVirtualColumnStatistics(ClientContext &context,
                                                                       column_t virtual_column_id) {
 	return nullptr;
@@ -43,6 +47,10 @@ InsertionOrderPreservingMap<Value> BaseFileReader::GetMetadata() const {
 
 unique_ptr<BaseStatistics> BaseUnionData::GetStatistics(ClientContext &context, const Identifier &name) {
 	return nullptr;
+}
+
+idx_t BaseUnionData::GetAverageValueWidth(ClientContext &context, const Identifier &name) {
+	return 0;
 }
 
 unique_ptr<BaseStatistics> BaseUnionData::GetVirtualColumnStatistics(ClientContext &, column_t) {

@@ -1132,8 +1132,41 @@ public:
 		} while (true);
 	}
 
+	//! The average width of a value of a column, from the metadata of the files that were opened at bind
+	static idx_t MultiFileAverageWidth(ClientContext &context, TableFunctionGetStatisticsInput &input) {
+		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
+		if (input.column_index.IsVirtualColumn() || input.column_index.IsPushdownExtract() ||
+		    !input.column_index.HasPrimaryIndex()) {
+			return 0;
+		}
+		const auto primary_index = input.column_index.GetPrimaryIndex();
+		if (primary_index >= bind_data.names.size()) {
+			return 0;
+		}
+		const auto &col_name = bind_data.names[primary_index];
+		idx_t width = 0;
+		try {
+			if (!bind_data.union_readers.empty()) {
+				for (auto &union_reader : bind_data.union_readers) {
+					width = MaxValue<idx_t>(width, union_reader->GetAverageValueWidth(context, col_name));
+				}
+			} else if (bind_data.initial_reader) {
+				width = bind_data.initial_reader->GetAverageValueWidth(context, col_name);
+			}
+		} catch (std::exception &ex) {
+			if (ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+				throw;
+			}
+			return 0;
+		}
+		return width;
+	}
+
 	static unique_ptr<BaseStatistics> MultiFileScanStatsExtended(ClientContext &context,
 	                                                             TableFunctionGetStatisticsInput &input) {
+		if (input.request_average_width) {
+			input.average_width = MultiFileAverageWidth(context, input);
+		}
 		auto result = MultiFileScanStatsInternal(context, input);
 		if (!result) {
 			return nullptr;
