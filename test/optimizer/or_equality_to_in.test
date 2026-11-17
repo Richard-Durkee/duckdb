@@ -1,0 +1,146 @@
+# name: test/optimizer/or_equality_to_in.test
+# description: Equalities between one expression and constants joined by OR are rewritten into an IN list
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET explain_output='optimized_only'
+
+statement ok
+CREATE TABLE t AS SELECT CASE WHEN range % 97 = 0 THEN NULL ELSE range % 1000 END AS a, range % 7 AS b,
+	('s' || (range % 50))::VARCHAR AS s, (range % 300)::DECIMAL(9,2) AS d, DATE '2000-01-01' + (range % 400)::INTEGER AS dt,
+	(range % 10)::DOUBLE AS f FROM range(20000);
+
+# five equalities and more: an IN list, which the IN clause rewriter turns into a join
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a = 1 OR a = 42 OR a = 99 OR a = 123 OR a = 500;
+----
+logical_opt	<REGEX>:.*COMPARISON_JOIN.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a = 1 OR 42 = a OR a = 99 OR a = 123 OR a = 500 OR a = 777;
+----
+logical_opt	<REGEX>:.*COMPARISON_JOIN.*
+
+# fewer equalities stay as they are
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a = 1 OR a = 42 OR a = 99 OR a = 123;
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*
+
+# floating point and volatile inputs are left alone
+query II
+EXPLAIN SELECT count(*) FROM t WHERE f = 1 OR f = 2 OR f = 3 OR f = 4 OR f = 5 OR f = 6;
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a + (random() * 0)::INTEGER = 1 OR a + (random() * 0)::INTEGER = 2 OR a + (random() * 0)::INTEGER = 3 OR a + (random() * 0)::INTEGER = 4 OR a + (random() * 0)::INTEGER = 5;
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*
+
+# the results are those of the equalities, compared with the same filter written as an IN list and with a CASE
+# that the optimizer does not rewrite
+query I
+SELECT count(*) FROM t WHERE a = 1 OR a = 42 OR a = 99 OR a = 123 OR a = 500 OR a = 777;
+----
+119
+
+query I
+SELECT count(*) FROM t WHERE a IN (1, 42, 99, 123, 500, 777);
+----
+119
+
+query I
+SELECT count(*) FROM t WHERE CASE WHEN a = 1 THEN true WHEN a = 42 THEN true WHEN a = 99 THEN true WHEN a = 123 THEN true WHEN a = 500 THEN true WHEN a = 777 THEN true ELSE false END;
+----
+119
+
+# other predicates in the same OR are kept
+query I
+SELECT count(*) FROM t WHERE a = 1 OR a = 42 OR b = 3 OR a = 99 OR a = 123 OR a = 500 OR s = 's7';
+----
+3285
+
+query I
+SELECT count(*) FROM t WHERE CASE WHEN a IN (1, 42, 99, 123, 500) THEN true WHEN b = 3 THEN true WHEN s = 's7' THEN true ELSE false END;
+----
+3285
+
+# two inputs in one OR: each gets its own IN list
+query I
+SELECT count(*) FROM t WHERE a = 1 OR a = 2 OR a = 3 OR a = 4 OR a = 5 OR b = 1 OR b = 2 OR b = 3 OR b = 4 OR b = 5;
+----
+14314
+
+query I
+SELECT count(*) FROM t WHERE a IN (1, 2, 3, 4, 5) OR b IN (1, 2, 3, 4, 5);
+----
+14314
+
+# duplicate constants, strings, decimals and dates
+query I
+SELECT count(*) FROM t WHERE a = 7 OR a = 7 OR a = 8 OR a = 8 OR a = 9 OR a = 9;
+----
+59
+
+query I
+SELECT count(*) FROM t WHERE s = 's1' OR s = 's2' OR s = 's3' OR s = 's4' OR s = 's5' OR s = 'none';
+----
+2000
+
+query I
+SELECT count(*) FROM t WHERE d = 1.00 OR d = 2.00 OR d = 3.00 OR d = 299.00 OR d = 150.00 OR d = 150.50;
+----
+334
+
+query I
+SELECT count(*) FROM t WHERE dt = DATE '2000-01-01' OR dt = DATE '2000-01-02' OR dt = DATE '2000-02-01' OR dt = DATE '2001-01-01' OR dt = DATE '2000-12-31' OR dt = DATE '1999-01-01';
+----
+250
+
+# a NULL constant: the equality with it is NULL, so the OR is NULL unless another equality holds
+query I
+SELECT count(*) FROM t WHERE a = 1 OR a = 2 OR a = 3 OR a = 4 OR a = 5 OR a = NULL;
+----
+99
+
+# as a value, NULL inputs and NULL results are kept
+query III
+SELECT (a = 1 OR a = 2 OR a = 3 OR a = 4 OR a = 5) AS r, count(*), count(a) FROM t GROUP BY r ORDER BY r NULLS LAST;
+----
+false	19694	19694
+true	99	99
+NULL	207	0
+
+query III
+SELECT (a IN (1, 2, 3, 4, 5)) AS r, count(*), count(a) FROM t GROUP BY r ORDER BY r NULLS LAST;
+----
+false	19694	19694
+true	99	99
+NULL	207	0
+
+query III
+SELECT (a = 1 OR a = 2 OR a = 3 OR a = 4 OR a = 5 OR a = NULL) AS r, count(*), count(a) FROM t GROUP BY r ORDER BY r NULLS LAST;
+----
+true	99	99
+NULL	19901	19694
+
+# under NOT
+query I
+SELECT count(*) FROM t WHERE NOT (a = 1 OR a = 2 OR a = 3 OR a = 4 OR a = 5);
+----
+19694
+
+# in a join condition and in a correlated subquery
+query I
+SELECT count(*) FROM t t1 JOIN (SELECT DISTINCT b FROM t) t2 ON t1.b = t2.b AND (t1.a = 1 OR t1.a = 2 OR t1.a = 3 OR t1.a = 4 OR t1.a = 5);
+----
+99
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT b FROM t) o WHERE EXISTS (SELECT 1 FROM t i WHERE i.b = o.b AND (i.a = 1 OR i.a = 2 OR i.a = 3 OR i.a = 4 OR i.a = 5 OR i.a = o.b));
+----
+7
