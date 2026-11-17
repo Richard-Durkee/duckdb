@@ -108,12 +108,24 @@ static idx_t GetMinMaxDistinctCount(const BaseStatistics &base_stats, idx_t base
 
 static DistinctCount GetDistinctCountFromStats(BaseStatistics &base_stats, idx_t base_table_cardinality) {
 	auto distinct_count = base_stats.GetDistinctCount();
+	auto min_max_distinct_count = GetMinMaxDistinctCount(base_stats, base_table_cardinality);
 	if (distinct_count > 0) {
-		return DistinctCount(distinct_count, DistinctCountSource::HLL);
+		switch (base_stats.GetDistinctCountType()) {
+		case DistinctCountType::EXACT:
+			return DistinctCount(distinct_count, DistinctCountSource::EXACT);
+		case DistinctCountType::UPPER_BOUND:
+			// an upper bound is as reliable as the bounds of the value range: it is only ever too large
+			if (min_max_distinct_count > 0) {
+				distinct_count = MinValue(distinct_count, min_max_distinct_count);
+			}
+			return DistinctCount(distinct_count, DistinctCountSource::MIN_MAX);
+		case DistinctCountType::ESTIMATE:
+		default:
+			return DistinctCount(distinct_count, DistinctCountSource::HLL);
+		}
 	}
-	distinct_count = GetMinMaxDistinctCount(base_stats, base_table_cardinality);
-	if (distinct_count > 0) {
-		return DistinctCount(distinct_count, DistinctCountSource::MIN_MAX);
+	if (min_max_distinct_count > 0) {
+		return DistinctCount(min_max_distinct_count, DistinctCountSource::MIN_MAX);
 	}
 	return DistinctCount(0, DistinctCountSource::CARDINALITY);
 }

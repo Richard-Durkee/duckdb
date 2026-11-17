@@ -26,6 +26,7 @@ void BaseStatistics::Construct(BaseStatistics &stats, LogicalType type) {
 	stats.has_null = false;
 	stats.has_no_null = false;
 	stats.distinct_count = 0;
+	stats.distinct_count_type = DistinctCountType::ESTIMATE;
 	memset(&stats.stats_union, 0, sizeof(stats.stats_union));
 	stats.type = std::move(type);
 	switch (GetStatsType(stats.type)) {
@@ -54,6 +55,7 @@ BaseStatistics::BaseStatistics(BaseStatistics &&other) noexcept {
 	has_null = other.has_null;
 	has_no_null = other.has_no_null;
 	distinct_count = other.distinct_count;
+	distinct_count_type = other.distinct_count_type;
 	stats_union = other.stats_union;
 	std::swap(extra_data, other.extra_data);
 	std::swap(child_stats, other.child_stats);
@@ -64,6 +66,7 @@ BaseStatistics &BaseStatistics::operator=(BaseStatistics &&other) noexcept {
 	has_null = other.has_null;
 	has_no_null = other.has_no_null;
 	distinct_count = other.distinct_count;
+	distinct_count_type = other.distinct_count_type;
 	stats_union = other.stats_union;
 	std::swap(extra_data, other.extra_data);
 	std::swap(child_stats, other.child_stats);
@@ -156,9 +159,25 @@ bool BaseStatistics::IsConstant() const {
 	return false;
 }
 
+void BaseStatistics::MergeDistinctCount(const BaseStatistics &other) {
+	if (distinct_count == 0 || other.distinct_count == 0) {
+		// the distinct count of one side is unknown, so it is of the union
+		distinct_count = 0;
+		distinct_count_type = DistinctCountType::ESTIMATE;
+		return;
+	}
+	// The union of two sets is at least as large as the larger one and at most as large as their sum. Neither
+	// count is known to be exact for the union, so the sum is kept and it only claims to be an upper bound.
+	// Estimates are summed as well: a merged estimate is never reported more reliable than its inputs.
+	const auto sum = distinct_count + other.distinct_count;
+	distinct_count = sum < distinct_count ? NumericLimits<idx_t>::Maximum() : sum;
+	distinct_count_type = DistinctCountType::UPPER_BOUND;
+}
+
 void BaseStatistics::Merge(const BaseStatistics &other, StatsMergeType merge_type) {
 	has_null = has_null || other.has_null;
 	has_no_null = has_no_null || other.has_no_null;
+	MergeDistinctCount(other);
 	switch (GetStatsType()) {
 	case StatisticsType::NUMERIC_STATS:
 		NumericStats::Merge(*this, other);
@@ -345,6 +364,7 @@ void BaseStatistics::CopyBase(const BaseStatistics &other) {
 	has_null = other.has_null;
 	has_no_null = other.has_no_null;
 	distinct_count = other.distinct_count;
+	distinct_count_type = other.distinct_count_type;
 }
 
 void BaseStatistics::Set(StatsInfo info) {
@@ -406,8 +426,9 @@ void BaseStatistics::CopyValidity(const BaseStatistics &stats) {
 	has_no_null = stats.has_no_null;
 }
 
-void BaseStatistics::SetDistinctCount(idx_t count) {
+void BaseStatistics::SetDistinctCount(idx_t count, DistinctCountType count_type) {
 	this->distinct_count = count;
+	this->distinct_count_type = count_type;
 }
 
 void BaseStatistics::Serialize(Serializer &serializer) const {

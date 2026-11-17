@@ -37,6 +37,16 @@ enum class StatsInfo : uint8_t {
 	CAN_HAVE_NULL_AND_VALID_VALUES = 4
 };
 
+//! How far a distinct count of a column can be trusted
+enum class DistinctCountType : uint8_t {
+	//! An estimate without a guarantee (for example from a HyperLogLog sketch)
+	ESTIMATE = 0,
+	//! The number of distinct values
+	EXACT = 1,
+	//! At least the number of distinct values
+	UPPER_BOUND = 2
+};
+
 enum class StatisticsType : uint8_t {
 	NUMERIC_STATS,
 	STRING_STATS,
@@ -98,7 +108,12 @@ public:
 	DUCKDB_API bool CanHaveNull() const;
 	DUCKDB_API bool CanHaveNoNull() const;
 
-	void SetDistinctCount(idx_t distinct_count);
+	//! Sets the distinct count and how far it can be trusted. A count of zero means that it is unknown.
+	void SetDistinctCount(idx_t distinct_count, DistinctCountType count_type = DistinctCountType::ESTIMATE);
+	//! The kind of the distinct count, only meaningful if the distinct count is not zero
+	DistinctCountType GetDistinctCountType() const {
+		return distinct_count_type;
+	}
 
 	bool IsConstant() const;
 
@@ -108,6 +123,8 @@ public:
 
 	void Set(StatsInfo info);
 	void CombineValidity(const BaseStatistics &left, const BaseStatistics &right);
+	//! Combines the distinct counts of two statistics that describe two sets of rows into the one of their union
+	void MergeDistinctCount(const BaseStatistics &other);
 	void CopyValidity(const BaseStatistics &stats);
 	//! Set that the CURRENT level can have null values
 	//! Note that this is not correct for nested types unless this information is propagated in a different manner
@@ -181,6 +198,8 @@ private:
 	bool has_no_null;
 	//! estimate that one may have even if distinct_stats==nullptr
 	idx_t distinct_count;
+	//! How far the distinct count can be trusted. It is not serialized: stored statistics are estimates.
+	DistinctCountType distinct_count_type = DistinctCountType::ESTIMATE;
 	//! Numeric and String stats
 	union {
 		//! Numeric stats data, for numeric stats

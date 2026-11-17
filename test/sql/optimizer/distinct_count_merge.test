@@ -1,0 +1,52 @@
+# name: test/sql/optimizer/distinct_count_merge.test
+# description: Merging statistics combines their distinct counts into an upper bound instead of keeping one of them
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t1 AS SELECT i x FROM range(1, 4) t(i);
+
+statement ok
+CREATE TABLE t2 AS SELECT i x FROM range(2, 6) t(i);
+
+statement ok
+CREATE TABLE tbl AS SELECT i % 7 a FROM range(1000) t(i);
+
+# the distinct count of a table is an estimate of its own
+query I
+SELECT stats(a) FROM tbl LIMIT 1;
+----
+{'approx_unique': 7, 'has_no_null': true, 'has_null': false, 'max': 6, 'min': 0}
+
+# the union of two sets has at most as many values as both together, the distinct count of one side alone is wrong
+query I
+SELECT stats(x) FROM (SELECT x FROM t1 UNION ALL SELECT x FROM t2) LIMIT 1;
+----
+{'approx_unique': 7, 'has_no_null': true, 'has_null': false, 'max': 5, 'min': 1}
+
+# an upper bound: both sides hold the same values
+query I
+SELECT stats(a) FROM (SELECT a FROM tbl UNION ALL SELECT a FROM tbl) LIMIT 1;
+----
+{'approx_unique': 14, 'has_no_null': true, 'has_null': false, 'max': 6, 'min': 0}
+
+# the plans over tables do not change: a scan keeps estimating the distinct count it always did
+query II
+EXPLAIN SELECT a, count(*) FROM tbl GROUP BY a;
+----
+physical_plan	<REGEX>:.*~7 rows.*
+
+# the order of the inequalities of a range join follows how many distinct values the columns have
+statement ok
+CREATE TABLE u1 AS SELECT (i % 2)::BIGINT a, (i % 100)::BIGINT b FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE u2 AS SELECT (i % 5000)::BIGINT a, (i % 3)::BIGINT b FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE u3 AS SELECT (i % 10000)::BIGINT a, ((i * 7) % 10000)::BIGINT b FROM range(20000) t(i);
+
+# column a has about 5000 distinct values in the union and column b about 100, so a is the more selective one
+query II
+EXPLAIN SELECT count(*) FROM (SELECT a, b FROM u1 UNION ALL SELECT a, b FROM u2) x JOIN u3 ON x.a < u3.a AND x.b < u3.b;
+----
+physical_plan	<REGEX>:.*Conditions: a < a, b < b.*

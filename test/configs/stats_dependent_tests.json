@@ -16,6 +16,7 @@
         "test/optimizer/shared_key_domain_plan.test",
         "test/optimizer/generated_domain_plan.test",
         "test/sql/optimizer/distinctness_statistics_plan.test",
+        "test/sql/optimizer/distinct_count_merge.test",
         "test/sql/join/inner/distinctness_statistics_filter.test",
         "test/sql/optimizer/power_zonemap_pruning.test",
         "test/sql/optimizer/modulo_zonemap_pruning.test",
