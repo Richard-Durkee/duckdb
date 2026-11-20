@@ -1,0 +1,64 @@
+# name: test/sql/copy/parquet/parquet_nullable_plain.test
+# description: Nullable PLAIN columns read back exactly as written
+# group: [parquet]
+
+require parquet
+
+# Fixed-width PLAIN pages of nullable columns are decoded 64 rows at a time. The decimal and boolean columns are not
+# decoded that way, they check that the other columns do not disturb them.
+statement ok
+CREATE MACRO null_at(i, pattern) AS CASE pattern WHEN 0 THEN false WHEN 1 THEN true WHEN 2 THEN i % 64 = 5 ELSE hash(i) % 2 = 0 END;
+
+# Patterns: no NULLs, only NULLs, one NULL per validity word, about half. Sizes cover partial words at the end.
+foreach n 63 64 65 2049
+
+foreach pattern 0 1 2 3
+
+statement ok
+CREATE OR REPLACE TABLE t AS
+SELECT i,
+       IF(null_at(i, {pattern}), NULL, (i * 7919 % 100003 - 50000)::INTEGER) AS a,
+       IF(null_at(i, {pattern}), NULL, (i * 7919 % 100003 / 8.0)::DOUBLE) AS b,
+       IF(null_at(i, {pattern}), NULL, ((i * 37 % 19999 - 9999) / 100.0)::DECIMAL(4,2)) AS c,
+       IF(null_at(i, {pattern}), NULL, i % 3 = 0) AS d
+FROM range({n}) r(i)
+
+# Small pages end in the middle of a vector and of a validity word
+statement ok
+COPY t TO '{TEST_DIR}/nullable_plain.parquet' (FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, DATA_PAGE_SIZE_LIMIT 200, ROW_GROUP_SIZE 1500)
+
+query I
+SELECT count(*) FROM parquet_metadata('{TEST_DIR}/nullable_plain.parquet') WHERE encodings != 'PLAIN'
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_plain.parquet')
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_plain.parquet' EXCEPT ALL SELECT * FROM t)
+----
+0
+
+# A pushed down filter
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE a < 0 OR b > 5000 EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_plain.parquet' WHERE a < 0 OR b > 5000)
+----
+0
+
+# A window that starts inside a page and a validity word
+query III
+SELECT count(*), min(i), max(i) FROM (SELECT * FROM '{TEST_DIR}/nullable_plain.parquet' LIMIT 20 OFFSET 40)
+----
+20	40	59
+
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE i BETWEEN 40 AND 59 EXCEPT ALL (SELECT * FROM '{TEST_DIR}/nullable_plain.parquet' LIMIT 20 OFFSET 40))
+----
+0
+
+endloop
+
+endloop

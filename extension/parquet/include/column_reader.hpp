@@ -27,6 +27,7 @@
 #include "decoder/delta_byte_array_decoder.hpp"
 #include "parquet_column_schema.hpp"
 #include "parquet_crypto.hpp"
+#include "reader/plain_nullable_decode.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -290,6 +291,11 @@ private:
 			return;
 		}
 		auto &result_mask = FlatVector::ValidityMutable(result);
+		if (HAS_DEFINES && CONVERSION::PlainConstantSize() == sizeof(VALUE_TYPE) && MaxDefine() == 1 && !HasRepeats()) {
+			ParquetDecodeNullablePlain<VALUE_TYPE>(plain_data, defines, num_values, result_offset, result_ptr,
+			                                       result_mask);
+			return;
+		}
 		for (idx_t row_idx = result_offset; row_idx < result_offset + num_values; row_idx++) {
 			if (HAS_DEFINES && defines[row_idx] != MaxDefine()) {
 				result_mask.SetInvalid(row_idx);
