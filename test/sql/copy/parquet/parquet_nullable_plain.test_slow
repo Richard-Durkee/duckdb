@@ -1,0 +1,233 @@
+# name: test/sql/copy/parquet/parquet_nullable_plain.test_slow
+# description: Nullable fixed-width columns with PLAIN encoding read back exactly as written
+# group: [parquet]
+
+require parquet
+
+# A PLAIN page of a nullable column is decoded 64 rows at a time. The table is written with two layouts, big pages with
+# snappy and tiny pages (so that pages end inside a vector) with row groups of 1500 rows, read back in several ways, and
+# compared with the table in both directions.
+
+statement ok
+CREATE MACRO null_none(i) AS false;
+
+statement ok
+CREATE MACRO null_p01(i) AS i % 1000 = 7;
+
+statement ok
+CREATE MACRO null_r10(i) AS hash(i) % 10 = 0;
+
+statement ok
+CREATE MACRO null_half(i) AS hash(i) % 2 = 0;
+
+statement ok
+CREATE MACRO null_all(i) AS true;
+
+# all NULLs of the first vector are in the second word of 64 rows
+statement ok
+CREATE MACRO null_word(i) AS i // 64 = 1 AND hash(i) % 2 = 0;
+
+statement ok
+CREATE MACRO null_periodic(i) AS i % 7 IN (0, 3);
+
+statement ok
+CREATE MACRO gen_tinyint(i) AS ((i * 7919) % 100)::TINYINT;
+
+statement ok
+CREATE MACRO gen_smallint(i) AS ((i * 7919) % 10000 - 5000)::SMALLINT;
+
+statement ok
+CREATE MACRO gen_integer(i) AS ((i * 7919) % 100000000 - 50000000)::INTEGER;
+
+statement ok
+CREATE MACRO gen_bigint(i) AS (i * 7919 * 1000003 - 4000000000000)::BIGINT;
+
+statement ok
+CREATE MACRO gen_utinyint(i) AS ((i * 7919) % 256)::UTINYINT;
+
+statement ok
+CREATE MACRO gen_usmallint(i) AS ((i * 7919) % 65536)::USMALLINT;
+
+statement ok
+CREATE MACRO gen_uinteger(i) AS ((i * 7919 * 100003) % 4294967296)::UINTEGER;
+
+statement ok
+CREATE MACRO gen_ubigint(i) AS (i * 7919 * 1000003 * 1000 + 9000000000000000000)::UBIGINT;
+
+statement ok
+CREATE MACRO gen_float(i) AS (((i * 7919) % 1000) / 8.0)::FLOAT;
+
+statement ok
+CREATE MACRO gen_double(i) AS (((i * 7919) % 100000) / 7.0)::DOUBLE;
+
+statement ok
+CREATE MACRO gen_date(i) AS DATE '1990-01-01' + ((i * 7919) % 30000)::INTEGER;
+
+statement ok
+CREATE MACRO gen_timestamp(i) AS TIMESTAMP '1990-01-01' + to_microseconds(i * 7919 * 1000003);
+
+statement ok
+CREATE MACRO gen_timestamp_ms(i) AS (TIMESTAMP '1990-01-01' + to_milliseconds(i * 7919 * 1001))::TIMESTAMP_MS;
+
+statement ok
+CREATE MACRO gen_timestamp_ns(i) AS (TIMESTAMP '1990-01-01' + to_microseconds(i * 7919 * 1000003))::TIMESTAMP_NS;
+
+statement ok
+CREATE MACRO gen_dec4(i) AS ((i * 7919) % 1000 - 500)::DECIMAL(4, 1);
+
+statement ok
+CREATE MACRO gen_dec9(i) AS ((i * 7919 * 1001) % 10000000 - 5000000)::DECIMAL(9, 2);
+
+statement ok
+CREATE MACRO gen_dec18(i) AS (i * 7919 * 1000003 - 4000000000000)::DECIMAL(18, 3);
+
+statement ok
+CREATE MACRO gen_dec38(i) AS (i * 7919 * 1000003 - 4000000000000)::DECIMAL(38, 3);
+
+statement ok
+CREATE MACRO gen_boolean(i) AS (i * 7919) % 3 = 0;
+
+foreach kind tinyint smallint integer bigint utinyint usmallint uinteger ubigint float double date timestamp timestamp_ms timestamp_ns dec4 dec9 dec18 dec38 boolean
+
+foreach pat none p01 r10 half all word periodic
+
+foreach n 1 63 64 65 2047 2049 5000
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT i::BIGINT AS i, CASE WHEN null_{pat}(i) THEN NULL ELSE gen_{kind}(i) END AS x FROM range({n}) r(i);
+
+statement ok
+COPY t TO '{TEST_DIR}/nullable_a.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1, COMPRESSION snappy);
+
+statement ok
+COPY t TO '{TEST_DIR}/nullable_b.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1, COMPRESSION uncompressed, ROW_GROUP_SIZE 1500, DATA_PAGE_SIZE_LIMIT 200);
+
+foreach file a b
+
+# both directions, and a checksum over the values
+query I
+SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet') UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' EXCEPT ALL SELECT * FROM t);
+----
+0
+0
+
+query I
+SELECT count(*) FROM (SELECT count(*), count(x), sum(hash(x::VARCHAR)::HUGEINT) FROM t EXCEPT SELECT count(*), count(x), sum(hash(x::VARCHAR)::HUGEINT) FROM '{TEST_DIR}/nullable_{file}.parquet');
+----
+0
+
+# a filter on the column itself, pushed into the scan and not
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE x > gen_{kind}(7::BIGINT) EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE x > gen_{kind}(7::BIGINT));
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE x > gen_{kind}(7::BIGINT) EXCEPT ALL SELECT * FROM t WHERE x > gen_{kind}(7::BIGINT));
+----
+0
+
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE x IS NOT NULL AND i % 3 <> 1 EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE x IS NOT NULL AND i % 3 <> 1) UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE x IS NOT NULL AND i % 3 <> 1 EXCEPT ALL SELECT * FROM t WHERE x IS NOT NULL AND i % 3 <> 1);
+----
+0
+0
+
+statement ok
+RESET disabled_optimizers;
+
+# a filter on the other column, the column is read for the selected rows only
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE i % 97 < 5 EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE i % 97 < 5) UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE i % 97 < 5 EXCEPT ALL SELECT * FROM t WHERE i % 97 < 5);
+----
+0
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE i BETWEEN 40 AND 70 EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE i BETWEEN 40 AND 70) UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE i BETWEEN 40 AND 70 EXCEPT ALL SELECT * FROM t WHERE i BETWEEN 40 AND 70);
+----
+0
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE x IS NULL EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' WHERE x IS NULL);
+----
+0
+
+# a window of the file
+query I
+SELECT count(*) FROM (SELECT * FROM (SELECT * FROM t ORDER BY i LIMIT 100 OFFSET 37) EXCEPT ALL SELECT * FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' ORDER BY i LIMIT 100 OFFSET 37)) UNION ALL SELECT count(*) FROM (SELECT * FROM (SELECT * FROM '{TEST_DIR}/nullable_{file}.parquet' ORDER BY i LIMIT 100 OFFSET 37) EXCEPT ALL SELECT * FROM (SELECT * FROM t ORDER BY i LIMIT 100 OFFSET 37));
+----
+0
+0
+
+endloop
+
+# several files, one of which has an extra column
+statement ok
+COPY (SELECT i, x, 1 AS extra FROM t) TO '{TEST_DIR}/nullable_c.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1, ROW_GROUP_SIZE 100);
+
+query I
+SELECT count(*) FROM ((SELECT * FROM t UNION ALL SELECT * FROM t UNION ALL SELECT * FROM t) EXCEPT ALL SELECT i, x FROM read_parquet(['{TEST_DIR}/nullable_a.parquet', '{TEST_DIR}/nullable_b.parquet', '{TEST_DIR}/nullable_c.parquet'], union_by_name = true));
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT i, x FROM read_parquet(['{TEST_DIR}/nullable_a.parquet', '{TEST_DIR}/nullable_b.parquet', '{TEST_DIR}/nullable_c.parquet'], union_by_name = true) EXCEPT ALL (SELECT * FROM t UNION ALL SELECT * FROM t UNION ALL SELECT * FROM t));
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+# a larger table, with pages ending in the middle of vectors
+foreach kind integer bigint double date timestamp dec9 dec18
+
+foreach pat p01 r10 half
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT i::BIGINT AS i, CASE WHEN null_{pat}(i) THEN NULL ELSE gen_{kind}(i) END AS x FROM range(100000) r(i);
+
+statement ok
+COPY t TO '{TEST_DIR}/nullable_big.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1, COMPRESSION snappy, ROW_GROUP_SIZE 30000, DATA_PAGE_SIZE_LIMIT 5000);
+
+query I
+SELECT count(*) FROM (SELECT * FROM t EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_big.parquet') UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_big.parquet' EXCEPT ALL SELECT * FROM t);
+----
+0
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM t WHERE x > gen_{kind}(1234::BIGINT) EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_big.parquet' WHERE x > gen_{kind}(1234::BIGINT)) UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_big.parquet' WHERE x > gen_{kind}(1234::BIGINT) EXCEPT ALL SELECT * FROM t WHERE x > gen_{kind}(1234::BIGINT));
+----
+0
+0
+
+endloop
+
+endloop
+
+# the writer chose PLAIN, and a column with a lot of NULLs
+query I
+SELECT DISTINCT encodings FROM parquet_metadata('{TEST_DIR}/nullable_big.parquet') WHERE path_in_schema = 'x';
+----
+PLAIN
+
+# nested columns keep their definition levels per row
+statement ok
+CREATE OR REPLACE TABLE nested AS SELECT i::BIGINT AS i, CASE WHEN hash(i) % 5 = 0 THEN NULL ELSE [CASE WHEN hash(i + 1) % 3 = 0 THEN NULL ELSE i * 3 END, i, CASE WHEN i % 4 = 0 THEN NULL ELSE i + 1 END][1:(i % 4) + 1] END AS l, CASE WHEN hash(i) % 7 = 0 THEN NULL ELSE {'a': CASE WHEN hash(i) % 3 = 0 THEN NULL ELSE i END, 'b': i::DOUBLE} END AS s FROM range(10000) r(i);
+
+statement ok
+COPY nested TO '{TEST_DIR}/nullable_nested.parquet' (FORMAT parquet, DICTIONARY_SIZE_LIMIT 1, ROW_GROUP_SIZE 3000, DATA_PAGE_SIZE_LIMIT 1000);
+
+query I
+SELECT count(*) FROM (SELECT * FROM nested EXCEPT ALL SELECT * FROM '{TEST_DIR}/nullable_nested.parquet') UNION ALL SELECT count(*) FROM (SELECT * FROM '{TEST_DIR}/nullable_nested.parquet' EXCEPT ALL SELECT * FROM nested);
+----
+0
+0

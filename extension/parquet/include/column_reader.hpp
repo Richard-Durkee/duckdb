@@ -97,6 +97,180 @@ public:
 	data_ptr_t repeat_out;
 };
 
+//! Number of bytes one plain value of this conversion occupies, if every value has the same size and can be converted
+//! without looking at anything but those bytes. A conversion opts in by defining PLAIN_FIXED_SIZE, zero means no.
+template <class CONVERSION, class = void>
+struct ParquetPlainFixedSize {
+	static constexpr idx_t VALUE = 0;
+};
+template <class CONVERSION>
+struct ParquetPlainFixedSize<CONVERSION, typename std::enable_if<(CONVERSION::PLAIN_FIXED_SIZE > 0)>::type> {
+	static constexpr idx_t VALUE = CONVERSION::PLAIN_FIXED_SIZE;
+};
+
+//! Decodes a plain page of fixed-size values into a flat vector with one validity word per 64 rows. The definition
+//! levels are one byte per row, and a row holds a value if its level is one (a maximum definition level of one, without
+//! repeats). The validity word is built from eight levels at a time. A word that is all valid is converted in bulk, a
+//! word without any valid row is skipped, and any other word copies runs of valid values or visits its valid rows.
+//! The slot of a NULL row is never written: the validity mask hides it, and the per-row loop does not write it either.
+template <class VALUE_TYPE, class CONVERSION, idx_t FIXED_SIZE>
+struct ParquetNullAwarePlain {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	static constexpr bool ENABLED = true;
+#else
+	// the level gather below assumes a little-endian load
+	static constexpr bool ENABLED = false;
+#endif
+
+	//! A word with more NULLs than this is not worth looking for groups of eight valid rows in
+	static constexpr idx_t MAX_NULLS_FOR_GROUPS = 16;
+
+	static inline idx_t CountTrailingZeros(uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+		return static_cast<idx_t>(__builtin_ctzll(v));
+#else
+		return CountZeros<uint64_t>::Trailing(v);
+#endif
+	}
+	static inline idx_t CountOnes(uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+		return static_cast<idx_t>(__builtin_popcountll(v));
+#else
+		idx_t result = 0;
+		for (; v; v &= v - 1) {
+			result++;
+		}
+		return result;
+#endif
+	}
+
+	//! One bit per level, set if the level is not one (bit i for byte i). Exact for any byte value
+	static inline uint64_t InvalidBits8(const uint8_t *levels) {
+		uint64_t x;
+		memcpy(&x, levels, sizeof(x));
+		const uint64_t y = x ^ 0x0101010101010101ULL;
+		const uint64_t non_zero = (((y & 0x7F7F7F7F7F7F7F7FULL) + 0x7F7F7F7F7F7F7F7FULL) | y) & 0x8080808080808080ULL;
+		// move bit 8i+7 to bit 56+i, none of the partial products overlap
+		return ((non_zero >> 7) * 0x0102040810204080ULL) >> 56;
+	}
+
+	//! Bit i is set if levels[i] is one, for the 64 levels at the pointer
+	static inline uint64_t ValidBits64(const uint8_t *levels) {
+		uint64_t invalid = 0;
+		for (idx_t i = 0; i < 8; i++) {
+			invalid |= InvalidBits8(levels + i * 8) << (i * 8);
+		}
+		return ~invalid;
+	}
+
+	//! Same for the first count levels, for count below 64
+	static inline uint64_t ValidBitsPartial(const uint8_t *levels, idx_t count) {
+		uint64_t valid = 0;
+		for (idx_t i = 0; i < count; i++) {
+			valid |= static_cast<uint64_t>(levels[i] == 1) << i;
+		}
+		return valid;
+	}
+
+	static inline void ConvertRun(VALUE_TYPE *__restrict target, const data_t *__restrict src, idx_t count) {
+		if (CONVERSION::PlainConstantSize() == sizeof(VALUE_TYPE)) {
+			memcpy(target, src, count * sizeof(VALUE_TYPE));
+			return;
+		}
+		for (idx_t i = 0; i < count; i++) {
+			target[i] = CONVERSION::PlainConvert(src + i * FIXED_SIZE);
+		}
+	}
+
+	static inline void ConvertRun8(VALUE_TYPE *__restrict target, const data_t *__restrict src) {
+		if (CONVERSION::PlainConstantSize() == sizeof(VALUE_TYPE)) {
+			memcpy(target, src, 8 * sizeof(VALUE_TYPE));
+			return;
+		}
+		for (idx_t i = 0; i < 8; i++) {
+			target[i] = CONVERSION::PlainConvert(src + i * FIXED_SIZE);
+		}
+	}
+
+	template <bool CHECKED>
+	static void Run(ByteBuffer &plain_data, const uint8_t *__restrict defines, const idx_t num_values,
+	                const idx_t result_offset, VALUE_TYPE *__restrict result_ptr, ValidityMask &result_mask) {
+		const idx_t end = result_offset + num_values;
+		idx_t row = result_offset;
+		while (row < end) {
+			// every step stays within one validity word
+			const idx_t shift = row % 64;
+			const idx_t count = MinValue<idx_t>(64 - shift, end - row);
+			uint64_t valid;
+			uint64_t word_mask;
+			if (count == 64) {
+				valid = ValidBits64(defines + row);
+				word_mask = ~uint64_t(0);
+			} else {
+				valid = ValidBitsPartial(defines + row, count);
+				word_mask = (uint64_t(1) << count) - 1;
+			}
+			const uint64_t invalid = ~valid & word_mask;
+			if (invalid) {
+				// like SetInvalid, this only ever clears bits, and allocates the mask the first time
+				result_mask.EnsureWritable();
+				result_mask.GetValidityEntryUnsafe(row / 64) &= ~(invalid << shift);
+			}
+			const idx_t valid_count = CountOnes(valid);
+			if (valid_count == 0) {
+				row += count;
+				continue;
+			}
+			if (CHECKED) {
+				plain_data.Available(valid_count * FIXED_SIZE);
+			}
+			const data_t *src = plain_data.GetCurrentLoc();
+			plain_data.UnsafeInc(valid_count * FIXED_SIZE);
+			VALUE_TYPE *target = result_ptr + row;
+			if (valid_count == count) {
+				ConvertRun(target, src, count);
+			} else if (count - valid_count <= MAX_NULLS_FOR_GROUPS) {
+				// eight rows at a time: all valid is a fixed-size copy, otherwise visit the valid rows
+				for (idx_t group = 0; group < count; group += 8) {
+					uint64_t bits = (valid >> group) & 0xFF;
+					if (bits == 0xFF) {
+						ConvertRun8(target + group, src);
+						src += 8 * FIXED_SIZE;
+						continue;
+					}
+					while (bits) {
+						const idx_t pos = CountTrailingZeros(bits);
+						bits &= bits - 1;
+						target[group + pos] = CONVERSION::PlainConvert(src);
+						src += FIXED_SIZE;
+					}
+				}
+			} else {
+				// many NULLs: visit the valid rows
+				uint64_t bits = valid;
+				while (bits) {
+					const idx_t pos = CountTrailingZeros(bits);
+					bits &= bits - 1;
+					target[pos] = CONVERSION::PlainConvert(src);
+					src += FIXED_SIZE;
+				}
+			}
+			row += count;
+		}
+	}
+};
+
+//! Conversions that are not fixed-size keep the per-row loop
+template <class VALUE_TYPE, class CONVERSION>
+struct ParquetNullAwarePlain<VALUE_TYPE, CONVERSION, 0> {
+	static constexpr bool ENABLED = false;
+
+	template <bool CHECKED>
+	static void Run(ByteBuffer &, const uint8_t *, const idx_t, const idx_t, VALUE_TYPE *, ValidityMask &) {
+		throw InternalException("ParquetNullAwarePlain used with a conversion that is not fixed-size");
+	}
+};
+
 class ColumnReader {
 	friend class ByteStreamSplitDecoder;
 	friend class DeltaBinaryPackedDecoder;
@@ -290,6 +464,11 @@ private:
 			return;
 		}
 		auto &result_mask = FlatVector::ValidityMutable(result);
+		using NULL_AWARE = ParquetNullAwarePlain<VALUE_TYPE, CONVERSION, ParquetPlainFixedSize<CONVERSION>::VALUE>;
+		if (HAS_DEFINES && NULL_AWARE::ENABLED && MaxDefine() == 1 && !HasRepeats()) {
+			NULL_AWARE::template Run<CHECKED>(plain_data, defines, num_values, result_offset, result_ptr, result_mask);
+			return;
+		}
 		for (idx_t row_idx = result_offset; row_idx < result_offset + num_values; row_idx++) {
 			if (HAS_DEFINES && defines[row_idx] != MaxDefine()) {
 				result_mask.SetInvalid(row_idx);

@@ -40,6 +40,12 @@ struct TemplatedParquetValueConversion {
 	static idx_t PlainConstantSize() {
 		return sizeof(VALUE_TYPE);
 	}
+
+	//! Every value is sizeof(VALUE_TYPE) bytes and the conversion cannot fail
+	static constexpr idx_t PLAIN_FIXED_SIZE = sizeof(VALUE_TYPE);
+	static VALUE_TYPE PlainConvert(const data_t *src) {
+		return Load<VALUE_TYPE>(src);
+	}
 };
 
 template <class VALUE_TYPE, class VALUE_CONVERSION>
@@ -77,6 +83,11 @@ public:
 	}
 };
 
+//! Callbacks that can neither fail nor depend on anything but the value, so they may run on a whole batch of values
+template <class PARQUET_PHYSICAL_TYPE, class DUCKDB_PHYSICAL_TYPE,
+          DUCKDB_PHYSICAL_TYPE (*FUNC)(const PARQUET_PHYSICAL_TYPE &input)>
+struct ParquetInfallibleCallback : std::false_type {};
+
 template <class PARQUET_PHYSICAL_TYPE, class DUCKDB_PHYSICAL_TYPE,
           DUCKDB_PHYSICAL_TYPE (*FUNC)(const PARQUET_PHYSICAL_TYPE &input)>
 struct CallbackParquetValueConversion {
@@ -104,6 +115,14 @@ struct CallbackParquetValueConversion {
 
 	static idx_t PlainConstantSize() {
 		return 0;
+	}
+
+	static constexpr idx_t PLAIN_FIXED_SIZE =
+	    ParquetInfallibleCallback<PARQUET_PHYSICAL_TYPE, DUCKDB_PHYSICAL_TYPE, FUNC>::value
+	        ? sizeof(PARQUET_PHYSICAL_TYPE)
+	        : 0;
+	static DUCKDB_PHYSICAL_TYPE PlainConvert(const data_t *src) {
+		return FUNC(Load<PARQUET_PHYSICAL_TYPE>(src));
 	}
 };
 
