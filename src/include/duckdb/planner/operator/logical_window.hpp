@@ -28,6 +28,8 @@ public:
 	}
 
 	TableIndex window_index;
+	//! When the window is filtered by rank <= N: N (an optimizer hint that is not serialized)
+	idx_t rank_limit = 0;
 
 	//! The maximum number of rows to return per partition
 	optional_idx partition_limit;

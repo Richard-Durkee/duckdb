@@ -1,6 +1,7 @@
 add_library_unity(
   duckdb_func_window
   OBJECT
+  window_rank_pruner.cpp
   window_aggregate_function.cpp
   window_aggregate_states.cpp
   window_aggregator.cpp

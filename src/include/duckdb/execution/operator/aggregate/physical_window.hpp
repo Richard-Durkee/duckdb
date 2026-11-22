@@ -39,6 +39,8 @@ public:
 	unique_ptr<Expression> partition_distinct_from;
 	//! DISTINCT FROM comparison of the order keys of every window expression, by the end of its order key prefix
 	unordered_map<idx_t, unique_ptr<Expression>> order_distinct_from;
+	//! When the window is filtered by rank <= N: N, so the rows that cannot rank N or better are dropped while sinking
+	idx_t rank_limit = 0;
 
 public:
 	// Source interface

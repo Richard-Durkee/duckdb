@@ -45,6 +45,7 @@
 #include "duckdb/optimizer/aggregate_reuse.hpp"
 #include "duckdb/optimizer/topn_optimizer.hpp"
 #include "duckdb/optimizer/topn_window_elimination.hpp"
+#include "duckdb/optimizer/window_rank_limit.hpp"
 #include "duckdb/optimizer/type_pushdown.hpp"
 #include "duckdb/optimizer/unnest_rewriter.hpp"
 #include "duckdb/optimizer/late_materialization.hpp"
@@ -527,6 +528,12 @@ void Optimizer::RunBuiltInOptimizers() {
 		TopNWindowElimination topn_window_elimination(context, *this, &statistics_map);
 		plan = topn_window_elimination.Optimize(std::move(plan));
 		topn_used_late_materialization = topn_window_elimination.UsedLateMaterialization();
+	});
+
+	// mark rank() windows filtered by rank <= N so they drop the rows that cannot rank N or better
+	RunOptimizer(OptimizerType::WINDOW_RANK_LIMIT, [&]() {
+		WindowRankLimit window_rank_limit(context, &statistics_map);
+		plan = window_rank_limit.Optimize(std::move(plan));
 	});
 
 	// remove duplicate aggregates
