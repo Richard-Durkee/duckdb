@@ -49,6 +49,10 @@ public:
 	atomic<idx_t> bounded_kept {0};
 	atomic<bool> decided {false};
 	atomic<bool> disabled {false};
+	//! The number of tasks filtering rows: each of them fills its own heaps
+	atomic<idx_t> task_count {0};
+	//! The number of distinct partitions seen by all tasks
+	atomic<idx_t> partition_count {0};
 
 	//! Decides once whether filtering pays: only rows that meet a boundary can be dropped, so pruning is judged on
 	//! those; if few rows meet one, the partitions are too small to prune
@@ -56,13 +60,13 @@ public:
 		const auto total_seen = rows_seen.fetch_add(seen) + seen;
 		const auto total_bounded = bounded_seen.fetch_add(seen_bounded) + seen_bounded;
 		const auto total_kept = bounded_kept.fetch_add(kept_bounded) + kept_bounded;
-		const auto fill_rows = 4 * limit * MaxValue<idx_t>(partitions, 1);
+		const auto fill_rows = 4 * limit * MaxValue<idx_t>(partitions, 1) * MaxValue<idx_t>(task_count, 1);
 		const auto warmup = MinValue<idx_t>(MaxValue<idx_t>(MIN_WARMUP_ROWS, fill_rows), MAX_WARMUP_ROWS);
 		if (decided || total_seen < warmup) {
 			return;
 		}
 		decided = true;
-		disabled = total_bounded * 4 < total_seen || total_kept * 2 > total_bounded;
+		disabled = total_bounded * 16 < total_seen || total_kept * 4 > total_bounded * 3;
 	}
 };
 
@@ -87,11 +91,14 @@ public:
 	explicit WindowRankPrunerLocalState(ClientContext &context) : executor(context) {
 	}
 
-	//! Stop tracking new partitions beyond this many, and let their rows through
+	//! Stop filtering once the tasks have seen more than this many distinct partitions, and let the rows through
 	static constexpr idx_t MAX_PARTITIONS = 16384;
 	//! Hold at most this many order keys over all heaps; a heap that is not full yet stops growing beyond it
 	static constexpr idx_t MAX_KEYS = 262144;
+	//! The same limit on the bytes of those keys, as the heaps are not part of the memory the buffer manager tracks
+	static constexpr idx_t MAX_KEY_BYTES = 32ULL * 1024 * 1024;
 	idx_t key_count = 0;
+	idx_t key_bytes = 0;
 	//! The partitions seen by this task, by the hash of their sort key
 	unordered_map<hash_t, vector<unique_ptr<WindowRankPrunerPartition>>> partitions;
 	idx_t partition_count = 0;
@@ -115,7 +122,8 @@ public:
 	WindowRankPruner(const BoundWindowExpression &wexpr, idx_t limit);
 
 	unique_ptr<WindowRankPrunerGlobalState> GetGlobalState() const;
-	unique_ptr<WindowRankPrunerLocalState> GetLocalState(ClientContext &context) const;
+	unique_ptr<WindowRankPrunerLocalState> GetLocalState(ClientContext &context,
+	                                                     WindowRankPrunerGlobalState &gstate) const;
 	//! The rows of chunk that can still rank N or better
 	DataChunk &Prune(WindowRankPrunerGlobalState &gstate, WindowRankPrunerLocalState &lstate, DataChunk &chunk) const;
 

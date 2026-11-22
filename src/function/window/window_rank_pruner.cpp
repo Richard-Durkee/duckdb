@@ -48,10 +48,12 @@ bool KeepRow(WindowRankPrunerLocalState &lstate, WindowRankPrunerPartition &part
 		counts.kept_bounded++;
 	}
 	if (!full) {
-		if (lstate.key_count >= WindowRankPrunerLocalState::MAX_KEYS) {
+		if (lstate.key_count >= WindowRankPrunerLocalState::MAX_KEYS ||
+		    lstate.key_bytes >= WindowRankPrunerLocalState::MAX_KEY_BYTES) {
 			return true;
 		}
 		lstate.key_count++;
+		lstate.key_bytes += key.GetSize();
 		heap.emplace_back(key.GetData(), key.GetSize());
 		std::push_heap(heap.begin(), heap.end());
 	} else if (CompareKeys(key, heap.front()) < 0) {
@@ -77,9 +79,7 @@ optional_ptr<WindowRankPrunerPartition> FindPartition(WindowRankPrunerLocalState
 			return partition.get();
 		}
 	}
-	if (lstate.partition_count >= WindowRankPrunerLocalState::MAX_PARTITIONS) {
-		// too many partitions to keep heaps for: the rows per partition are too few to prune
-		shared.disabled = true;
+	if (shared.disabled) {
 		return nullptr;
 	}
 	lstate.partition_count++;
@@ -91,6 +91,10 @@ optional_ptr<WindowRankPrunerPartition> FindPartition(WindowRankPrunerLocalState
 	auto &boundary = shard.boundaries[partition.partition_key];
 	if (!boundary) {
 		boundary = make_uniq<WindowRankPrunerBoundary>();
+		if (++shared.partition_count > WindowRankPrunerLocalState::MAX_PARTITIONS) {
+			// too many partitions to keep heaps for: the rows per partition are too few to prune
+			shared.disabled = true;
+		}
 	}
 	partition.shared = boundary.get();
 	return &partition;
@@ -129,7 +133,9 @@ unique_ptr<WindowRankPrunerGlobalState> WindowRankPruner::GetGlobalState() const
 	return make_uniq<WindowRankPrunerGlobalState>();
 }
 
-unique_ptr<WindowRankPrunerLocalState> WindowRankPruner::GetLocalState(ClientContext &context) const {
+unique_ptr<WindowRankPrunerLocalState> WindowRankPruner::GetLocalState(ClientContext &context,
+                                                                       WindowRankPrunerGlobalState &gstate) const {
+	gstate.task_count++;
 	auto result = make_uniq<WindowRankPrunerLocalState>(context);
 	vector<LogicalType> key_types, order_types, partition_types;
 	for (idx_t i = 0; i < key_expressions.size(); i++) {

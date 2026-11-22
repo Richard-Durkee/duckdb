@@ -260,7 +260,7 @@ public:
 	WindowLocalSinkState(ExecutionContext &context, const WindowGlobalSinkState &gstate)
 	    : local_group(gstate.sort_strategy->GetLocalSinkState(context)) {
 		if (gstate.rank_pruner) {
-			rank_state = gstate.rank_pruner->GetLocalState(context.client);
+			rank_state = gstate.rank_pruner->GetLocalState(context.client, *gstate.rank_state);
 		}
 	}
 
@@ -275,7 +275,7 @@ public:
 		auto &gstate = gstate_p.Cast<WindowGlobalSinkState>();
 		local_group = gstate.sort_strategy->GetLocalSinkState(context);
 		if (gstate.rank_pruner) {
-			rank_state = gstate.rank_pruner->GetLocalState(context.client);
+			rank_state = gstate.rank_pruner->GetLocalState(context.client, *gstate.rank_state);
 		}
 	}
 };

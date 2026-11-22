@@ -51,7 +51,7 @@ physical_plan	<!REGEX>:.*Rank Limit.*
 foreach threads 1 8
 
 statement ok
-SET threads=${threads};
+SET threads={threads};
 
 foreach partition p q p,q
 
@@ -67,18 +67,18 @@ statement ok
 SET disabled_optimizers='window_rank_limit';
 
 statement ok
-CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY ${partition} ORDER BY v ${direction} NULLS ${nulls}, w) AS rk FROM t) WHERE rk ${comparison} ${limit};
+CREATE OR REPLACE TABLE expected AS SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY {partition} ORDER BY v {direction} NULLS {nulls}, w) AS rk FROM t) WHERE rk {comparison} {limit};
 
 statement ok
 SET disabled_optimizers='';
 
 query I
-SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY ${partition} ORDER BY v ${direction} NULLS ${nulls}, w) AS rk FROM t) WHERE rk ${comparison} ${limit}) EXCEPT ALL (FROM expected));
+SELECT count(*) FROM ((SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY {partition} ORDER BY v {direction} NULLS {nulls}, w) AS rk FROM t) WHERE rk {comparison} {limit}) EXCEPT ALL (FROM expected));
 ----
 0
 
 query I
-SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY ${partition} ORDER BY v ${direction} NULLS ${nulls}, w) AS rk FROM t) WHERE rk ${comparison} ${limit}));
+SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, q, v, w, id, rk FROM (SELECT *, rank() OVER (PARTITION BY {partition} ORDER BY v {direction} NULLS {nulls}, w) AS rk FROM t) WHERE rk {comparison} {limit}));
 ----
 0
 
@@ -101,13 +101,13 @@ statement ok
 SET disabled_optimizers='window_rank_limit';
 
 statement ok
-CREATE OR REPLACE TABLE expected AS SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v ${direction}) AS rk FROM t) WHERE rk <= ${limit};
+CREATE OR REPLACE TABLE expected AS SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v {direction}) AS rk FROM t) WHERE rk <= {limit};
 
 statement ok
 SET disabled_optimizers='';
 
 query I
-SELECT (SELECT count(*) FROM ((SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v ${direction}) AS rk FROM t) WHERE rk <= ${limit}) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v ${direction}) AS rk FROM t) WHERE rk <= ${limit})));
+SELECT (SELECT count(*) FROM ((SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v {direction}) AS rk FROM t) WHERE rk <= {limit}) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT v, id, rk FROM (SELECT *, rank() OVER (ORDER BY v {direction}) AS rk FROM t) WHERE rk <= {limit})));
 ----
 0
 
@@ -140,5 +140,131 @@ SELECT count(*) FROM (SELECT * FROM t QUALIFY rank() OVER (PARTITION BY p ORDER 
 
 query I
 SELECT count(*) FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM empty_t) WHERE rk <= 3;
+----
+0
+
+# NULL partition keys form one partition, and NULL order values rank after (or before) the others
+statement ok
+CREATE TABLE null_part AS SELECT CASE WHEN range % 5 = 0 THEN NULL ELSE (range % 7)::INTEGER END AS p, CASE WHEN range % 9 = 0 THEN NULL ELSE (hash(range) % 30)::INTEGER END AS v, range AS id FROM range(60000);
+
+foreach nulls FIRST LAST
+
+foreach direction ASC DESC
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v {direction} NULLS {nulls}) AS rk FROM null_part) WHERE rk <= 3;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v {direction} NULLS {nulls}) AS rk FROM null_part) WHERE rk <= 3) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v {direction} NULLS {nulls}) AS rk FROM null_part) WHERE rk <= 3)));
+----
+0
+
+endloop
+
+endloop
+
+# a task stops tracking partitions beyond 16,384: the remaining rows pass through unpruned
+statement ok
+CREATE TABLE many_partitions AS SELECT range % 50000 AS p, (hash(range) % 100)::INTEGER AS v, range AS id FROM range(400000);
+
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_partitions) WHERE rk <= 1;
+----
+physical_plan	<REGEX>:.*Rank Limit: 1.*
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_partitions) WHERE rk <= 1;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_partitions) WHERE rk <= 1) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_partitions) WHERE rk <= 1)));
+----
+0
+
+endloop
+
+# the pruning stops after the warm-up when each row is better than the ones kept before it
+statement ok
+CREATE TABLE improving AS SELECT range % 4 AS p, range AS v FROM range(400000);
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM improving) WHERE rk <= 10;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM improving) WHERE rk <= 10) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v DESC) AS rk FROM improving) WHERE rk <= 10)));
+----
+0
+
+# a task holds at most 262,144 order keys: with more than that, the heaps that are not full yet stop growing
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE many_keys AS SELECT range % 30 AS p, (hash(range) % 1000000)::INTEGER AS v, range AS id FROM range(1300000);
+
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_keys) WHERE rk <= 9000;
+----
+physical_plan	<REGEX>:.*Rank Limit: 9000.*
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_keys) WHERE rk <= 9000;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_keys) WHERE rk <= 9000) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM many_keys) WHERE rk <= 9000)));
+----
+0
+
+# a task also stops growing its heaps once their keys hold 32 MB
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE wide_keys AS SELECT range % 20 AS p, repeat('x', 8000) || (hash(range) % 100000)::VARCHAR AS v, range AS id FROM range(20000);
+
+query II
+EXPLAIN SELECT * FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM wide_keys) WHERE rk <= 200;
+----
+physical_plan	<REGEX>:.*Rank Limit: 200.*
+
+statement ok
+SET disabled_optimizers='window_rank_limit';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM wide_keys) WHERE rk <= 200;
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+SELECT (SELECT count(*) FROM ((SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM wide_keys) WHERE rk <= 200) EXCEPT ALL (FROM expected))) + (SELECT count(*) FROM ((FROM expected) EXCEPT ALL (SELECT p, v, id, rk FROM (SELECT *, rank() OVER (PARTITION BY p ORDER BY v) AS rk FROM wide_keys) WHERE rk <= 200)));
 ----
 0
