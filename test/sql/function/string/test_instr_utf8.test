@@ -88,3 +88,20 @@ SELECT instr(s,'🦆 end') FROM strings
 0
 20
 
+
+# Many multi-byte characters of every width before the match
+query I
+SELECT instr(repeat('ñ₡🦆a', 100) || 'needle', 'needle')
+----
+401
+
+# The haystack column is not known to be ASCII, so ASCII rows also take the UTF-8 path
+statement ok
+CREATE TABLE mixed AS
+SELECT CASE WHEN i % 2 = 0 THEN repeat('a', i % 50) ELSE repeat('é', i % 50) END || '/x' AS s
+FROM range(5000) t(i)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE instr(s, '/x') = length(s) - 1) FROM mixed
+----
+5000	5000

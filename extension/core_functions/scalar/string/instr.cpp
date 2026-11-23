@@ -10,19 +10,14 @@ namespace duckdb {
 struct InstrOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA haystack, TB needle) {
-		int64_t string_position = 0;
-
 		auto location = FindStrInStr(haystack, needle);
-		if (location != DConstants::INVALID_INDEX) {
-			auto str = haystack.GetData();
-			D_ASSERT(location <= haystack.GetSize());
-			for (idx_t pos = 0; pos < location; ++string_position) {
-				int32_t codepoint;
-				pos += DecodeCodepoint(str + pos, location - pos, codepoint);
-			}
-			++string_position;
+		if (location == DConstants::INVALID_INDEX) {
+			return 0;
 		}
-		return string_position;
+		D_ASSERT(location <= haystack.GetSize());
+		// the position is one past the number of codepoints before the match
+		string_t prefix(haystack.GetData(), UnsafeNumericCast<uint32_t>(location));
+		return Length<string_t, TR>(prefix) + 1;
 	}
 };
 
